@@ -10,10 +10,29 @@ __all__ = [
     "r0_from_seeing",
     "seeing_from_r0",
     "r0_at_wavelength",
+    "opd_to_phase",
+    "phase_to_opd",
     "structure_function",
 ]
 
 _RAD_TO_ARCSEC = 180.0 / np.pi * 3600.0
+
+
+def opd_to_phase(opd, wavelength):
+    """Convert optical path difference [m] to phase [rad] at ``wavelength`` [m].
+
+    ``phase = 2 pi * opd / wavelength``. OPD is achromatic, so the same OPD
+    gives different phase at different wavelengths.
+    """
+    return opd * (2.0 * np.pi / wavelength)
+
+
+def phase_to_opd(phase, wavelength):
+    """Convert phase [rad] at ``wavelength`` [m] to optical path difference [m].
+
+    ``opd = phase * wavelength / (2 pi)``.
+    """
+    return phase * (wavelength / (2.0 * np.pi))
 
 
 def r0_from_seeing(seeing, wavelength=500e-9):

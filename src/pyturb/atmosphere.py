@@ -1,0 +1,402 @@
+"""Layered atmosphere: many turbulent layers summed into a pupil OPD.
+
+:class:`Atmosphere` is the high-level entry point. It takes a turbulence
+profile (a list of :class:`pyturb.Layer`, or a named one), a total Fried
+parameter or seeing, and a telescope geometry, and produces optical path
+difference (OPD) frames — the standard input to an adaptive-optics simulation.
+
+Two evolution modes share one physical model:
+
+- :meth:`sample` draws statistically independent integrated OPDs (Monte-Carlo
+  ensembles: PSF statistics, error budgets, training data).
+- :meth:`frames` / :meth:`opd` evolve the layers under frozen-flow (Taylor)
+  wind for closed-loop temporal simulation, with sub-pixel, arbitrary-direction
+  motion via the spectral engine :class:`pyturb.flow.FourierFlowScreen`.
+
+OPD is returned in **metres** and is achromatic (a path length); pass
+``wavelength=`` to any output method to get phase in radians at that
+wavelength instead.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from . import profiles as _profiles
+from .backend import get_array_module
+from .flow import FourierFlowScreen
+from .fourier import PhaseScreen
+from .profiles import Layer
+from .utils import r0_at_wavelength, r0_from_seeing, seeing_from_r0
+
+__all__ = ["Atmosphere"]
+
+_ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
+
+
+class _LayerState:
+    """Per-layer runtime: independent-draw generator + frozen-flow screen."""
+
+    __slots__ = ("generator", "flow", "vx", "vy", "altitude_los")
+
+    def __init__(self, generator, flow, vx, vy, altitude_los):
+        self.generator = generator
+        self.flow = flow
+        self.vx = vx
+        self.vy = vy
+        self.altitude_los = altitude_los
+
+
+class Atmosphere:
+    """A multi-layer turbulent atmosphere producing pupil OPD.
+
+    Parameters
+    ----------
+    layers : sequence of Layer
+        The turbulence profile. ``cn2_fraction`` values are normalised to
+        sum to 1 internally.
+    r0 : float, optional
+        Total Fried parameter [m] at ``wavelength`` and *at zenith*. Give
+        either ``r0`` or ``seeing``.
+    seeing : float, optional
+        Total seeing FWHM [arcsec] at ``wavelength`` and at zenith. Converted
+        to ``r0`` via the Kolmogorov relation.
+    wavelength : float, optional
+        Reference wavelength [m] at which ``r0``/``seeing`` are defined.
+        Default 500 nm.
+    zenith_angle : float, optional
+        Zenith angle [deg]. Scales ``r0`` (``cos^{3/5}``) and layer ranges
+        (``sec``) for the line of sight. Default 0.
+    diameter : float, optional
+        Pupil diameter [m]; with ``n`` this sets ``pixel_scale = diameter/n``.
+        Default 8 m.
+    n : int, optional
+        Pupil sampling in pixels across the diameter. Default 512.
+    L0 : float, optional
+        Override the outer scale [m] for every layer. Default: use each
+        layer's own ``L0``.
+    subharmonics : int, optional
+        Subharmonic levels for low-frequency correction. Default 8.
+    device : str, optional
+        ``"cpu"`` (default) or ``"gpu"``.
+    dtype : str, optional
+        ``"float32"`` (default) or ``"float64"``.
+    seed : int, optional
+        Master seed. Per-layer streams are spawned from it so results are
+        reproducible and independent of layer count.
+
+    Examples
+    --------
+    >>> import pyturb
+    >>> atm = pyturb.Atmosphere.from_profile("two-layer", seeing=0.8,
+    ...                                      diameter=8.0, n=256, seed=1)
+    >>> opd = atm.opd()                    # (256, 256) OPD [m], t = 0
+    >>> for t, frame in atm.frames(dt=1e-3, steps=10):
+    ...     pass                           # closed-loop OPD [m]
+    >>> ensemble = atm.sample(16)          # (16, 256, 256) independent OPDs
+    """
+
+    def __init__(
+        self,
+        layers: Sequence[Layer],
+        r0: Optional[float] = None,
+        seeing: Optional[float] = None,
+        wavelength: float = 500e-9,
+        zenith_angle: float = 0.0,
+        diameter: float = 8.0,
+        n: int = 512,
+        L0: Optional[float] = None,
+        subharmonics: int = 8,
+        device: str = "cpu",
+        dtype: str = "float32",
+        seed: Optional[int] = None,
+    ):
+        layers = list(layers)
+        if not layers:
+            raise ValueError("at least one layer is required")
+        if (r0 is None) == (seeing is None):
+            raise ValueError("give exactly one of r0 or seeing")
+        if not 0.0 <= zenith_angle < 90.0:
+            raise ValueError("zenith_angle must be in [0, 90) degrees")
+        if diameter <= 0 or n < 2:
+            raise ValueError("diameter must be positive and n >= 2")
+
+        self.wavelength = float(wavelength)
+        if seeing is not None:
+            r0 = r0_from_seeing(seeing, wavelength)
+        self.r0_zenith = float(r0)
+        self.zenith_angle = float(zenith_angle)
+        self.diameter = float(diameter)
+        self.n = int(n)
+        self.subharmonics = int(subharmonics)
+        self.device = device
+        self.dtype = dtype
+        self.pixel_scale = self.diameter / self.n
+
+        cos_z = np.cos(np.deg2rad(self.zenith_angle))
+        self.airmass = 1.0 / cos_z
+        # Line-of-sight r0 shrinks with airmass; ranges stretch with sec(z).
+        self.r0_los = self.r0_zenith * cos_z ** (3.0 / 5.0)
+
+        # Normalise Cn2 fractions and store a copy of the (possibly L0-overridden)
+        # profile for reporting and integrated-quantity calculations.
+        frac = _profiles._fractions(layers)
+        self.layers: List[Layer] = []
+        for layer, f in zip(layers, frac):
+            self.layers.append(
+                Layer(
+                    altitude=layer.altitude,
+                    cn2_fraction=float(f),
+                    wind_speed=layer.wind_speed,
+                    wind_direction=layer.wind_direction,
+                    L0=layer.L0 if L0 is None else float(L0),
+                )
+            )
+
+        self.xp = get_array_module(device)
+        seeds = np.random.SeedSequence(seed).spawn(len(self.layers))
+        self._layers: List[_LayerState] = []
+        for layer, child in zip(self.layers, seeds):
+            # Per-layer line-of-sight r0: r0_i^{-5/3} = f_i * r0_los^{-5/3}.
+            r0_i = self.r0_los * layer.cn2_fraction ** (-3.0 / 5.0)
+            gen_seed, flow_seed = child.spawn(2)
+            generator = PhaseScreen(
+                n=self.n,
+                pixel_scale=self.pixel_scale,
+                r0=r0_i,
+                L0=layer.L0,
+                subharmonics=self.subharmonics,
+                seed=int(gen_seed.generate_state(1)[0]),
+                device=device,
+                dtype=dtype,
+            )
+            flow = FourierFlowScreen(
+                generator, seed=int(flow_seed.generate_state(1)[0])
+            )
+            vx, vy = layer.wind_vector
+            self._layers.append(
+                _LayerState(
+                    generator=generator,
+                    flow=flow,
+                    vx=vx,
+                    vy=vy,
+                    altitude_los=layer.altitude * self.airmass,
+                )
+            )
+
+        self._t = 0.0
+        self._build_batched()
+
+    def _build_batched(self):
+        """Stack every layer's spectrum so a frame is one batched FFT.
+
+        The hot loop (``_integrate``) is otherwise launch-latency bound on the
+        GPU: one ``ifft2`` and a handful of small matmuls per layer. Stacking
+        the layers into a leading axis turns each frame into a single
+        ``(L, n, n)`` inverse FFT plus one matmul per subharmonic level.
+        """
+        xp = self.xp
+        flows = [state.flow for state in self._layers]
+        self._fft = self._layers[0].generator._fft
+        self.dtype_out = self._layers[0].generator.dtype
+        self._cdtype = xp.dtype(self._layers[0].generator._cdtype)
+        self._spectra = xp.stack([flow._spectrum for flow in flows])  # (L,n,n)
+        self._grid_f = self._layers[0].generator._f  # (n,) device
+        self._vx = np.array([s.vx for s in self._layers], dtype=np.float64)
+        self._vy = np.array([s.vy for s in self._layers], dtype=np.float64)
+        self._alt = np.array([s.altitude_los for s in self._layers], dtype=np.float64)
+        # Subharmonic modes share basis/frequencies across layers (same grid);
+        # only the coefficients differ, so stack those.
+        template = self._layers[0].generator
+        self._sh_batched = []
+        for level, (_amp, basis) in enumerate(template._sh_bases):
+            coeffs = xp.stack([flow._sh_coeffs[level] for flow in flows])  # (L,3,3)
+            self._sh_batched.append((coeffs, basis, template._sh_freqs[level]))
+
+    # ------------------------------------------------------------------
+    # constructors
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_profile(cls, name: str, **kwargs) -> "Atmosphere":
+        """Build from a named profile (see :func:`pyturb.list_profiles`).
+
+        Any :class:`Atmosphere` keyword may be passed, e.g.::
+
+            Atmosphere.from_profile("paranal-median", seeing=0.8,
+                                    zenith_angle=30, diameter=8, n=512)
+        """
+        return cls(_profiles.get_profile(name), **kwargs)
+
+    # ------------------------------------------------------------------
+    # integrated quantities
+    # ------------------------------------------------------------------
+    def r0_at(self, wavelength: float) -> float:
+        """Line-of-sight total Fried parameter [m] at ``wavelength``."""
+        return r0_at_wavelength(self.r0_los, self.wavelength, wavelength)
+
+    @property
+    def r0(self) -> float:
+        """Line-of-sight total Fried parameter [m] at the reference wavelength."""
+        return self.r0_los
+
+    @property
+    def seeing(self) -> float:
+        """Line-of-sight seeing FWHM [arcsec] at the reference wavelength."""
+        return seeing_from_r0(self.r0_los, self.wavelength)
+
+    @property
+    def theta0(self) -> float:
+        """Isoplanatic angle [arcsec] at the reference wavelength."""
+        return _profiles.isoplanatic_angle(self._los_layers(), self.r0_los) / _ARCSEC_TO_RAD
+
+    @property
+    def tau0(self) -> float:
+        """Coherence time [s] at the reference wavelength."""
+        return _profiles.coherence_time(self.layers, self.r0_los)
+
+    @property
+    def greenwood_frequency(self) -> float:
+        """Greenwood frequency [Hz] at the reference wavelength."""
+        return _profiles.greenwood_frequency(self.layers, self.r0_los)
+
+    def _los_layers(self):
+        # Layers with altitudes projected to the line of sight (for theta0).
+        return [
+            Layer(layer.altitude * self.airmass, layer.cn2_fraction,
+                  layer.wind_speed, layer.wind_direction, layer.L0)
+            for layer in self.layers
+        ]
+
+    # ------------------------------------------------------------------
+    # output
+    # ------------------------------------------------------------------
+    def _to_opd(self, phase, wavelength):
+        """Convert reference-wavelength phase [rad] to the requested output."""
+        opd = phase * (self.wavelength / (2.0 * np.pi))
+        if wavelength is None:
+            return opd
+        return opd * (2.0 * np.pi / float(wavelength))
+
+    def opd(self, t: float = 0.0, directions=None, wavelength=None):
+        """OPD at time ``t`` [s] under frozen flow.
+
+        Parameters
+        ----------
+        t : float
+            Time since the start of the simulation [s]. Each layer is blown
+            by ``wind_vector * t``.
+        directions : sequence of (thx, thy), optional
+            Off-axis directions [arcsec] from the on-axis line of sight. Each
+            layer's footprint is shifted by ``altitude_los * tan(theta)`` for
+            anisoplanatism / tomography studies. If given, the result has a
+            leading axis of length ``len(directions)``.
+        wavelength : float, optional
+            If given, return phase [rad] at this wavelength; otherwise OPD [m].
+        """
+        if directions is None:
+            phase = self._integrate(float(t), 0.0, 0.0)
+            return self._to_opd(phase, wavelength)
+
+        xp = self.xp
+        out = []
+        for thx, thy in directions:
+            ox = np.tan(thx * _ARCSEC_TO_RAD)
+            oy = np.tan(thy * _ARCSEC_TO_RAD)
+            out.append(self._integrate(float(t), ox, oy))
+        stacked = xp.stack(out)
+        return self._to_opd(stacked, wavelength)
+
+    def _integrate(self, t, ox, oy):
+        """Sum all layers at time ``t`` with per-layer angular offset slopes.
+
+        Batched over layers: one ``(L, n, n)`` inverse FFT plus one matmul per
+        subharmonic level, then a sum over the layer axis.
+        """
+        xp = self.xp
+        cdtype = self._cdtype
+        # Per-layer displacement [m] along each axis (host-side, L is small).
+        sx = xp.asarray(self._vx * t + self._alt * ox, dtype=self._spectra.real.dtype)
+        sy = xp.asarray(self._vy * t + self._alt * oy, dtype=self._spectra.real.dtype)
+        f = self._grid_f
+        # Separable shift-theorem phasors, shape (L, n) each.
+        phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
+        phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
+        spectra = self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
+        field = self._fft.ifft2(spectra, axes=(-2, -1)) * (self.n * self.n)
+        total = field.real.sum(axis=0)
+
+        if self._sh_batched:
+            low = None
+            for coeffs, basis, fp in self._sh_batched:
+                px = xp.exp((2j * np.pi) * sx[:, None] * fp[None, :]).astype(cdtype)
+                py = xp.exp((2j * np.pi) * sy[:, None] * fp[None, :]).astype(cdtype)
+                shifted = coeffs * px[:, :, None] * py[:, None, :]  # (L,3,3)
+                contribution = xp.matmul(basis.T, xp.matmul(shifted, basis))  # (L,n,n)
+                summed = contribution.real.sum(axis=0)
+                low = summed if low is None else low + summed
+            low -= low.mean()
+            total = total + low
+        return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
+
+    def frames(self, dt: float, steps: int, wavelength=None):
+        """Yield ``(t, opd)`` for ``steps`` frames spaced by ``dt`` seconds.
+
+        Advances the internal clock, so successive calls continue the wind.
+        Use :meth:`reset` to return to ``t = 0``.
+
+        Yields
+        ------
+        (float, ndarray)
+            Simulation time [s] and the pupil OPD [m] (or phase [rad] if
+            ``wavelength`` is given), shape ``(n, n)`` on the device.
+        """
+        if dt <= 0:
+            raise ValueError("dt must be positive")
+        if steps < 1:
+            raise ValueError("steps must be >= 1")
+        for _ in range(int(steps)):
+            t = self._t
+            phase = self._integrate(t, 0.0, 0.0)
+            yield t, self._to_opd(phase, wavelength)
+            self._t += float(dt)
+
+    def sample(self, count: Optional[int] = None, wavelength=None):
+        """Draw statistically independent integrated OPDs.
+
+        Each call produces fresh, uncorrelated realisations of the summed
+        atmosphere (on-axis). Independent screens from every layer are added,
+        so the ensemble structure function matches the total ``r0``.
+
+        Parameters
+        ----------
+        count : int, optional
+            Number of independent OPDs. If omitted a single ``(n, n)`` array
+            is returned; otherwise the result is ``(count, n, n)``.
+        wavelength : float, optional
+            If given, return phase [rad] at this wavelength; otherwise OPD [m].
+        """
+        total = None
+        for state in self._layers:
+            screens = state.generator.generate(count)
+            total = screens if total is None else total + screens
+        return self._to_opd(total, wavelength)
+
+    def reset(self):
+        """Reset the internal clock to ``t = 0``. Returns ``self``."""
+        self._t = 0.0
+        return self
+
+    @property
+    def time(self) -> float:
+        """Current internal clock [s] (advanced by :meth:`frames`)."""
+        return self._t
+
+    def __repr__(self):
+        return (
+            f"Atmosphere(layers={len(self.layers)}, r0={self.r0_los:.3f} m, "
+            f"seeing={self.seeing:.2f}\", theta0={self.theta0:.2f}\", "
+            f"tau0={self.tau0 * 1e3:.1f} ms, n={self.n}, "
+            f"diameter={self.diameter} m, device={self.device!r})"
+        )

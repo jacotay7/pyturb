@@ -120,6 +120,8 @@ class InfinitePhaseScreen:
 
         self.xp = get_array_module(device)
         self.dtype = self.xp.dtype(dtype)
+        if self.dtype not in (self.xp.dtype("float32"), self.xp.dtype("float64")):
+            raise ValueError("dtype must be float32 or float64")
 
         self._build_extrusion_matrices()
 

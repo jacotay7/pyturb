@@ -157,6 +157,9 @@ class PhaseScreen:
                     continue
                 amplitude[i, j] = self._band_amplitude(f[i], f[j], df)
         self._amplitude = self.xp.asarray(amplitude, dtype=self.dtype)
+        # Frequencies of the main grid, kept for frozen-flow translation
+        # (the shift theorem needs them); see pyturb.flow.FourierFlowScreen.
+        self._f = self.xp.asarray(f, dtype=self.dtype)
 
         # Subharmonic modes: for each level p, a 3x3 grid of frequencies
         # spaced df/3^p. The 9 cells of level p exactly tile the DC hole
@@ -164,6 +167,7 @@ class PhaseScreen:
         # own centre cell is excluded and covered by the next level.
         coords = (np.arange(n) - n / 2.0) * dx
         self._sh_bases = []  # list of (amplitude(3,3), basis(3,n))
+        self._sh_freqs = []  # list of (3,) mode frequencies, for translation
         for p in range(1, self.subharmonics + 1):
             df_p = df / 3.0**p
             f_p = np.array([-1.0, 0.0, 1.0]) * df_p
@@ -180,6 +184,7 @@ class PhaseScreen:
                     self.xp.asarray(basis, dtype=self._cdtype),
                 )
             )
+            self._sh_freqs.append(self.xp.asarray(f_p, dtype=self.dtype))
 
     # ------------------------------------------------------------------
     # generation
