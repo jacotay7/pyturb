@@ -96,6 +96,88 @@ def test_sample_matches_total_structure_function():
     assert np.all(ratio < 1.2)
 
 
+_ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
+
+
+def test_field_of_view_oversizes_screen():
+    atm0 = pyturb.Atmosphere.from_profile("paranal-median", r0=0.15, n=128,
+                                          diameter=8.0, seed=1)
+    atmf = pyturb.Atmosphere.from_profile("paranal-median", r0=0.15, n=128,
+                                          diameter=8.0, field_of_view=30.0, seed=1)
+    assert atm0.n_screen == 128 and atm0.margin_pix == 0
+    assert atmf.n_screen > 128 and atmf.margin_pix > 0
+    # Output is still the pupil size regardless of oversizing.
+    assert atmf.opd().shape == (128, 128)
+    assert atmf.sample(2).shape == (2, 128, 128)
+
+
+def test_off_axis_is_a_pure_shift_without_wrap():
+    # Single layer, no wind: an off-axis direction chosen to land on an exact
+    # integer-pixel footprint shift must equal the on-axis screen rolled, with
+    # no wrap contamination because field_of_view oversized the screen.
+    h = 8000.0
+    atm = pyturb.Atmosphere([pyturb.Layer(h, 1.0, 0.0, 0.0, L0=np.inf)],
+                            r0=0.15, n=160, diameter=10.0, field_of_view=25.0,
+                            subharmonics=0, dtype="float64", seed=7)
+    k = 6
+    theta_as = (k * atm.pixel_scale / (h * atm.airmass)) / _ARCSEC_TO_RAD
+    # Work in phase (radians) so it matches flow.translate()'s units.
+    lam = atm.wavelength
+    off = pyturb.to_numpy(atm.opd(0.0, directions=[(theta_as, 0.0)], wavelength=lam))[0]
+    full = pyturb.to_numpy(atm._layers[0].flow.translate(0.0, 0.0))
+    rolled = np.roll(full, -k, axis=0)[atm._crop, atm._crop]
+    # Relative error is O(1e-6) of the screen RMS (arcsec-rounding only).
+    assert np.abs(off - rolled).max() < 1e-3 * rolled.std()
+
+
+def test_boiling_decorrelates_as_expected_and_is_stationary():
+    # Ensemble-averaged temporal autocorrelation of a boiling layer must follow
+    # exp(-t/tau); a single realisation is dominated by a few low-frequency
+    # modes and is far too noisy to test.
+    tau, dt = 0.05, 0.005
+    lags = [1, 2, 5]
+    num = {k: 0.0 for k in lags}
+    den0 = 0.0
+    denk = {k: 0.0 for k in lags}
+    rms_first, rms_last = [], []
+    for m in range(60):
+        atm = pyturb.Atmosphere([pyturb.Layer(0.0, 1.0, 0.0, 0.0, L0=25.0)],
+                                r0=0.15, n=64, diameter=8.0, tau_boil=tau,
+                                dtype="float64", seed=1000 + m)
+        frames = [o for _, o in atm.frames(dt=dt, steps=max(lags) + 1)]
+        f0 = (frames[0] - frames[0].mean()).ravel()
+        den0 += np.dot(f0, f0)
+        rms_first.append(frames[0].std())
+        rms_last.append(frames[-1].std())
+        for k in lags:
+            fk = (frames[k] - frames[k].mean()).ravel()
+            num[k] += np.dot(f0, fk)
+            denk[k] += np.dot(fk, fk)
+    for k in lags:
+        corr = num[k] / np.sqrt(den0 * denk[k])
+        assert abs(corr - np.exp(-k * dt / tau)) < 0.05
+    # Boiling preserves the spatial variance (stationary RMS) in the ensemble.
+    assert abs(np.mean(rms_last) / np.mean(rms_first) - 1.0) < 0.1
+
+
+def test_frozen_flow_default_is_not_boiling():
+    # Without tau_boil, frames() must be pure frozen flow: the spectra never
+    # mutate, so opd(t) is deterministic before and after stepping.
+    atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=64, seed=1)
+    before = pyturb.to_numpy(atm.opd(0.05))
+    list(atm.frames(dt=1e-3, steps=5))
+    after = pyturb.to_numpy(atm.opd(0.05))
+    assert np.array_equal(before, after)
+
+
+def test_invalid_boiling_and_fov():
+    layers = pyturb.get_profile("single-layer")
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere(layers, r0=0.15, tau_boil=-1.0)
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere(layers, r0=0.15, field_of_view=-5.0)
+
+
 def _cupy_available():
     try:
         pyturb.get_array_module("gpu")

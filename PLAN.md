@@ -27,9 +27,29 @@ tested on CPU and the RTX 5090:
 - 16 new tests (`test_atmosphere.py`, `test_profiles.py`), CI gains Python 3.12,
   `InfinitePhaseScreen` dtype validation unified, `examples/atmosphere.py`.
 
+**Milestone M2 (product) — implemented.** The spectral engine gained the two
+features that make it a rigorous product, validated against theory:
+
+- **Boiling** (Phase 2.3): per-layer temporal decorrelation via a spectral
+  AR(1) (`tau_boil=`), active while stepping `frames()`. Ensemble temporal
+  autocorrelation matches `exp(-dt/tau)` to a few percent and the spatial PSD
+  (hence r0) is preserved (~25% GPU overhead when on).
+- **Field-of-view oversizing** (Phase 3.3): `field_of_view=` grows the
+  generated screens so off-axis footprints sample genuinely different,
+  non-wrapped turbulence — making the M1 `directions=` anisoplanatism feature
+  physically correct rather than wrap-limited. Verified as an exact lateral
+  shift (off-axis == on-axis rolled, to 1e-6 relative); off-axis differential
+  variance grows with angle as expected. Nearly free on GPU; default
+  `field_of_view=0` keeps the fastest path (~800 fps at 512²) unchanged.
+
+M2's other Phase 3 items (OPD in metres, `directions=`) were already delivered
+in M1. LGS cone effect (finite-altitude guide star) is deferred — it needs
+per-layer magnification/resampling that doesn't fit the batched-FFT fast path
+and deserves its own careful pass (tracked under M5/stretch).
+
 **Known limitation carried forward:** the spectral engine is periodic (screen
-repeats after `n·pixel_scale`); the non-periodic extruder path (Phase 2.1) and
-the remaining milestones below are still open.
+repeats after `n·pixel_scale`); the non-periodic extruder path (Phase 2.1),
+LGS cone, and the remaining milestones below are still open.
 
 Target end-state API (the whole plan works backwards from this):
 
@@ -352,7 +372,7 @@ Documented as out of scope (with pointers), unless demand pulls them in:
 | Milestone | Contents | Outcome |
 |---|---|---|
 | **M1** (core) ✅ | Phase 1 + Phase 2 spectral engine | **Done** — `Atmosphere.from_profile(...).frames(dt)` works: frozen flow, sub-pixel, multi-layer, off-axis, GPU. (Ring-buffer extruder from 2.1–2.2 still open) |
-| **M2** (product) | Phase 3 + spectral engine (2.3) | OPD in metres, off-axis directions, fastest GPU path |
+| **M2** (product) ✅ | Phase 3 + spectral engine (2.3) | **Done** — OPD in metres, off-axis directions, field-of-view oversizing, boiling. (LGS cone deferred to M5) |
 | **M3** (proof) | Phase 4 + Phase 5 | published benchmarks vs aotools/soapy/HCIPy, validation gallery |
 | **M4** (adoption) | Phase 6 | docs site, PyPI release `v0.2.0`, README with animation |
 | **M5** (polish) | boiling, LGS cone, FITS I/O, conda-forge | differentiating extras |

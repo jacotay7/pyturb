@@ -79,6 +79,18 @@ class Atmosphere:
         layer's own ``L0``.
     subharmonics : int, optional
         Subharmonic levels for low-frequency correction. Default 8.
+    field_of_view : float, optional
+        Radius of the science/guide-star field [arcsec]. The generated screens
+        are oversized so that off-axis footprints out to this radius sample
+        genuinely different (non-wrapped) turbulence — set this whenever you
+        use ``directions`` for anisoplanatism/tomography. Default 0 (screens
+        exactly the pupil; fastest). Larger values cost a larger per-frame FFT.
+    tau_boil : float or sequence, optional
+        Boiling (temporal decorrelation) time constant [s], scalar or one per
+        layer. ``None`` (default) is pure frozen flow. When set, each layer's
+        modes relax via an AR(1) process so the screen decorrelates with
+        autocorrelation ``exp(-dt/tau_boil)`` while keeping its spatial
+        statistics; active only while stepping with :meth:`frames`.
     device : str, optional
         ``"cpu"`` (default) or ``"gpu"``.
     dtype : str, optional
@@ -109,6 +121,8 @@ class Atmosphere:
         n: int = 512,
         L0: Optional[float] = None,
         subharmonics: int = 8,
+        field_of_view: float = 0.0,
+        tau_boil=None,
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
@@ -122,6 +136,8 @@ class Atmosphere:
             raise ValueError("zenith_angle must be in [0, 90) degrees")
         if diameter <= 0 or n < 2:
             raise ValueError("diameter must be positive and n >= 2")
+        if field_of_view < 0:
+            raise ValueError("field_of_view must be >= 0 arcsec")
 
         self.wavelength = float(wavelength)
         if seeing is not None:
@@ -131,6 +147,7 @@ class Atmosphere:
         self.diameter = float(diameter)
         self.n = int(n)
         self.subharmonics = int(subharmonics)
+        self.field_of_view = float(field_of_view)
         self.device = device
         self.dtype = dtype
         self.pixel_scale = self.diameter / self.n
@@ -155,15 +172,41 @@ class Atmosphere:
                 )
             )
 
+        # Oversize the generated screens so off-axis footprints (up to
+        # field_of_view radius) stay inside the screen instead of wrapping.
+        # The highest layer needs the most margin; use one uniform size so the
+        # per-frame FFT stays a single batched call.
+        max_alt_los = max(layer.altitude for layer in self.layers) * self.airmass
+        margin_m = max_alt_los * np.tan(self.field_of_view * _ARCSEC_TO_RAD)
+        margin_pix = int(np.ceil(margin_m / self.pixel_scale))
+        self.margin_pix = margin_pix
+        self.n_screen = self.n + 2 * margin_pix
+        self._crop = slice(margin_pix, margin_pix + self.n)
+
+        # Per-layer boiling time constants (s); inf/None means frozen flow.
+        if tau_boil is None:
+            tau = np.full(len(self.layers), np.inf)
+        else:
+            tau = np.broadcast_to(
+                np.asarray(tau_boil, dtype=np.float64), (len(self.layers),)
+            ).astype(np.float64)
+        if np.any(tau <= 0):
+            raise ValueError("tau_boil must be positive (or None for frozen flow)")
+        self.tau_boil = tau
+
         self.xp = get_array_module(device)
-        seeds = np.random.SeedSequence(seed).spawn(len(self.layers))
+        master = np.random.SeedSequence(seed)
+        seeds = master.spawn(len(self.layers))
+        self._boil_rng = self.xp.random.default_rng(
+            int(master.spawn(1)[0].generate_state(1)[0])
+        )
         self._layers: List[_LayerState] = []
         for layer, child in zip(self.layers, seeds):
             # Per-layer line-of-sight r0: r0_i^{-5/3} = f_i * r0_los^{-5/3}.
             r0_i = self.r0_los * layer.cn2_fraction ** (-3.0 / 5.0)
             gen_seed, flow_seed = child.spawn(2)
             generator = PhaseScreen(
-                n=self.n,
+                n=self.n_screen,
                 pixel_scale=self.pixel_scale,
                 r0=r0_i,
                 L0=layer.L0,
@@ -203,17 +246,24 @@ class Atmosphere:
         self.dtype_out = self._layers[0].generator.dtype
         self._cdtype = xp.dtype(self._layers[0].generator._cdtype)
         self._spectra = xp.stack([flow._spectrum for flow in flows])  # (L,n,n)
+        # PSD amplitude per layer, for boiling (AR(1) noise injection).
+        self._amplitudes = xp.stack(
+            [state.generator._amplitude for state in self._layers]
+        )
         self._grid_f = self._layers[0].generator._f  # (n,) device
         self._vx = np.array([s.vx for s in self._layers], dtype=np.float64)
         self._vy = np.array([s.vy for s in self._layers], dtype=np.float64)
         self._alt = np.array([s.altitude_los for s in self._layers], dtype=np.float64)
         # Subharmonic modes share basis/frequencies across layers (same grid);
-        # only the coefficients differ, so stack those.
+        # only the coefficients (and per-layer amplitude) differ, so stack those.
         template = self._layers[0].generator
         self._sh_batched = []
         for level, (_amp, basis) in enumerate(template._sh_bases):
             coeffs = xp.stack([flow._sh_coeffs[level] for flow in flows])  # (L,3,3)
-            self._sh_batched.append((coeffs, basis, template._sh_freqs[level]))
+            amps = xp.stack(
+                [state.generator._sh_bases[level][0] for state in self._layers]
+            )  # (L,3,3)
+            self._sh_batched.append((coeffs, amps, basis, template._sh_freqs[level]))
 
     # ------------------------------------------------------------------
     # constructors
@@ -316,29 +366,65 @@ class Atmosphere:
         """
         xp = self.xp
         cdtype = self._cdtype
+        ns = self.n_screen
         # Per-layer displacement [m] along each axis (host-side, L is small).
         sx = xp.asarray(self._vx * t + self._alt * ox, dtype=self._spectra.real.dtype)
         sy = xp.asarray(self._vy * t + self._alt * oy, dtype=self._spectra.real.dtype)
         f = self._grid_f
-        # Separable shift-theorem phasors, shape (L, n) each.
+        # Separable shift-theorem phasors, shape (L, n_screen) each.
         phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
         phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
         spectra = self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
-        field = self._fft.ifft2(spectra, axes=(-2, -1)) * (self.n * self.n)
+        field = self._fft.ifft2(spectra, axes=(-2, -1)) * (ns * ns)
         total = field.real.sum(axis=0)
 
         if self._sh_batched:
             low = None
-            for coeffs, basis, fp in self._sh_batched:
+            for coeffs, _amps, basis, fp in self._sh_batched:
                 px = xp.exp((2j * np.pi) * sx[:, None] * fp[None, :]).astype(cdtype)
                 py = xp.exp((2j * np.pi) * sy[:, None] * fp[None, :]).astype(cdtype)
                 shifted = coeffs * px[:, :, None] * py[:, None, :]  # (L,3,3)
-                contribution = xp.matmul(basis.T, xp.matmul(shifted, basis))  # (L,n,n)
+                contribution = xp.matmul(basis.T, xp.matmul(shifted, basis))  # (L,ns,ns)
                 summed = contribution.real.sum(axis=0)
                 low = summed if low is None else low + summed
             low -= low.mean()
             total = total + low
+        # Crop the central pupil region out of the (oversized) screen.
+        total = total[self._crop, self._crop]
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
+
+    def _boil_step(self, dt):
+        """Advance boiling by ``dt`` seconds: one AR(1) update per mode.
+
+        Each Fourier mode relaxes toward a fresh draw of its stationary
+        distribution with retention ``alpha = exp(-dt / tau_boil)``, so the
+        screen's temporal autocorrelation decays as ``exp(-dt / tau_boil)``
+        while its spatial PSD (and hence r0) is preserved. Layers with infinite
+        ``tau_boil`` are untouched (pure frozen flow).
+        """
+        xp = self.xp
+        with np.errstate(divide="ignore"):
+            alpha = np.where(
+                np.isfinite(self.tau_boil), np.exp(-dt / self.tau_boil), 1.0
+            )
+        if np.all(alpha >= 1.0):  # every layer frozen — nothing to do
+            return
+        a = xp.asarray(alpha, dtype=self._spectra.real.dtype)[:, None, None]
+        b = xp.sqrt(1.0 - a * a)
+        L = self._spectra.shape[0]
+        noise = self._boil_rng.standard_normal(
+            (2, L, self.n_screen, self.n_screen), dtype=self._spectra.real.dtype
+        )
+        fresh = (noise[0] + 1j * noise[1]) * self._amplitudes
+        self._spectra = a * self._spectra + b * fresh.astype(self._cdtype)
+        new_sh = []
+        for coeffs, amps, basis, fp in self._sh_batched:
+            noise = self._boil_rng.standard_normal((2, L, 3, 3),
+                                                   dtype=self._spectra.real.dtype)
+            fresh = (noise[0] + 1j * noise[1]) * amps
+            coeffs = a * coeffs + b * fresh.astype(self._cdtype)
+            new_sh.append((coeffs, amps, basis, fp))
+        self._sh_batched = new_sh
 
     def frames(self, dt: float, steps: int, wavelength=None):
         """Yield ``(t, opd)`` for ``steps`` frames spaced by ``dt`` seconds.
@@ -361,6 +447,7 @@ class Atmosphere:
             phase = self._integrate(t, 0.0, 0.0)
             yield t, self._to_opd(phase, wavelength)
             self._t += float(dt)
+            self._boil_step(float(dt))  # no-op unless tau_boil is finite
 
     def sample(self, count: Optional[int] = None, wavelength=None):
         """Draw statistically independent integrated OPDs.
@@ -381,6 +468,8 @@ class Atmosphere:
         for state in self._layers:
             screens = state.generator.generate(count)
             total = screens if total is None else total + screens
+        # Crop the central pupil out of the (possibly oversized) screens.
+        total = total[..., self._crop, self._crop]
         return self._to_opd(total, wavelength)
 
     def reset(self):

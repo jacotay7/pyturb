@@ -23,7 +23,14 @@ for t, opd in atm.frames(dt=1e-3, steps=2000):
     ...                                  # (512, 512) OPD in metres
 
 # Off-axis / tomography: OPD toward several directions from the same volume.
+# Set field_of_view so off-axis footprints sample real (non-wrapped) turbulence.
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
+                                     field_of_view=30, n=512, seed=1)
 opds = atm.opd(t=0.0, directions=[(0, 0), (10, 0), (0, 10)])  # arcsec offsets
+
+# Boiling: add temporal decorrelation on top of frozen flow (per-layer tau).
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
+                                     tau_boil=0.2, seed=1)     # seconds
 
 # Monte-Carlo: a batch of independent integrated-atmosphere OPDs.
 ensemble = atm.sample(256)               # (256, 512, 512)
@@ -136,6 +143,7 @@ the temporal statistics of extruded screens.
 ```text
 Atmosphere(layers, r0=None, seeing=None, wavelength=500e-9, zenith_angle=0.0,
            diameter=8.0, n=512, L0=None, subharmonics=8,
+           field_of_view=0.0, tau_boil=None,
            device="cpu", dtype="float32", seed=None)
 Atmosphere.from_profile(name, **kwargs)          # named site profile
     .opd(t=0.0, directions=None, wavelength=None)  # OPD [m] (or phase) at time t

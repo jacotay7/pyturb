@@ -16,6 +16,8 @@ atm = pyturb.Atmosphere.from_profile(
     zenith_angle=30.0,   # deg
     diameter=8.0,        # m
     n=256,               # pixels across the pupil
+    field_of_view=25.0,  # arcsec radius: oversize screens for off-axis work
+    tau_boil=0.2,        # s: layers also boil (temporal decorrelation)
     seed=1,
 )
 print(atm)
