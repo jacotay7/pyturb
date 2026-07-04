@@ -26,7 +26,7 @@ work and *why* the numbers come out the way they do.
 | Boiling | **yes** | — | — | — |
 | Scintillation (Fresnel) | non-goal | — | — | **yes** |
 | Tomographic reconstructors | — | **yes** | **yes** | modal |
-| FITS screen I/O | roadmap | — | **yes** | — |
+| FITS screen I/O | **yes** (`pyturb.save`) | — | **yes** | — |
 
 Every library here is good; they were built for different jobs. pyturb's niche
 is being the *fastest, GPU-native, statistically-careful atmosphere generator*
@@ -75,8 +75,10 @@ the covariance matrices stay small no matter how long you extrude.
   adds bilinear interpolation; aotools/soapy do not). Setup is O((stencil·n)³)
   and per-step cost grows with n; no GPU path. aotools' implementation also
   copies the whole strip every step (`numpy.append`).
-- **This is the one thing all three have that pyturb only partially has.** See
-  "What we're adopting" below.
+- This was the one capability all three had that pyturb lacked; pyturb now
+  implements it too, as `Atmosphere(engine="extrude")` (method 4 below plus a
+  wind-aligned ring buffer and rotated sub-pixel sampling). See "What we
+  learned" below.
 
 ### 3. Large static screen + bilinear panning
 
@@ -103,8 +105,9 @@ multiply.
   a single `(L, n, n)` FFT** — the basis for ~800 fps of a 9-layer 512²
   atmosphere. Boiling is nearly free.
 - **Weakness:** periodic (period `n·pixel_scale`), like any FFT screen, so it is
-  not the right tool for genuinely unbounded runs — that is what the extruder
-  (method 2) is for, and why pyturb is adding one.
+  not the right tool for genuinely unbounded runs — that is what pyturb's own
+  extruder (method 2, `engine="extrude"`) is for. Both engines share the
+  `Atmosphere` API; pick per run.
 
 ## Benchmark summary
 
@@ -132,12 +135,11 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
    any `v*dt`, GPU-resident). `cho_factor`/`cho_solve` with a least-squares
    fallback remains an optional numerical-robustness upgrade over the current
    lstsq solve. *(Roadmap 2.1–2.2, delivered.)*
-2. **Moment-conserving profile compression.** `equivalent_layers`,
-   `optimal_grouping`, and GCTM (Saxenhuber 2017) compress a high-resolution
-   Cn²(h) profile to N layers while conserving chosen turbulence moments — and
-   `equivalent_layers` also condenses the **wind** per layer, conserving
-   coherence time. pyturb's `discretize_cn2` currently conserves total Cn²dh and
-   the θ₀ centroid but not τ₀; we should offer a moment-conserving mode.
+2. **Moment-conserving profile compression** — **adopted.** Following
+   `equivalent_layers` (Fusco 1999), `discretize_cn2(method="equivalent")` (now
+   the default) sets each layer to the `Cn²·h^{5/3}` and `Cn²·v^{5/3}` moments,
+   conserving θ₀ *and* τ₀ to <0.1 % (the old centroid method drifts up to
+   ~12 %). `optimal_grouping`/GCTM tomography variants remain optional extras.
 3. **Validation tooling.** `temporal_ps` fits the −11/3 (along-wind) and −14/3
    (transverse) slope laws — exactly the kind of check the Phase 5 validation
    gallery needs.
@@ -159,9 +161,10 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
 
 **From soapy**
 
-8. **FITS I/O for screens.** AO users live in FITS; soapy saves/loads screens
-   with metadata. pyturb should add `.fits` (and `.npz`) save/load carrying
-   `r0`, `L0`, `pixel_scale`, seed, and version. *(Roadmap 6.2.)*
+8. **FITS I/O for screens** — **adopted.** `pyturb.save`/`pyturb.load` write
+   `.fits` (optional astropy) or `.npz` by extension, round-tripping the data
+   with `pixel_scale`, `r0`, `L0`, `wavelength`, `units`, `seed` and the pyturb
+   version; `Atmosphere.metadata` supplies a ready-to-save provenance dict.
 9. **Threaded CPU kernels.** soapy uses numba `prange` for interpolation and
    binning; pyturb can lean on `scipy.fft(workers=)` and, if needed, similar
    kernels to close the single-thread CPU gap.

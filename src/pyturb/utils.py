@@ -12,10 +12,42 @@ __all__ = [
     "r0_at_wavelength",
     "opd_to_phase",
     "phase_to_opd",
+    "air_refractivity",
     "structure_function",
 ]
 
 _RAD_TO_ARCSEC = 180.0 / np.pi * 3600.0
+
+
+def air_refractivity(wavelength):
+    """Refractivity ``n - 1`` of standard dry air at ``wavelength`` [m].
+
+    Edlén (1966) dispersion formula for dry air at 15 °C, 101.325 kPa, 0.03 %
+    CO2::
+
+        (n - 1) x 1e8 = 8342.13 + 2406030 / (130 - s^2) + 15997 / (38.9 - s^2)
+
+    with ``s = 1 / lambda`` in micron^-1. Turbulence OPD scales with ``n - 1``,
+    so the *ratio* of this quantity between two wavelengths is the (weak,
+    ~1-2 % across the visible-to-NIR) chromatic correction to an otherwise
+    achromatic path length. Temperature/pressure scale ``n - 1`` overall and so
+    cancel in that ratio; only the dispersion shape matters here.
+
+    Parameters
+    ----------
+    wavelength : float or array_like
+        Wavelength in metres.
+
+    Returns
+    -------
+    float or ndarray
+        ``n - 1`` (dimensionless), same shape as ``wavelength``.
+    """
+    sigma2 = (1.0 / (np.asarray(wavelength, dtype=np.float64) * 1e6)) ** 2
+    refractivity = (
+        8342.13 + 2406030.0 / (130.0 - sigma2) + 15997.0 / (38.9 - sigma2)
+    ) * 1e-8
+    return refractivity if refractivity.ndim else float(refractivity)
 
 
 def opd_to_phase(opd, wavelength):

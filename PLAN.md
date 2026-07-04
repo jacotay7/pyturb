@@ -157,21 +157,29 @@ Prioritised backlog (each item names the library to learn from):
    gathers into one op to close the fps gap; `cho_factor` + fractal stencil over
    the current lstsq + dense stencil; `evolve(dt)` sugar keyed to `wind_speed`.
 
-**P1 — table stakes for AO users.**
+**P1 — table stakes for AO users. ✅ ALL DONE.**
 
-2. **FITS + npz I/O for screens and atmospheres** (learn from `soapy`). AO users
-   live in FITS. Save/load with metadata in the header: `r0`, `L0`,
-   `pixel_scale`, `seed`, profile name, zenith, and pyturb version. `astropy` as
-   an optional dependency. *(Roadmap 6.2.)*
+2. **FITS + npz I/O for screens** (learn from `soapy`). **DONE** — `pyturb.save`
+   / `pyturb.load` (new `pyturb/io.py`) pick FITS (`.fits`, optional `astropy`
+   via `pyturb[fits]`) or `.npz` by extension, round-tripping data + metadata
+   (`pixel_scale`, `r0`, `L0`, `wavelength`, `units`, `seed`, pyturb version;
+   long keys become HIERARCH cards, native byte-order on load). `Atmosphere.
+   metadata` yields a ready-to-save provenance dict (geometry + integrated
+   seeing/θ₀/τ₀). Handles device arrays and stacks. 2 tests.
 3. **Moment-conserving profile compression** (learn from `aotools`
-   `equivalent_layers` / `optimal_grouping` / GCTM, Saxenhuber 2017). pyturb's
-   `discretize_cn2` conserves total `Cn²dh` and the θ₀ centroid but **not τ₀**
-   (the `Cn²·v^{5/3}` moment). Add a moment-conserving mode that also condenses
-   per-layer **wind**, so coherence time survives compression — and a
-   tomography-optimal grouping option.
-4. **Chromatic OPD option** (new — see the expanded Phase 3.1 below). Keep OPD
-   native, but stop silently assuming it is perfectly achromatic; offer an
-   optional air-dispersion model.
+   `equivalent_layers`, Fusco 1999). **DONE** — `discretize_cn2(..., method=
+   "equivalent")` (now the default) sets each bin's height to the `Cn²·h^{5/3}`
+   moment and its wind to the `Cn²·v^{5/3}` moment, with edge-interpolated bin
+   integration so the pieces tile the profile exactly. Verified to conserve
+   both **θ₀ and τ₀ to <0.1 %** at any layer count (vs the old `"centroid"`
+   method's −12 %…−2 % drift, still available). 3 tests. *(Optimal-grouping /
+   GCTM tomography variants remain optional P2 extras.)*
+4. **Chromatic OPD option** (see the expanded Phase 3.1). **DONE** — OPD stays
+   native and achromatic by default; `Atmosphere(dispersion="edlen")` scales the
+   OPD by the dry-air refractivity ratio (new `pyturb.air_refractivity`, Edlén
+   1966) before the phase conversion, so a `wavelength=` output carries the
+   small (~2 % V→K) chromatic term. The metre-valued OPD is untouched; the
+   correction is exactly unity at the reference wavelength. 3 tests.
 
 **P2 — depth and reach.**
 
@@ -541,7 +549,7 @@ Documented as out of scope (with pointers), unless demand pulls them in:
 | **M1** (core) ✅ | Phase 1 + Phase 2 spectral engine | **Done** — `Atmosphere.from_profile(...).frames(dt)` works: frozen flow, sub-pixel, multi-layer, off-axis, GPU. (Ring-buffer extruder from 2.1–2.2 still open) |
 | **M2** (product) ✅ | Phase 3 + spectral engine (2.3) | **Done** — OPD in metres, off-axis directions, field-of-view oversizing, boiling. (LGS cone deferred to M5) |
 | **M3** (proof) 🟡 | Phase 4 ✅ + Phase 5 | **Phase 4 done** — published benchmarks + honest comparison vs aotools/soapy/HCIPy (`bench_compare.py`, `RESULTS.md`, `docs/comparison.md`). Phase 5 validation gallery still open. |
-| **M3.5** (parity) 🟡 | **Backlog P0–P1**: non-periodic extruder (1) — **DONE** (ring buffer + sub-pixel + arbitrary direction + `Atmosphere` `engine="extrude"`); FITS/npz I/O (2), moment-conserving compression (3), chromatic-OPD option (4) still open | close the capability gaps the comparison exposed — pyturb matches the others where it should and stays ahead where it already is |
+| **M3.5** (parity) ✅ | **Backlog P0–P1 — all done**: non-periodic extruder (1, ring buffer + sub-pixel + arbitrary direction + `Atmosphere` `engine="extrude"`); FITS/npz I/O (2); moment-conserving compression (3); chromatic-OPD option (4) | closed the capability gaps the comparison exposed — pyturb now matches the others where it should and stays ahead where it already is |
 | **M4** (adoption) | Phase 6 + backlog P2 (analysis utils 5, site profiles 6) | docs site, PyPI release `v0.2.0`, README with animation |
 | **M5** (polish) | LGS cone (7), non-Kolmogorov hooks (8), threaded CPU FFT (9), interop recipes (10), conda-forge | differentiating extras |
 

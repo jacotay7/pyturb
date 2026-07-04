@@ -30,7 +30,12 @@ from .extrude import ExtrudedAtmosphere
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
 from .profiles import Layer
-from .utils import r0_at_wavelength, r0_from_seeing, seeing_from_r0
+from .utils import (
+    air_refractivity,
+    r0_at_wavelength,
+    r0_from_seeing,
+    seeing_from_r0,
+)
 
 __all__ = ["Atmosphere"]
 
@@ -104,6 +109,15 @@ class Atmosphere:
         batched FFT. :meth:`sample` (Monte-Carlo) is unaffected by this choice.
     interp : {"cubic", "linear"}, optional
         Sub-pixel interpolation kernel for ``engine="extrude"``. Default cubic.
+    dispersion : {None, "edlen"}, optional
+        Chromatic model for the OPD. ``None`` (default) treats the turbulence
+        OPD as perfectly achromatic (phase at ``wavelength`` is just
+        ``2 pi * OPD / wavelength``). ``"edlen"`` additionally scales the OPD by
+        the dry-air refractivity ratio ``(n(wavelength)-1)/(n(lambda_ref)-1)``
+        before converting to phase — the small (~1-2 % visible-to-NIR)
+        chromatic term that matters for high-contrast, astrometry and LGS error
+        budgets. Only affects output methods called with an explicit
+        ``wavelength``; the metre-valued OPD is unchanged.
     device : str, optional
         ``"cpu"`` (default) or ``"gpu"``.
     dtype : str, optional
@@ -138,6 +152,7 @@ class Atmosphere:
         tau_boil=None,
         engine: str = "spectral",
         interp: str = "cubic",
+        dispersion=None,
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
@@ -157,8 +172,11 @@ class Atmosphere:
             raise ValueError("engine must be 'spectral' or 'extrude'")
         if engine == "extrude" and tau_boil is not None:
             raise ValueError("boiling (tau_boil) requires engine='spectral'")
+        if dispersion not in (None, "edlen"):
+            raise ValueError("dispersion must be None or 'edlen'")
         self.engine = engine
         self.interp = interp
+        self.dispersion = dispersion
 
         self.wavelength = float(wavelength)
         if seeing is not None:
@@ -372,10 +390,20 @@ class Atmosphere:
     # output
     # ------------------------------------------------------------------
     def _to_opd(self, phase, wavelength):
-        """Convert reference-wavelength phase [rad] to the requested output."""
+        """Convert reference-wavelength phase [rad] to the requested output.
+
+        Returns achromatic OPD [m] when ``wavelength`` is ``None``; otherwise
+        phase [rad] at ``wavelength``. With ``dispersion="edlen"`` the path
+        length is scaled by the dry-air refractivity ratio before the phase
+        conversion (see the ``dispersion`` constructor argument).
+        """
         opd = phase * (self.wavelength / (2.0 * np.pi))
         if wavelength is None:
             return opd
+        if self.dispersion == "edlen":
+            opd = opd * (
+                air_refractivity(float(wavelength)) / air_refractivity(self.wavelength)
+            )
         return opd * (2.0 * np.pi / float(wavelength))
 
     def opd(self, t: float = 0.0, directions=None, wavelength=None):
@@ -548,6 +576,30 @@ class Atmosphere:
     def time(self) -> float:
         """Current internal clock [s] (advanced by :meth:`frames`)."""
         return self._t
+
+    @property
+    def metadata(self) -> dict:
+        """The parameters that define this atmosphere, for saving with output.
+
+        A flat dict of scalars/strings suitable for :func:`pyturb.save`
+        headers — geometry, line-of-sight ``r0``/``L0``, engine, and the
+        integrated seeing/theta0/tau0 — so a saved OPD carries its provenance.
+        """
+        return {
+            "units": "metres",
+            "pixel_scale": self.pixel_scale,
+            "diameter": self.diameter,
+            "n": self.n,
+            "r0": self.r0_los,
+            "wavelength": self.wavelength,
+            "seeing": self.seeing,
+            "theta0": self.theta0,
+            "tau0": self.tau0,
+            "zenith_angle": self.zenith_angle,
+            "n_layers": len(self.layers),
+            "engine": self.engine,
+            "dispersion": self.dispersion,
+        }
 
     def __repr__(self):
         return (

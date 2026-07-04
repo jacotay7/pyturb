@@ -21,6 +21,7 @@ from .backend import get_array_module, to_numpy
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
 from .infinite import InfinitePhaseScreen, phase_covariance
+from .io import load, save
 from .profiles import (
     Layer,
     bufton_wind,
@@ -35,6 +36,7 @@ from .profiles import (
     mean_turbulence_height,
 )
 from .utils import (
+    air_refractivity,
     opd_to_phase,
     phase_to_opd,
     r0_at_wavelength,
@@ -68,6 +70,9 @@ __all__ = [
     "r0_at_wavelength",
     "opd_to_phase",
     "phase_to_opd",
+    "air_refractivity",
+    "save",
+    "load",
     "to_numpy",
     "get_array_module",
     "__version__",

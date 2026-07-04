@@ -184,13 +184,28 @@ def bufton_wind(h):
     return 5.0 + 30.0 * np.exp(-(((h - 9400.0) / 4800.0) ** 2))
 
 
-def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0):
+def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0,
+                   method="equivalent"):
     r"""Bin a continuous :math:`C_n^2(h)` profile into equivalent layers.
 
     The altitude range is split into ``n_layers`` contiguous log-spaced bins;
-    each output layer carries that bin's integrated :math:`C_n^2\,dh` (so total
-    turbulence is preserved) and sits at the bin's :math:`C_n^2`-weighted mean
-    height (preserving the turbulence centroid that sets :math:`\theta_0`).
+    each output layer carries that bin's integrated :math:`C_n^2\,dh`, so the
+    **total turbulence is always preserved**. The two methods differ in the
+    single height (and wind) assigned to each bin:
+
+    - ``method="equivalent"`` (default) — the **moment-conserving** equivalent
+      layer of Fusco (1999): the bin height is
+
+      .. math:: h_{\mathrm{eq}} = \Big(\frac{\int C_n^2\,h^{5/3}\,dh}
+                                          {\int C_n^2\,dh}\Big)^{3/5},
+
+      the :math:`h^{5/3}` moment that sets :math:`\bar h` and hence the
+      isoplanatic angle :math:`\theta_0`. When ``wind`` is given on the input
+      grid the per-layer speed uses the matching :math:`v^{5/3}` moment, so the
+      coherence time :math:`\tau_0` is conserved too.
+    - ``method="centroid"`` — the simpler :math:`C_n^2`-weighted mean height
+      (first moment). Preserves the turbulence centroid but not
+      :math:`\theta_0`/:math:`\tau_0` exactly.
 
     Parameters
     ----------
@@ -202,9 +217,13 @@ def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0):
         Number of output layers.
     wind : str, float, or array_like
         ``"bufton"`` for the Bufton model, a scalar for uniform wind, or a
-        per-layer array of speeds [m/s].
+        per-layer array of speeds [m/s]. An array matching ``heights`` is
+        treated as wind *on the input grid* and (for ``method="equivalent"``)
+        moment-averaged per bin so that :math:`\tau_0` is conserved.
     L0 : float
         Outer scale assigned to every layer [m].
+    method : {"equivalent", "centroid"}
+        Height/wind assignment rule (see above).
     """
     heights = np.asarray(heights, dtype=np.float64)
     cn2 = np.asarray(cn2, dtype=np.float64)
@@ -212,36 +231,84 @@ def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0):
         raise ValueError("heights and cn2 must be 1-D arrays of equal length")
     if n_layers < 1:
         raise ValueError("n_layers must be >= 1")
+    if method not in ("equivalent", "centroid"):
+        raise ValueError("method must be 'equivalent' or 'centroid'")
 
-    edges = np.geomspace(max(heights[0], 1.0), heights[-1], n_layers + 1)
-    edges[0] = heights[0]
-    edges[-1] = heights[-1] + 1.0  # include the top point
-    layers: List[Layer] = []
-    weights, centroids = [], []
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        mask = (heights >= lo) & (heights < hi)
-        if not mask.any():
-            continue
-        h_bin, c_bin = heights[mask], cn2[mask]
-        integral = np.trapezoid(c_bin, h_bin) if h_bin.size > 1 else c_bin[0]
-        if integral <= 0:
-            continue
-        centroid = np.average(h_bin, weights=c_bin)
-        weights.append(integral)
-        centroids.append(centroid)
-
-    weights = np.asarray(weights)
-    weights /= weights.sum()
-    centroids = np.asarray(centroids)
-
+    # Resolve wind onto the input grid where possible; an array matching the
+    # input heights enables the tau0-conserving v^{5/3} moment per bin.
+    wind_grid = None
     if isinstance(wind, str):
         if wind.lower() != "bufton":
             raise ValueError("wind string must be 'bufton'")
-        speeds = bufton_wind(centroids)
+        wind_grid = bufton_wind(heights)
+    elif np.ndim(wind) == 0:
+        wind_grid = np.full(heights.shape, float(wind))
     else:
+        wind_arr = np.asarray(wind, dtype=np.float64)
+        if wind_arr.shape == heights.shape:
+            wind_grid = wind_arr  # wind on the input grid -> can moment-average
+
+    def cn2_integral(c_bin, h_bin):
+        return np.trapezoid(c_bin, h_bin) if h_bin.size > 1 else c_bin[0]
+
+    def moment(values, c_bin, h_bin):
+        """5/3-moment representative value, integrated consistently with the
+        bin weight: ``(int c v^{5/3} dh / int c dh)^{3/5}``."""
+        num = (np.trapezoid(c_bin * values ** (5.0 / 3.0), h_bin)
+               if h_bin.size > 1 else c_bin[0] * values[0] ** (5.0 / 3.0))
+        return (num / cn2_integral(c_bin, h_bin)) ** (3.0 / 5.0)
+
+    def cn2_average(values, c_bin, h_bin):
+        num = (np.trapezoid(c_bin * values, h_bin)
+               if h_bin.size > 1 else c_bin[0] * values[0])
+        return num / cn2_integral(c_bin, h_bin)
+
+    edges = np.geomspace(max(heights[0], 1.0), heights[-1], n_layers + 1)
+    edges[0] = heights[0]
+    edges[-1] = heights[-1]
+    weights, altitudes, bin_speeds = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        if hi <= lo:
+            continue
+        # Include the exact bin edges (values interpolated) so adjacent bins
+        # tile [h0, h_last] with no gap -- integrals then sum to the whole,
+        # which is what makes the compression moment-conserving.
+        interior = (heights > lo) & (heights < hi)
+        h_bin = np.concatenate(([lo], heights[interior], [hi]))
+        c_bin = np.concatenate(
+            ([np.interp(lo, heights, cn2)], cn2[interior], [np.interp(hi, heights, cn2)])
+        )
+        integral = cn2_integral(c_bin, h_bin)
+        if integral <= 0:
+            continue
+        if method == "equivalent":
+            altitude = moment(h_bin, c_bin, h_bin)
+        else:
+            altitude = cn2_average(h_bin, c_bin, h_bin)
+        weights.append(integral)
+        altitudes.append(altitude)
+        if wind_grid is not None:
+            v_bin = np.concatenate((
+                [np.interp(lo, heights, wind_grid)],
+                wind_grid[interior],
+                [np.interp(hi, heights, wind_grid)],
+            ))
+            speed = (moment(v_bin, c_bin, h_bin) if method == "equivalent"
+                     else cn2_average(v_bin, c_bin, h_bin))
+            bin_speeds.append(speed)
+
+    weights = np.asarray(weights)
+    weights /= weights.sum()
+    altitudes = np.asarray(altitudes)
+
+    if wind_grid is not None:
+        speeds = np.asarray(bin_speeds)
+    else:
+        # wind was a per-output-layer array: assign directly.
         speeds = np.broadcast_to(np.asarray(wind, dtype=np.float64), weights.shape)
 
-    for h, f, v in zip(centroids, weights, speeds):
+    layers: List[Layer] = []
+    for h, f, v in zip(altitudes, weights, speeds):
         layers.append(Layer(float(h), float(f), float(v), 0.0, L0=L0))
     return layers
 

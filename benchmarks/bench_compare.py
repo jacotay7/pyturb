@@ -234,7 +234,7 @@ FEATURES = [
     ("Boiling (temporal decorrelation)", "yes", "no", "no",  "no"),
     ("Integrated r0/theta0/tau0",       "yes", "yes", "no",  "no"),
     ("OPD in metres (achromatic)",      "yes", "no",  "no",  "no"),
-    ("Unbounded (non-periodic) screens", "part", "yes", "yes", "yes"),
+    ("Unbounded (non-periodic) screens", "yes", "yes", "yes", "yes"),
 ]
 
 

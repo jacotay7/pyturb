@@ -40,6 +40,7 @@ Issues = "https://github.com/jacotay7/pyturb/issues"
 cuda11 = ["cupy-cuda11x"]
 cuda12 = ["cupy-cuda12x"]
 test = ["pytest>=7"]
+fits = ["astropy>=5"]
 # Third-party libraries used only by benchmarks/bench_compare.py for the
 # head-to-head comparison; not needed to use pyturb.
 compare = ["aotools", "soapy", "hcipy"]

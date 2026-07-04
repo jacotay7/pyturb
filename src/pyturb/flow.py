@@ -75,7 +75,7 @@ class FourierFlowScreen:
         """
         if seed is not None:
             self._rng = self.xp.random.default_rng(seed)
-        xp, n = self.xp, self.n
+        n = self.n
         noise = self._rng.standard_normal((2, n, n), dtype=self.dtype)
         self._spectrum = (
             (noise[0] + 1j * noise[1]) * self.template._amplitude

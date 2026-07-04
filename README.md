@@ -109,6 +109,7 @@ from a continuous `Cn2(h)` model:
 ```python
 import numpy as np
 h = np.geomspace(1, 25000, 4096)
+# method="equivalent" (default) conserves theta0 AND tau0 exactly (Fusco 1999)
 layers = pyturb.discretize_cn2(h, pyturb.hufnagel_valley(h), n_layers=10)
 atm = pyturb.Atmosphere(layers, seeing=0.8, diameter=8.0, n=512)
 ```
@@ -122,7 +123,14 @@ r0 = pyturb.r0_from_seeing(0.8)                       # arcsec @ 500 nm -> m
 r0_k = pyturb.r0_at_wavelength(r0, 500e-9, 2.2e-6)    # r0 ~ lambda^(6/5)
 phase = pyturb.opd_to_phase(opd, wavelength=2.2e-6)   # OPD [m] -> phase [rad]
 r, D = pyturb.structure_function(phase, pixel_scale=0.01)
+
+pyturb.save("opd.fits", atm.opd(), **atm.metadata)    # or .npz; load() returns
+data, meta = pyturb.load("opd.fits")                  #   (array, metadata)
 ```
+
+OPD is achromatic by default. For the small (~2% visible→K) chromatic term from
+air dispersion, pass `dispersion="edlen"`; then `opd(..., wavelength=λ)` scales
+the path by the dry-air refractivity ratio (`pyturb.air_refractivity`).
 
 ## Performance
 
@@ -169,14 +177,16 @@ Measured head-to-head on an RTX 5090 (8 m pupil, 512²):
 - **Accuracy** — pyturb's structure function tracks von Kármán theory to
   **~2%**, the best of the four (HCIPy ~3.7%, aotools/soapy ~4.9%).
 
-**Where the others are stronger, honestly:** aotools/soapy/HCIPy all offer
-*truly unbounded, non-periodic* screens via the Assémat–Wilson extruder — and
-single-layer integer-pixel CPU stepping in aotools/soapy is faster *per step*
-than pyturb's full-FFT frame at small `n`. aotools adds tomographic
-reconstructors and profile compression, soapy a complete AO system and FITS
-I/O, HCIPy Fresnel propagation and scintillation. pyturb is adopting the
-extruder (non-periodic path), moment-conserving profile compression, and FITS
-I/O next — see [`docs/comparison.md`](docs/comparison.md#what-we-learned--and-what-were-adopting).
+**Where the others are stronger, honestly:** single-layer integer-pixel CPU
+stepping in aotools/soapy is still faster *per step* than pyturb's per-layer
+extruder sampling at small `n`. aotools adds tomographic reconstructors, soapy a
+complete AO system, HCIPy Fresnel propagation and scintillation — all outside
+pyturb's scope. The one capability all three had that pyturb lacked — *truly
+unbounded, non-periodic* screens via the Assémat–Wilson extruder — is now
+implemented as `engine="extrude"` (any wind direction, sub-pixel, GPU; ~120 fps
+for a non-periodic 9-layer 512² atmosphere), as are FITS/npz I/O and
+moment-conserving profile compression. See
+[`docs/comparison.md`](docs/comparison.md#what-we-learned--and-what-were-adopting).
 
 Run the comparison yourself: `python benchmarks/bench_compare.py --json out.json`.
 
@@ -205,41 +215,6 @@ the temporal statistics of extruded screens.
   once in the constructor. Use `.step()` for whole-pixel wind travel or
   `.advance(pixels)` for exact **sub-pixel** motion (`v*dt/pixel_scale`),
   interpolated with `interp="cubic"` (default) or `"linear"`.
-
-## API summary
-
-```text
-Atmosphere(layers, r0=None, seeing=None, wavelength=500e-9, zenith_angle=0.0,
-           diameter=8.0, n=512, L0=None, subharmonics=8,
-           field_of_view=0.0, tau_boil=None,
-           device="cpu", dtype="float32", seed=None)
-Atmosphere.from_profile(name, **kwargs)          # named site profile
-    .opd(t=0.0, directions=None, wavelength=None)  # OPD [m] (or phase) at time t
-    .frames(dt, steps, wavelength=None)            # yields (t, opd) closed-loop
-    .sample(count=None, wavelength=None)           # independent integrated OPDs
-    .r0 .seeing .theta0 .tau0 .greenwood_frequency # derived quantities
-    .r0_at(wavelength) .reset() .time
-
-PhaseScreen(n, pixel_scale, r0, L0=25.0, subharmonics=8,
-            seed=None, device="cpu", dtype="float32")
-    .generate(count=None) -> (n, n) or (count, n, n) radians
-
-InfinitePhaseScreen(n, pixel_scale, r0, L0=25.0, stencil_rows=2,
-                    interp="cubic", seed=None, device="cpu", dtype="float32")
-    .screen               -> current (n, n) screen
-    .step(steps=1)        -> screen after advancing the wind by whole pixels
-    .advance(pixels)      -> screen after sub-pixel wind travel (interpolated)
-    .travel               -> total wind travel so far, in pixels
-
-get_profile(name) / list_profiles()
-hufnagel_valley(h, ...) / bufton_wind(h) / discretize_cn2(h, cn2, n_layers)
-isoplanatic_angle / coherence_time / greenwood_frequency (layers, r0)
-phase_covariance(r, r0, L0)         # von Kármán covariance, rad^2
-structure_function(phase, pixel_scale=1.0, max_separation=None)
-r0_from_seeing / seeing_from_r0 / r0_at_wavelength
-opd_to_phase(opd, wavelength) / phase_to_opd(phase, wavelength)
-to_numpy(array)                     # device -> host copy
-```
 
 ## References
 

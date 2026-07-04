@@ -95,7 +95,7 @@ PSD × area) reproduces the low-frequency structure function most faithfully.
 | Boiling (temporal decorrelation) | ✅ | — | — | — |
 | Integrated r0 / θ0 / τ0 | ✅ | ✅ | — | — |
 | OPD in metres (achromatic) | ✅ | — | — | — |
-| Unbounded (non-periodic) screens | ◐ | ✅ | ✅ | ✅ |
+| Unbounded (non-periodic) screens | ✅ | ✅ | ✅ | ✅ |
 
 ✅ supported · ◐ partial · — not available
 
@@ -107,7 +107,8 @@ PSD × area) reproduces the low-frequency structure function most faithfully.
    512² atmosphere, the metric AO closed-loop simulation actually cares about.
 3. **Extrusion still wins one cell** — single-layer integer-pixel CPU stepping
    in aotools/soapy is faster per frame at small n; pyturb trades that for
-   sub-pixel, any-direction, GPU-batched generality (and a ring-buffer extruder
-   is on the roadmap for the unbounded-duration case).
+   sub-pixel, any-direction, GPU generality. For the unbounded-duration case
+   pyturb now ships its own ring-buffer extruder (`engine="extrude"`): a
+   non-periodic 9-layer 512² atmosphere at ~120 fps on GPU.
 4. **Best statistical accuracy** of the four.
 5. **Broadest feature set** — GPU, profiles, off-axis, boiling, OPD-native.
