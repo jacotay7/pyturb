@@ -48,6 +48,26 @@ host = pyturb.to_numpy(opd)              # copy back when you need it
 OPD is returned in **metres** and is achromatic; pass `wavelength=` to any
 output method to get phase in radians at that wavelength instead.
 
+### Two frozen-flow engines
+
+`frames()` / `opd()` can be driven by either of two engines (`sample()` is
+unaffected):
+
+```python
+# Default: spectral shift-theorem — exact sub-pixel, all layers in one FFT,
+# fastest (~800 fps at 512^2 on GPU), but the screen is periodic.
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8)
+
+# Extruder — Assémat-Wilson row extrusion in a wind-aligned frame with rotated
+# sub-pixel sampling: unbounded and NON-periodic, the right choice for long
+# closed-loop runs. Any wind direction, any v*dt, ~120 fps at 512^2 on GPU.
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, engine="extrude")
+```
+
+Both produce identical statistics (von Kármán to ~1–2%); pick the extruder when
+a repeating screen would bias a long run, the spectral engine when you want raw
+speed and the period is longer than your simulation.
+
 ### Lower-level building blocks
 
 The single-layer generators the atmosphere is built from are public too:
@@ -134,7 +154,7 @@ the right tool, not a winner. A detailed, honest, method-by-method write-up
 | OPD in metres (achromatic) | ✅ | — | — | — |
 | Off-axis / tomography directions | ✅ | — | ◐ | ✅ |
 | Named site profiles | ✅ | — | — | ✅ |
-| Unbounded (non-periodic) screens | roadmap | ✅ | ✅ | ✅ |
+| Unbounded (non-periodic) screens | ✅ | ✅ | ✅ | ✅ |
 | Scintillation (Fresnel) | non-goal | — | — | ✅ |
 
 Measured head-to-head on an RTX 5090 (8 m pupil, 512²):

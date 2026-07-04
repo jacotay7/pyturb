@@ -20,12 +20,13 @@ wavelength instead.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 
 from . import profiles as _profiles
 from .backend import get_array_module
+from .extrude import ExtrudedAtmosphere
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
 from .profiles import Layer
@@ -90,7 +91,19 @@ class Atmosphere:
         layer. ``None`` (default) is pure frozen flow. When set, each layer's
         modes relax via an AR(1) process so the screen decorrelates with
         autocorrelation ``exp(-dt/tau_boil)`` while keeping its spatial
-        statistics; active only while stepping with :meth:`frames`.
+        statistics; active only while stepping with :meth:`frames`. Requires
+        ``engine="spectral"``.
+    engine : {"spectral", "extrude"}, optional
+        Frozen-flow engine for :meth:`frames`/:meth:`opd`. ``"spectral"``
+        (default) is the fastest: an exact sub-pixel shift-theorem translation,
+        all layers batched into one FFT — but the screen is **periodic** (it
+        repeats after ``n*pixel_scale`` of travel). ``"extrude"`` is the
+        Assémat–Wilson row extruder in a wind-aligned frame with rotated
+        sub-pixel sampling: **unbounded and non-periodic**, the right choice for
+        long closed-loop runs, at the cost of per-layer sampling instead of one
+        batched FFT. :meth:`sample` (Monte-Carlo) is unaffected by this choice.
+    interp : {"cubic", "linear"}, optional
+        Sub-pixel interpolation kernel for ``engine="extrude"``. Default cubic.
     device : str, optional
         ``"cpu"`` (default) or ``"gpu"``.
     dtype : str, optional
@@ -123,6 +136,8 @@ class Atmosphere:
         subharmonics: int = 8,
         field_of_view: float = 0.0,
         tau_boil=None,
+        engine: str = "spectral",
+        interp: str = "cubic",
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
@@ -138,6 +153,12 @@ class Atmosphere:
             raise ValueError("diameter must be positive and n >= 2")
         if field_of_view < 0:
             raise ValueError("field_of_view must be >= 0 arcsec")
+        if engine not in ("spectral", "extrude"):
+            raise ValueError("engine must be 'spectral' or 'extrude'")
+        if engine == "extrude" and tau_boil is not None:
+            raise ValueError("boiling (tau_boil) requires engine='spectral'")
+        self.engine = engine
+        self.interp = interp
 
         self.wavelength = float(wavelength)
         if seeing is not None:
@@ -201,10 +222,11 @@ class Atmosphere:
             int(master.spawn(1)[0].generate_state(1)[0])
         )
         self._layers: List[_LayerState] = []
+        ext_r0, ext_L0, ext_wind, ext_alt, ext_seeds = [], [], [], [], []
         for layer, child in zip(self.layers, seeds):
             # Per-layer line-of-sight r0: r0_i^{-5/3} = f_i * r0_los^{-5/3}.
             r0_i = self.r0_los * layer.cn2_fraction ** (-3.0 / 5.0)
-            gen_seed, flow_seed = child.spawn(2)
+            gen_seed, flow_seed, ext_seed = child.spawn(3)
             generator = PhaseScreen(
                 n=self.n_screen,
                 pixel_scale=self.pixel_scale,
@@ -215,22 +237,49 @@ class Atmosphere:
                 device=device,
                 dtype=dtype,
             )
-            flow = FourierFlowScreen(
-                generator, seed=int(flow_seed.generate_state(1)[0])
+            # The spectral flow screen is only needed for engine="spectral".
+            flow = (
+                FourierFlowScreen(generator, seed=int(flow_seed.generate_state(1)[0]))
+                if self.engine == "spectral"
+                else None
             )
             vx, vy = layer.wind_vector
+            altitude_los = layer.altitude * self.airmass
             self._layers.append(
                 _LayerState(
                     generator=generator,
                     flow=flow,
                     vx=vx,
                     vy=vy,
-                    altitude_los=layer.altitude * self.airmass,
+                    altitude_los=altitude_los,
                 )
             )
+            ext_r0.append(r0_i)
+            ext_L0.append(layer.L0)
+            ext_wind.append((vx, vy))
+            ext_alt.append(altitude_los)
+            ext_seeds.append(int(ext_seed.generate_state(1)[0]))
 
         self._t = 0.0
-        self._build_batched()
+        if self.engine == "spectral":
+            self._build_batched()
+        else:
+            # Off-axis footprints out to field_of_view need the buffer wider by
+            # that perpendicular travel; margin_pix already encodes it.
+            self._ext_kwargs = dict(
+                n=self.n,
+                pixel_scale=self.pixel_scale,
+                layer_r0=ext_r0,
+                layer_L0=ext_L0,
+                layer_wind=ext_wind,
+                layer_altitude_los=ext_alt,
+                field_of_view_pix=float(self.margin_pix),
+                interp=self.interp,
+                device=device,
+                dtype=dtype,
+                seeds=ext_seeds,
+            )
+            self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
 
     def _build_batched(self):
         """Stack every layer's spectrum so a frame is one batched FFT.
@@ -346,7 +395,7 @@ class Atmosphere:
             If given, return phase [rad] at this wavelength; otherwise OPD [m].
         """
         if directions is None:
-            phase = self._integrate(float(t), 0.0, 0.0)
+            phase = self._phase(float(t), 0.0, 0.0)
             return self._to_opd(phase, wavelength)
 
         xp = self.xp
@@ -354,9 +403,20 @@ class Atmosphere:
         for thx, thy in directions:
             ox = np.tan(thx * _ARCSEC_TO_RAD)
             oy = np.tan(thy * _ARCSEC_TO_RAD)
-            out.append(self._integrate(float(t), ox, oy))
+            out.append(self._phase(float(t), ox, oy))
         stacked = xp.stack(out)
         return self._to_opd(stacked, wavelength)
+
+    def _phase(self, t, ox, oy):
+        """Reference-wavelength pupil phase at time ``t`` toward slope (ox, oy).
+
+        Dispatches to the periodic spectral engine or the non-periodic extruder;
+        ``ox``/``oy`` are direction tangents (``tan(theta)``).
+        """
+        if self.engine == "spectral":
+            return self._integrate(t, ox, oy)
+        self._ext.set_time(t)
+        return self._ext.integrate(ox, oy)
 
     def _integrate(self, t, ox, oy):
         """Sum all layers at time ``t`` with per-layer angular offset slopes.
@@ -444,10 +504,11 @@ class Atmosphere:
             raise ValueError("steps must be >= 1")
         for _ in range(int(steps)):
             t = self._t
-            phase = self._integrate(t, 0.0, 0.0)
+            phase = self._phase(t, 0.0, 0.0)
             yield t, self._to_opd(phase, wavelength)
             self._t += float(dt)
-            self._boil_step(float(dt))  # no-op unless tau_boil is finite
+            if self.engine == "spectral":
+                self._boil_step(float(dt))  # no-op unless tau_boil is finite
 
     def sample(self, count: Optional[int] = None, wavelength=None):
         """Draw statistically independent integrated OPDs.
@@ -473,8 +534,14 @@ class Atmosphere:
         return self._to_opd(total, wavelength)
 
     def reset(self):
-        """Reset the internal clock to ``t = 0``. Returns ``self``."""
+        """Reset the internal clock to ``t = 0``. Returns ``self``.
+
+        For ``engine="extrude"`` the extruded layers are rebuilt from their
+        seeds (wind travel is monotonic, so the run restarts identically).
+        """
         self._t = 0.0
+        if self.engine == "extrude":
+            self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
         return self
 
     @property

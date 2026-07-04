@@ -133,14 +133,29 @@ Prioritised backlog (each item names the library to learn from):
    `advance(0.5)` twice equals `step(1)` bit-for-bit, checked on CPU and GPU).
    lstsq + eigh(clip) robustness retained. GPU path works (device-resident,
    `n+8` buffer at n=1024, ~4200 steps/s) and is now *faster per single layer*
-   than the spectral engine. 5 new tests; full suite green (44 passed).
-   *Remaining:* **Stage 2** — arbitrary wind direction (extrude in wind-aligned
-   coords, sample a rotated pupil grid → 2-D interpolation), an `evolve(dt)`
-   clock keyed to `wind_speed`, and **Atmosphere integration** as
-   `engine="extrude"` batched across heterogeneous layers on the GPU (the hard
-   part: the spectral `_integrate` batches uniform layers into one FFT; the
-   extruder must batch per-layer rotations/interpolations). `cho_factor` +
-   fractal stencil are optional polish over the current lstsq + dense stencil.
+   than the spectral engine.
+
+   **Stage 2 — DONE (arbitrary direction + `Atmosphere` engine).** New module
+   `pyturb/extrude.py`: `_ExtrudeLayer` extrudes each layer along its **own wind
+   axis** (wind-aligned frame) and reads the pupil out through a **rotated,
+   sub-pixel 2-D interpolation grid** (Catmull-Rom / linear) — so any wind
+   direction and any `v*dt` are exact-geometry, and the screen never repeats.
+   `Atmosphere(engine="extrude")` (default stays `"spectral"`) routes
+   `frames()`/`opd(directions=…)` through it, keeps the spectral generators for
+   `sample()`, rejects `tau_boil`, and rebuilds on `reset()`. Key efficiency
+   win: the mean matrix **A is r0-independent** (cancels) so layers sharing `L0`
+   share one covariance setup, and `B = B_unit · r0^{-5/6}`. Verified: θ=0 is a
+   *bit-exact* frozen-flow translation; direction invariance to ~1%; structure
+   function matches von Kármán to **0.84 %** (better than the spectral engine —
+   it uses the exact covariance); genuinely non-periodic (spectral corr≈1.0 at
+   one period, extruder <0.9); off-axis differential variance grows with angle;
+   GPU parity to theory; bounded memory over 4000 frames. 12 new tests (`test_
+   extrude.py` + `test_atmosphere.py`), full suite green (58 passed). Runs a
+   9-layer 512² **non-periodic** atmosphere at ~120 fps GPU (vs ~800 fps for the
+   periodic spectral engine — the documented trade-off; per-layer sampling isn't
+   yet fused into one kernel). *Optional future polish:* batch the per-layer
+   gathers into one op to close the fps gap; `cho_factor` + fractal stencil over
+   the current lstsq + dense stencil; `evolve(dt)` sugar keyed to `wind_speed`.
 
 **P1 — table stakes for AO users.**
 
@@ -526,7 +541,7 @@ Documented as out of scope (with pointers), unless demand pulls them in:
 | **M1** (core) ✅ | Phase 1 + Phase 2 spectral engine | **Done** — `Atmosphere.from_profile(...).frames(dt)` works: frozen flow, sub-pixel, multi-layer, off-axis, GPU. (Ring-buffer extruder from 2.1–2.2 still open) |
 | **M2** (product) ✅ | Phase 3 + spectral engine (2.3) | **Done** — OPD in metres, off-axis directions, field-of-view oversizing, boiling. (LGS cone deferred to M5) |
 | **M3** (proof) 🟡 | Phase 4 ✅ + Phase 5 | **Phase 4 done** — published benchmarks + honest comparison vs aotools/soapy/HCIPy (`bench_compare.py`, `RESULTS.md`, `docs/comparison.md`). Phase 5 validation gallery still open. |
-| **M3.5** (parity) 🟡 | **Backlog P0–P1**: non-periodic extruder (1) — **Stage 1 done** (ring buffer + sub-pixel), Stage 2 (arbitrary direction + `Atmosphere` `engine="extrude"`) open; FITS/npz I/O (2), moment-conserving compression (3), chromatic-OPD option (4) still open | close the capability gaps the comparison exposed — pyturb matches the others where it should and stays ahead where it already is |
+| **M3.5** (parity) 🟡 | **Backlog P0–P1**: non-periodic extruder (1) — **DONE** (ring buffer + sub-pixel + arbitrary direction + `Atmosphere` `engine="extrude"`); FITS/npz I/O (2), moment-conserving compression (3), chromatic-OPD option (4) still open | close the capability gaps the comparison exposed — pyturb matches the others where it should and stays ahead where it already is |
 | **M4** (adoption) | Phase 6 + backlog P2 (analysis utils 5, site profiles 6) | docs site, PyPI release `v0.2.0`, README with animation |
 | **M5** (polish) | LGS cone (7), non-Kolmogorov hooks (8), threaded CPU FFT (9), interop recipes (10), conda-forge | differentiating extras |
 

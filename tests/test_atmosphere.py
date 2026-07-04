@@ -209,3 +209,106 @@ def test_fourier_flow_translation_exact_integer_pixels():
     base = fl.translate(0.0, 0.0)
     shifted = fl.translate(7 * 0.02, 0.0)
     assert np.allclose(shifted, np.roll(base, -7, axis=0), atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# extrusion engine (engine="extrude"): non-periodic, arbitrary-direction
+# ---------------------------------------------------------------------------
+from pyturb.infinite import phase_covariance  # noqa: E402
+
+
+def test_extrude_frames_shape_units_and_determinism():
+    kw = dict(seeing=0.8, diameter=8.0, n=64, engine="extrude", L0=25.0)
+    a = pyturb.Atmosphere.from_profile("two-layer", seed=7, **kw)
+    b = pyturb.Atmosphere.from_profile("two-layer", seed=7, **kw)
+    fa = [np.array(o) for _, o in a.frames(dt=1e-3, steps=4)]
+    fb = [np.array(o) for _, o in b.frames(dt=1e-3, steps=4)]
+    assert fa[0].shape == (64, 64)
+    assert 0 < fa[0].std() < 1e-5              # OPD in metres, micron-scale
+    for x, y in zip(fa, fb):                    # same seed -> identical
+        np.testing.assert_array_equal(x, y)
+
+
+def test_extrude_structure_function_matches_total_r0():
+    """Summed frozen-flow frames follow the total-r0 von Karman law."""
+    kw = dict(seeing=0.8, diameter=8.0, n=64, engine="extrude", L0=25.0,
+              dtype="float64")
+    acc = None
+    for seed in range(40):
+        atm = pyturb.Atmosphere.from_profile("paranal-median", seed=seed, **kw)
+        phase = atm.opd(0.0, wavelength=500e-9)   # reference-wavelength phase
+        r, d = pyturb.structure_function(phase, atm.pixel_scale)
+        acc = d if acc is None else acc + d
+        r0 = atm.r0
+    d = acc / 40
+    theory = 2.0 * (phase_covariance(0.0, r0, 25.0) - phase_covariance(r, r0, 25.0))
+    mid = (r >= 4 * atm.pixel_scale) & (r <= 8.0 / 4)
+    ratio = d[mid] / theory[mid]
+    assert np.all(ratio > 0.8) and np.all(ratio < 1.2)
+
+
+def test_extrude_is_non_periodic_unlike_spectral():
+    """The spectral screen repeats after one period; the extruder does not."""
+    # subharmonics=0 so the spectral screen is cleanly periodic on the FFT grid
+    # (subharmonic modes have longer periods and would spoil the contrast).
+    kw = dict(seeing=0.8, diameter=4.0, n=48, seed=1, L0=25.0, subharmonics=0)
+    # One layer so the period is well-defined: n*pixel_scale of travel.
+    layers = [pyturb.Layer(altitude=0.0, cn2_fraction=1.0, wind_speed=10.0,
+                           wind_direction=0.0, L0=25.0)]
+    period_t = (4.0 / 48) * 48 / 10.0            # n*dx / wind_speed
+
+    spec = pyturb.Atmosphere(layers, engine="spectral", **kw)
+    s0 = pyturb.to_numpy(spec.opd(0.0))
+    sT = pyturb.to_numpy(spec.opd(period_t))
+    assert np.corrcoef(s0.ravel(), sT.ravel())[0, 1] > 0.99   # periodic
+
+    ext = pyturb.Atmosphere(layers, engine="extrude", **kw)
+    e0 = pyturb.to_numpy(ext.opd(0.0))
+    eT = pyturb.to_numpy(ext.opd(period_t))
+    assert abs(np.corrcoef(e0.ravel(), eT.ravel())[0, 1]) < 0.9  # not periodic
+
+
+def test_extrude_off_axis_variance_grows_with_angle():
+    atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=64,
+                                         field_of_view=30, engine="extrude", seed=2)
+    opds = pyturb.to_numpy(atm.opd(0.0, directions=[(0, 0), (10, 0), (25, 0)]))
+    v10 = np.var(opds[1] - opds[0])
+    v25 = np.var(opds[2] - opds[0])
+    assert v25 > v10 > 0.0
+
+
+def test_extrude_rejects_boiling():
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       engine="extrude", tau_boil=0.1)
+
+
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_gpu_extrude_and_spectral_match_theory(engine):
+    """Both engines, on both devices, follow the total-r0 von Karman law.
+
+    (CuPy and NumPy have independent RNG streams, so the *realisations* differ;
+    only the ensemble statistics are comparable — each is checked against
+    theory, the repo's standard.)
+    """
+    try:
+        pyturb.get_array_module("gpu")
+    except ImportError:
+        pytest.skip("CuPy not available")
+    kw = dict(seeing=0.8, diameter=8.0, n=64, L0=25.0, engine=engine,
+              dtype="float64")
+    for dev in ("cpu", "gpu"):
+        acc = None
+        for seed in range(16):
+            atm = pyturb.Atmosphere.from_profile("paranal-median", device=dev,
+                                                 seed=seed, **kw)
+            r, d = pyturb.structure_function(
+                pyturb.to_numpy(atm.opd(0.0, wavelength=500e-9)), atm.pixel_scale)
+            acc = d if acc is None else acc + d
+            r0 = atm.r0
+        d = acc / 16
+        theory = 2.0 * (phase_covariance(0.0, r0, 25.0)
+                        - phase_covariance(r, r0, 25.0))
+        mid = (r >= 4 * atm.pixel_scale) & (r <= 8.0 / 4)
+        ratio = d[mid] / theory[mid]
+        assert np.all(ratio > 0.8) and np.all(ratio < 1.2), (engine, dev)

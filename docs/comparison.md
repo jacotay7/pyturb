@@ -22,7 +22,7 @@ work and *why* the numbers come out the way they do.
 | Generation engine | FFT + integrated subharmonics | FFT + subharmonics | (reuses aotools) | extruder init |
 | Frozen-flow engine | **spectral shift theorem** | Assémat–Wilson extruder | large-screen panning | extruder + interpolation |
 | Sub-pixel / any direction | **yes / yes** | no / no | yes / yes | yes / yes |
-| Unbounded (non-periodic) | roadmap | **yes** | **yes** | **yes** |
+| Unbounded (non-periodic) | **yes** (`engine="extrude"`) | **yes** | **yes** | **yes** |
 | Boiling | **yes** | — | — | — |
 | Scintillation (Fresnel) | non-goal | — | — | **yes** |
 | Tomographic reconstructors | — | **yes** | **yes** | modal |
@@ -126,10 +126,12 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
 **From aotools**
 
 1. **The stencil extruder is the community standard** (soapy imports it
-   verbatim). pyturb's roadmap non-periodic engine should follow the same
-   Assémat–Wilson formulation, and specifically borrow their **numerical
-   robustness**: `cho_factor`/`cho_solve` for `Cov_zz⁻¹` with a least-squares
-   fallback on `LinAlgError`. *(Roadmap 2.1–2.2.)*
+   verbatim). This shaped pyturb's non-periodic engine — now **implemented** as
+   `Atmosphere(engine="extrude")`: the same Assémat–Wilson formulation, in a
+   wind-aligned ring buffer with rotated sub-pixel sampling (any wind direction,
+   any `v*dt`, GPU-resident). `cho_factor`/`cho_solve` with a least-squares
+   fallback remains an optional numerical-robustness upgrade over the current
+   lstsq solve. *(Roadmap 2.1–2.2, delivered.)*
 2. **Moment-conserving profile compression.** `equivalent_layers`,
    `optimal_grouping`, and GCTM (Saxenhuber 2017) compress a high-resolution
    Cn²(h) profile to N layers while conserving chosen turbulence moments — and
