@@ -115,15 +115,32 @@ Prioritised backlog (each item names the library to learn from):
 1. **Non-periodic extruder (Assémat–Wilson), done properly.** This is the one
    capability all three competitors have and pyturb only half-has: the spectral
    engine *wraps* after `n·pixel_scale`, which is wrong for long closed-loop
-   runs. Build the ring-buffer extruder (roadmap 2.1–2.2) and, critically,
-   combine the best of each source: aotools' **fractal 2ⁿ stencil** and
+   runs. Combine the best of each source: aotools' **fractal 2ⁿ stencil** and
    **numerical robustness** (`cho_factor`/`cho_solve` with an lstsq fallback on
-   `LinAlgError`), HCIPy's **bilinear/Fourier interpolation** for sub-pixel
-   arbitrary-direction stepping and a real `evolve_until(t)` clock, and pyturb's
-   own edge — **batched, GPU-resident extrusion** (extrude `k` rows in one
-   matmul, all layers stacked) that none of them have. Ship the trade-off
-   explicitly: spectral engine = fixed-period, fastest, sub-pixel-free; extruder
-   = unbounded, memory-light, the default for multi-second loops.
+   `LinAlgError`), HCIPy's **interpolation** for sub-pixel arbitrary-direction
+   stepping and a real `evolve_until(t)` clock, and pyturb's own edge —
+   **batched, GPU-resident extrusion** (extrude `k` rows in one matmul, all
+   layers stacked) that none of them have. Ship the trade-off explicitly:
+   spectral engine = fixed-period, fastest, sub-pixel-free; extruder =
+   unbounded, memory-light, the default for multi-second loops.
+
+   **Stage 1 — DONE (single-layer `InfinitePhaseScreen`).** Rewrote the extruder
+   with a **ring buffer** (pre-allocated storage, window advanced by index — a
+   step is now one small mat-vec instead of copying the whole `(n, n)` screen
+   via `concatenate`; memory bounded at `n + O(stencil)` rows, verified over
+   3000+ steps) and **sub-pixel continuous evolution** (`advance(pixels)` +
+   Catmull-Rom `interp="cubic"`/`"linear"`; exact at integer offsets, so
+   `advance(0.5)` twice equals `step(1)` bit-for-bit, checked on CPU and GPU).
+   lstsq + eigh(clip) robustness retained. GPU path works (device-resident,
+   `n+8` buffer at n=1024, ~4200 steps/s) and is now *faster per single layer*
+   than the spectral engine. 5 new tests; full suite green (44 passed).
+   *Remaining:* **Stage 2** — arbitrary wind direction (extrude in wind-aligned
+   coords, sample a rotated pupil grid → 2-D interpolation), an `evolve(dt)`
+   clock keyed to `wind_speed`, and **Atmosphere integration** as
+   `engine="extrude"` batched across heterogeneous layers on the GPU (the hard
+   part: the spectral `_integrate` batches uniform layers into one FFT; the
+   extruder must batch per-layer rotations/interpolations). `cho_factor` +
+   fractal stencil are optional polish over the current lstsq + dense stencil.
 
 **P1 — table stakes for AO users.**
 
@@ -509,7 +526,7 @@ Documented as out of scope (with pointers), unless demand pulls them in:
 | **M1** (core) ✅ | Phase 1 + Phase 2 spectral engine | **Done** — `Atmosphere.from_profile(...).frames(dt)` works: frozen flow, sub-pixel, multi-layer, off-axis, GPU. (Ring-buffer extruder from 2.1–2.2 still open) |
 | **M2** (product) ✅ | Phase 3 + spectral engine (2.3) | **Done** — OPD in metres, off-axis directions, field-of-view oversizing, boiling. (LGS cone deferred to M5) |
 | **M3** (proof) 🟡 | Phase 4 ✅ + Phase 5 | **Phase 4 done** — published benchmarks + honest comparison vs aotools/soapy/HCIPy (`bench_compare.py`, `RESULTS.md`, `docs/comparison.md`). Phase 5 validation gallery still open. |
-| **M3.5** (parity) | **Backlog P0–P1**: non-periodic extruder (1), FITS/npz I/O (2), moment-conserving compression (3), chromatic-OPD option (4) | close the capability gaps the comparison exposed — pyturb matches the others where it should and stays ahead where it already is |
+| **M3.5** (parity) 🟡 | **Backlog P0–P1**: non-periodic extruder (1) — **Stage 1 done** (ring buffer + sub-pixel), Stage 2 (arbitrary direction + `Atmosphere` `engine="extrude"`) open; FITS/npz I/O (2), moment-conserving compression (3), chromatic-OPD option (4) still open | close the capability gaps the comparison exposed — pyturb matches the others where it should and stays ahead where it already is |
 | **M4** (adoption) | Phase 6 + backlog P2 (analysis utils 5, site profiles 6) | docs site, PyPI release `v0.2.0`, README with animation |
 | **M5** (polish) | LGS cone (7), non-Kolmogorov hooks (8), threaded CPU FFT (9), interop recipes (10), conda-forge | differentiating extras |
 

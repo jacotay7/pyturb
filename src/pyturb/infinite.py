@@ -12,6 +12,18 @@ produces screens of unbounded length with the correct spatial statistics —
 the standard way to simulate wind-blown (Taylor frozen-flow) turbulence in
 adaptive-optics loops.
 
+Unlike the periodic spectral engine (:class:`pyturb.FourierFlowScreen`), this
+screen never repeats, so it is the right tool for long closed-loop runs. Two
+implementation choices make it practical at loop rate:
+
+- a **ring buffer**: new rows are extruded into pre-allocated storage and the
+  window is advanced by an index, so a step costs one small mat-vec instead of
+  copying the whole ``(n, n)`` screen (the old ``concatenate`` per step);
+- **sub-pixel, continuous evolution**: :meth:`advance` moves the screen by any
+  fractional number of pixels and the pupil is interpolated (Catmull-Rom cubic
+  by default, or linear) at the exact offset, so wind travel of ``v*dt`` is not
+  forced onto an integer grid. At an integer offset the interpolation is exact.
+
 Reference: Assémat, Wilson & Gendron (2006), Optics Express 14, 988.
 """
 
@@ -61,11 +73,15 @@ def phase_covariance(r, r0, L0):
 class InfinitePhaseScreen:
     """Endless frozen-flow phase screen, extruded row by row.
 
-    The current ``(n, n)`` screen is available as :attr:`screen`; each call
-    to :meth:`step` shifts it by one row (one ``pixel_scale`` of wind
-    travel along axis 0) and synthesises a new correlated row at the edge.
-    Translate ``pixel_scale`` into wind speed via your loop rate:
-    ``wind_speed = pixel_scale / dt`` per step.
+    The current ``(n, n)`` screen is available as :attr:`screen`. Advance the
+    wind either by whole pixels with :meth:`step` or by any continuous distance
+    (in pixels) with :meth:`advance`; new turbulence is synthesised at the
+    leading edge (``screen[-1]``) as needed and older rows are recycled, so
+    memory stays bounded no matter how long the run.
+
+    Translate pixels into wind speed via your loop rate: a step of
+    ``wind_speed * dt / pixel_scale`` pixels advances the screen by ``v*dt``
+    metres. :meth:`advance` accepts the fractional result directly.
 
     Parameters
     ----------
@@ -81,6 +97,10 @@ class InfinitePhaseScreen:
     stencil_rows : int, optional
         Number of edge rows the new row is conditioned on. Default 2
         (per Assémat & Wilson; more rows cost setup time for marginal gain).
+    interp : {"cubic", "linear"}, optional
+        Sub-pixel interpolation kernel used by :meth:`advance`. ``"cubic"``
+        (Catmull-Rom, default) preserves high-frequency power better; both are
+        exact at integer offsets. Unused by :meth:`step`.
     seed, device, dtype
         As for :class:`pyturb.PhaseScreen`.
 
@@ -90,7 +110,8 @@ class InfinitePhaseScreen:
     >>> layer = pyturb.InfinitePhaseScreen(n=128, pixel_scale=0.05,
     ...                                    r0=0.15, L0=25, seed=0)
     >>> for _ in range(100):
-    ...     phase = layer.step()        # advance wind by one pixel
+    ...     phase = layer.step()        # advance wind by one whole pixel
+    >>> phase = layer.advance(0.37)     # ...and by 0.37 of a pixel (sub-pixel)
     """
 
     def __init__(
@@ -100,6 +121,7 @@ class InfinitePhaseScreen:
         r0,
         L0=25.0,
         stencil_rows=2,
+        interp="cubic",
         seed=None,
         device="cpu",
         dtype="float32",
@@ -110,12 +132,15 @@ class InfinitePhaseScreen:
             )
         if not 1 <= stencil_rows < n:
             raise ValueError("stencil_rows must be in [1, n)")
+        if interp not in ("cubic", "linear"):
+            raise ValueError("interp must be 'cubic' or 'linear'")
 
         self.n = int(n)
         self.pixel_scale = float(pixel_scale)
         self.r0 = float(r0)
         self.L0 = float(L0)
         self.stencil_rows = int(stencil_rows)
+        self.interp = interp
         self.device = device
 
         self.xp = get_array_module(device)
@@ -137,7 +162,21 @@ class InfinitePhaseScreen:
             dtype=dtype,
         )
         self._rng = generator._rng  # share one stream for reproducibility
-        self._screen = generator.generate()
+
+        # Ring buffer: pre-allocated storage holding a moving window of rows.
+        # ``_buf[i]`` is virtual row ``_base + i``; ``_fill`` rows are valid.
+        # The pupil samples virtual rows ``[_travel, _travel + n)`` (cubic needs
+        # one row below and two above), so a handful of spare rows suffice.
+        self._margin = self.stencil_rows + 6
+        self._capacity = self.n + self._margin
+        self._buf = self.xp.empty((self._capacity, self.n), dtype=self.dtype)
+        self._buf[: self.n] = generator.generate()
+        self._base = 0  # virtual index of _buf[0]
+        self._fill = self.n  # number of valid rows in _buf
+        self._travel = 0.0  # continuous wind offset in pixels (monotonic)
+
+        self._grid = self.xp.arange(self.n)  # output-row indices, reused
+        self._advance_to(0.0)
 
     def _build_extrusion_matrices(self):
         """Compute A (mean) and B (noise-colouring) extrusion matrices.
@@ -151,7 +190,7 @@ class InfinitePhaseScreen:
 
         # Coordinates: stencil rows at y = 0..m-1, new row at y = m,
         # x = 0..n-1 (units of pixels; scaled by dx below). Row-major
-        # ordering matches screen[-m:].ravel().
+        # ordering matches _buf[fill-m:fill].ravel().
         yz, xz = np.mgrid[0:m, 0:n]
         stencil = np.column_stack((xz.ravel(), yz.ravel())).astype(np.float64)
         new_row = np.column_stack(
@@ -180,32 +219,115 @@ class InfinitePhaseScreen:
         self._a = self.xp.asarray(a_matrix, dtype=self.dtype)
         self._b = self.xp.asarray(b_matrix, dtype=self.dtype)
 
+    # ------------------------------------------------------------------
+    # ring-buffer extrusion
+    # ------------------------------------------------------------------
+    def _extrude_one(self):
+        """Synthesise one new leading-edge row into the ring buffer."""
+        if self._fill == self._capacity:
+            self._compact()
+        z = self._buf[self._fill - self.stencil_rows : self._fill].ravel()
+        beta = self._rng.standard_normal(self.n, dtype=self.dtype)
+        self._buf[self._fill] = self._a @ z + self._b @ beta
+        self._fill += 1
+
+    def _compact(self):
+        """Drop consumed rows below the window to make room, keeping one spare.
+
+        The pupil never looks below ``floor(_travel) - 1``, so everything below
+        that is free to recycle. Amortised O(1) rows per step.
+        """
+        keep_from = int(np.floor(self._travel)) - 1 - self._base
+        keep_from = max(1, keep_from)  # always free at least one row
+        keep = self._fill - keep_from
+        self._buf[:keep] = self._buf[keep_from : self._fill].copy()
+        self._base += keep_from
+        self._fill = keep
+
+    def _ensure(self, top_virtual_index):
+        """Extrude until virtual row ``top_virtual_index`` exists."""
+        while self._base + self._fill - 1 < top_virtual_index:
+            self._extrude_one()
+
+    def _sample(self, travel):
+        """Interpolate the ``(n, n)`` pupil at continuous offset ``travel``."""
+        xp = self.xp
+        # Output row i samples the screen at virtual position travel + i;
+        # local index into the buffer is that minus _base.
+        positions = (travel - self._base) + self._grid  # float, shape (n,)
+        i0 = xp.floor(positions).astype(xp.int64)
+        t = (positions - i0).astype(self.dtype)[:, None]  # (n, 1)
+
+        def rows(offset):
+            return self._buf[xp.clip(i0 + offset, 0, self._fill - 1)]
+
+        p0 = rows(0)
+        p1 = rows(1)
+        if self.interp == "linear":
+            screen = (1.0 - t) * p0 + t * p1
+        else:  # Catmull-Rom cubic
+            pm1 = rows(-1)
+            p2 = rows(2)
+            t2 = t * t
+            t3 = t2 * t
+            screen = 0.5 * (
+                2.0 * p0
+                + (-pm1 + p1) * t
+                + (2.0 * pm1 - 5.0 * p0 + 4.0 * p1 - p2) * t2
+                + (-pm1 + 3.0 * p0 - 3.0 * p1 + p2) * t3
+            )
+        return xp.ascontiguousarray(screen.astype(self.dtype, copy=False))
+
+    def _advance_to(self, travel):
+        if travel < self._travel:
+            raise ValueError("wind travel is monotonic; travel cannot decrease")
+        self._travel = float(travel)
+        self._ensure(int(np.floor(self._travel)) + self.n + 2)
+        self._current = self._sample(self._travel)
+
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
     @property
     def screen(self):
         """Current ``(n, n)`` phase screen in radians (device array)."""
-        return self._screen
+        return self._current
 
     def step(self, steps=1):
-        """Advance the wind by ``steps`` rows and return the screen.
+        """Advance the wind by ``steps`` whole pixels and return the screen.
 
         Each step shifts the screen one row along axis 0 and extrudes a new
-        statistically consistent row at ``screen[-1]``.
+        statistically consistent row at ``screen[-1]``. For fractional (wind
+        ``v*dt``) motion use :meth:`advance`.
         """
+        steps = int(steps)
         if steps < 1:
             raise ValueError("steps must be >= 1")
-        xp = self.xp
-        screen = self._screen
-        for _ in range(steps):
-            z = screen[-self.stencil_rows :].ravel()
-            beta = self._rng.standard_normal(self.n, dtype=self.dtype)
-            new_row = self._a @ z + self._b @ beta
-            screen = xp.concatenate((screen[1:], new_row[None, :]))
-        self._screen = screen
-        return screen
+        self._advance_to(self._travel + steps)
+        return self._current
+
+    def advance(self, pixels):
+        """Advance the wind by ``pixels`` (any non-negative float) and return it.
+
+        The pupil is interpolated at the exact sub-pixel offset (see ``interp``);
+        integer offsets are reproduced exactly. Successive calls accumulate, so
+        ``advance(0.5)`` twice lands on the same screen as ``step(1)``.
+        """
+        pixels = float(pixels)
+        if pixels < 0:
+            raise ValueError("pixels must be >= 0 (wind travel is monotonic)")
+        self._advance_to(self._travel + pixels)
+        return self._current
+
+    @property
+    def travel(self):
+        """Total wind travel so far, in pixels (metres = ``travel * pixel_scale``)."""
+        return self._travel
 
     def __repr__(self):
         return (
             f"InfinitePhaseScreen(n={self.n}, pixel_scale={self.pixel_scale}, "
             f"r0={self.r0}, L0={self.L0}, stencil_rows={self.stencil_rows}, "
-            f"device={self.device!r}, dtype={self.dtype.name!r})"
+            f"interp={self.interp!r}, device={self.device!r}, "
+            f"dtype={self.dtype.name!r})"
         )

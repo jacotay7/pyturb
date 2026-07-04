@@ -179,9 +179,12 @@ the temporal statistics of extruded screens.
   Python loop.
 - Screens default to `float32`, the sweet spot for GPU throughput and ample
   precision for AO work; pass `dtype="float64"` if you want more.
-- `InfinitePhaseScreen.step()` costs two small matrix-vector products, so
-  it is fast even on CPU; the expensive covariance setup happens once in
-  the constructor.
+- `InfinitePhaseScreen` extrudes into a **ring buffer**, so a step costs two
+  small matrix-vector products (not a whole-screen copy) and memory stays
+  bounded no matter how long the run; the expensive covariance setup happens
+  once in the constructor. Use `.step()` for whole-pixel wind travel or
+  `.advance(pixels)` for exact **sub-pixel** motion (`v*dt/pixel_scale`),
+  interpolated with `interp="cubic"` (default) or `"linear"`.
 
 ## API summary
 
@@ -202,9 +205,11 @@ PhaseScreen(n, pixel_scale, r0, L0=25.0, subharmonics=8,
     .generate(count=None) -> (n, n) or (count, n, n) radians
 
 InfinitePhaseScreen(n, pixel_scale, r0, L0=25.0, stencil_rows=2,
-                    seed=None, device="cpu", dtype="float32")
+                    interp="cubic", seed=None, device="cpu", dtype="float32")
     .screen               -> current (n, n) screen
-    .step(steps=1)        -> screen after advancing the wind
+    .step(steps=1)        -> screen after advancing the wind by whole pixels
+    .advance(pixels)      -> screen after sub-pixel wind travel (interpolated)
+    .travel               -> total wind travel so far, in pixels
 
 get_profile(name) / list_profiles()
 hufnagel_valley(h, ...) / bufton_wind(h) / discretize_cn2(h, cn2, n_layers)
