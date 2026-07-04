@@ -115,6 +115,51 @@ RTX 5090, a 9-layer Paranal atmosphere (`benchmarks/bench_frames.py`):
 | 512² | ~820 | ~1100 | ~26 |
 | 1024² | ~500 | ~350 | ~4 |
 
+## How pyturb compares
+
+pyturb sits alongside three excellent, well-established tools. They were built
+for different jobs — aotools is an AO maths toolbox, soapy a full AO *system*
+simulator, HCIPy a diffraction-propagation framework — so this is about picking
+the right tool, not a winner. A detailed, honest, method-by-method write-up
+(and what we learned from their source) is in
+[`docs/comparison.md`](docs/comparison.md); raw benchmark tables are in
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
+
+| | pyturb | aotools | soapy | HCIPy |
+|---|:---:|:---:|:---:|:---:|
+| GPU (CuPy) backend | ✅ | — | — | — |
+| Batched Monte-Carlo screens | ✅ | — | — | — |
+| Sub-pixel, any-direction flow | ✅ | — | ✅ | ✅ |
+| Boiling (temporal decorrelation) | ✅ | — | — | — |
+| OPD in metres (achromatic) | ✅ | — | — | — |
+| Off-axis / tomography directions | ✅ | — | ◐ | ✅ |
+| Named site profiles | ✅ | — | — | ✅ |
+| Unbounded (non-periodic) screens | roadmap | ✅ | ✅ | ✅ |
+| Scintillation (Fresnel) | non-goal | — | — | ✅ |
+
+Measured head-to-head on an RTX 5090 (8 m pupil, 512²):
+
+- **Monte-Carlo generation** — pyturb produces **14,000 independent 512²
+  screens/s** on the GPU (55,000 at 256²) by drawing two screens per FFT and
+  batching the stack; that is **~1000× the pure-Python FFT loops** in
+  aotools/soapy, and ~13× even on one CPU core.
+- **Frozen flow** — a full **9-layer 512² atmosphere at ~800 fps** on GPU via
+  the spectral shift-theorem engine (exact sub-pixel, any direction, all layers
+  in one FFT).
+- **Accuracy** — pyturb's structure function tracks von Kármán theory to
+  **~2%**, the best of the four (HCIPy ~3.7%, aotools/soapy ~4.9%).
+
+**Where the others are stronger, honestly:** aotools/soapy/HCIPy all offer
+*truly unbounded, non-periodic* screens via the Assémat–Wilson extruder — and
+single-layer integer-pixel CPU stepping in aotools/soapy is faster *per step*
+than pyturb's full-FFT frame at small `n`. aotools adds tomographic
+reconstructors and profile compression, soapy a complete AO system and FITS
+I/O, HCIPy Fresnel propagation and scintillation. pyturb is adopting the
+extruder (non-periodic path), moment-conserving profile compression, and FITS
+I/O next — see [`docs/comparison.md`](docs/comparison.md#what-we-learned--and-what-were-adopting).
+
+Run the comparison yourself: `python benchmarks/bench_compare.py --json out.json`.
+
 ## Fidelity
 
 Plain FFT screens famously under-represent low spatial frequencies

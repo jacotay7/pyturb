@@ -47,6 +47,27 @@ in M1. LGS cone effect (finite-altitude guide star) is deferred — it needs
 per-layer magnification/resampling that doesn't fit the batched-FFT fast path
 and deserves its own careful pass (tracked under M5/stretch).
 
+**Milestone M3 (proof) — benchmark matrix implemented.** Phase 4's head-to-head
+comparison is done: `benchmarks/bench_compare.py` measures `pyturb` against
+`aotools`, `soapy` and `HCIPy` on one 8 m pupil across three axes — generation
+throughput (independent screens/s), frozen-flow frame rate (frames/s), and
+structure-function accuracy vs von Kármán theory — plus a feature matrix.
+Numbers captured on the RTX 5090 in `benchmarks/RESULTS.md`; a detailed,
+honest method-by-method write-up (with lessons learned from reading the other
+codebases) in `docs/comparison.md`; and a summary table in the README.
+Headlines: pyturb generates **14k independent 512² screens/s** on GPU (~1000×
+the aotools/soapy Python FFT loops), runs a **9-layer 512² atmosphere at
+~800 fps**, and has the **best structure-function accuracy (~2%)** of the four.
+Honest caveat surfaced rather than hidden: aotools/soapy `add_row` is faster per
+single-layer CPU step, but only moves one integer pixel on a fixed axis (no
+sub-pixel, no arbitrary direction, no GPU); and all three offer unbounded
+non-periodic screens that pyturb's spectral engine does not. Concrete adoptions
+identified for the roadmap: the Assémat–Wilson extruder (non-periodic path),
+moment-conserving profile compression, and FITS I/O. Phase 5 validation depth
+(Zernike
+spectra, temporal PSDs, angular decorrelation, long-run stationarity, GPU-parity
+CI) is still open.
+
 **Known limitation carried forward:** the spectral engine is periodic (screen
 repeats after `n·pixel_scale`); the non-periodic extruder path (Phase 2.1),
 LGS cone, and the remaining milestones below are still open.
@@ -75,6 +96,80 @@ opds = atm.sample(count=256)     # (256, 512, 512)
 # Off-axis / tomography: OPD toward multiple directions from the same volume
 opds = atm.opd(t=0.0, directions=[(0, 0), (10, 0), (0, 10)])  # arcsec offsets
 ```
+
+---
+
+## Critical review after the M3 comparison — the adoption backlog
+
+Reading `aotools`, `soapy` and `HCIPy` line-by-line (see `docs/comparison.md`)
+made pyturb's real gaps concrete. The discipline here is to adopt what makes
+pyturb a *better atmosphere generator* and to **refuse scope creep** into
+WFS/DM/reconstruction (soapy owns full-system sim; aotools owns the AO maths
+toolbox; HCIPy owns diffraction propagation). pyturb stays "the fastest,
+GPU-native, statistically-careful atmosphere," and gets deeper, not wider.
+
+Prioritised backlog (each item names the library to learn from):
+
+**P0 — the architectural gap.**
+
+1. **Non-periodic extruder (Assémat–Wilson), done properly.** This is the one
+   capability all three competitors have and pyturb only half-has: the spectral
+   engine *wraps* after `n·pixel_scale`, which is wrong for long closed-loop
+   runs. Build the ring-buffer extruder (roadmap 2.1–2.2) and, critically,
+   combine the best of each source: aotools' **fractal 2ⁿ stencil** and
+   **numerical robustness** (`cho_factor`/`cho_solve` with an lstsq fallback on
+   `LinAlgError`), HCIPy's **bilinear/Fourier interpolation** for sub-pixel
+   arbitrary-direction stepping and a real `evolve_until(t)` clock, and pyturb's
+   own edge — **batched, GPU-resident extrusion** (extrude `k` rows in one
+   matmul, all layers stacked) that none of them have. Ship the trade-off
+   explicitly: spectral engine = fixed-period, fastest, sub-pixel-free; extruder
+   = unbounded, memory-light, the default for multi-second loops.
+
+**P1 — table stakes for AO users.**
+
+2. **FITS + npz I/O for screens and atmospheres** (learn from `soapy`). AO users
+   live in FITS. Save/load with metadata in the header: `r0`, `L0`,
+   `pixel_scale`, `seed`, profile name, zenith, and pyturb version. `astropy` as
+   an optional dependency. *(Roadmap 6.2.)*
+3. **Moment-conserving profile compression** (learn from `aotools`
+   `equivalent_layers` / `optimal_grouping` / GCTM, Saxenhuber 2017). pyturb's
+   `discretize_cn2` conserves total `Cn²dh` and the θ₀ centroid but **not τ₀**
+   (the `Cn²·v^{5/3}` moment). Add a moment-conserving mode that also condenses
+   per-layer **wind**, so coherence time survives compression — and a
+   tomography-optimal grouping option.
+4. **Chromatic OPD option** (new — see the expanded Phase 3.1 below). Keep OPD
+   native, but stop silently assuming it is perfectly achromatic; offer an
+   optional air-dispersion model.
+
+**P2 — depth and reach.**
+
+5. **Analysis/validation utilities, exported** (learn from `aotools`
+   `temporal_ps`, Zernikes). A small `pyturb.analysis` with: Zernike
+   decomposition (Noll variances), temporal-PSD slope fitting (−11/3 along-wind,
+   −14/3 transverse), and angular decorrelation. These double as the Phase 5
+   validation gallery *and* as user-facing tools. Keep a tiny internal Zernike
+   helper and export it.
+6. **More named site profiles** (learn from `HCIPy`: Keck, Las Campanas, Mauna
+   Kea tables). Cheap, high-value: add Keck, La Silla, Cerro Pachón, and an
+   ELT/Armazones profile. Each is a few lines of cited numbers.
+7. **LGS cone effect** (learn from `soapy` line-of-sight). Per-layer footprint
+   magnification `(1 − h/H_LGS)` for finite-altitude guide stars. Already
+   deferred to M5; the geometry drops into the Phase 3.2 `directions=` path.
+
+**P3 — nice-to-have, keep hooks.**
+
+8. **Non-Kolmogorov spectra**: general power-law exponent and inner scale
+   (modified von Kármán / Hill) — a few lines in `_psd`, leave the hook.
+9. **Threaded CPU FFT** (`scipy.fft(workers=)`) to close the single-thread CPU
+   gap; keep the pure-NumPy path dependency-light.
+10. **Interop recipes, not dependencies**: documented adapters for HCIPy
+    wavefronts, poppy, and DM-fitting pipelines. `frames()` already returns a
+    plain array, so these are docs, not code.
+
+**Explicit non-goals reaffirmed** (from the comparison): WFS/DM/controller
+simulation (soapy), tomographic reconstructors and slope covariance (aotools),
+and Fresnel/scintillation propagation between layers (HCIPy). pyturb outputs
+phase/OPD and hands amplitude effects and system modelling to those tools.
 
 ---
 
@@ -226,7 +321,7 @@ gives the same statistics as 0°.
 
 Today screens are "radians at the wavelength where r0 is defined", which
 pushes bookkeeping onto the user. Switch the internal/native unit to **OPD in
-metres** (achromatic for the phase-only atmosphere):
+metres**:
 
 - Generate with `r0` referenced at 500 nm (or user-set), convert amplitude
   once: `OPD = phase * λ_ref / 2π`.
@@ -234,6 +329,46 @@ metres** (achromatic for the phase-only atmosphere):
   and a `wavelength=` convenience argument on output methods.
 - Keep `PhaseScreen`/`InfinitePhaseScreen` returning radians for backward
   compatibility, but document OPD as the recommended workflow.
+
+**Is OPD actually the right output? (a real physics question, not just API
+taste.)** Short answer: **yes, OPD in metres is the correct native product** —
+but the word "achromatic" needs a caveat, and there is a genuine system
+dependence worth exposing as an option.
+
+*Why OPD is the right currency.* Phase and OPD are related by
+`φ(λ) = (2π/λ)·OPD`, where `OPD = ∫(n − n̄) dz` is a path length. A phase screen
+is only meaningful with a wavelength attached — and `r0 ∝ λ^{6/5}`, so quoting
+"radians" forces the user to track *which* wavelength. OPD removes that: it is
+the wavelength-independent physical quantity, and a real AO system is inherently
+multi-wavelength (LGS at 589 nm, NGS in the visible, science in the NIR). With
+OPD native, each path is one division away — `φ = 2π·OPD/λ` — and pyturb never
+has to know the sensing or science band. OPD is also strictly more general than
+phase (phase is one lossless step away; the reverse needs a wavelength), and it
+is numerically safe: OPD values ~µm stored in float32 keep ~7 significant
+figures of *relative* precision (sub-picometre absolute), because magnitude,
+not offset, is what float32 cares about. So the choice is not OPD-vs-phase — it
+is "store the invariant, derive the rest."
+
+*The caveat — turbulence OPD is only* **nearly** *achromatic.* The refractivity
+of air `(n − 1)` is itself weakly wavelength-dependent (dispersion), varying
+~1–2 % from the visible to the K band. So the OPD a 589 nm WFS measures differs
+from the OPD at a 2.2 µm science wavelength by ~1 %. On a 1 µm-RMS wavefront
+that is ~10 nm — negligible for routine AO, but a real error budget term for
+high-contrast imaging, precision astrometry, and LGS systems (chromatic /
+refractive anisoplanatism). Worse, the **dry-air and water-vapour** components
+disperse differently, and wet (H₂O) turbulence is strongly chromatic in the IR
+— the dominant term for the mid-IR and for interferometry (VLTI-class
+"wet–dry" OPD). A single achromatic OPD silently sets all of this to zero.
+
+*Recommendation.* Keep OPD native and default (it is right for ~all users), but
+(a) **document the achromatic assumption explicitly** rather than burying it in
+the word, and (b) offer an **optional chromatic model**: a `wavelength=` output
+that, when a dispersion model is enabled, scales OPD by the dry-air refractivity
+ratio `(n(λ) − 1)/(n(λ_ref) − 1)` (Ciddor/Edlén), with a later dry/wet split for
+interferometry/mid-IR users who need it. This turns the current implicit
+approximation into an explicit, opt-in physical model — a differentiator none of
+the compared libraries offer, and it costs nothing on the fast path (default =
+achromatic, one scalar per wavelength when enabled). Tracked as backlog item P1-4.
 
 ### 3.2 Directions and anisoplanatism
 
@@ -373,12 +508,17 @@ Documented as out of scope (with pointers), unless demand pulls them in:
 |---|---|---|
 | **M1** (core) ✅ | Phase 1 + Phase 2 spectral engine | **Done** — `Atmosphere.from_profile(...).frames(dt)` works: frozen flow, sub-pixel, multi-layer, off-axis, GPU. (Ring-buffer extruder from 2.1–2.2 still open) |
 | **M2** (product) ✅ | Phase 3 + spectral engine (2.3) | **Done** — OPD in metres, off-axis directions, field-of-view oversizing, boiling. (LGS cone deferred to M5) |
-| **M3** (proof) | Phase 4 + Phase 5 | published benchmarks vs aotools/soapy/HCIPy, validation gallery |
-| **M4** (adoption) | Phase 6 | docs site, PyPI release `v0.2.0`, README with animation |
-| **M5** (polish) | boiling, LGS cone, FITS I/O, conda-forge | differentiating extras |
+| **M3** (proof) 🟡 | Phase 4 ✅ + Phase 5 | **Phase 4 done** — published benchmarks + honest comparison vs aotools/soapy/HCIPy (`bench_compare.py`, `RESULTS.md`, `docs/comparison.md`). Phase 5 validation gallery still open. |
+| **M3.5** (parity) | **Backlog P0–P1**: non-periodic extruder (1), FITS/npz I/O (2), moment-conserving compression (3), chromatic-OPD option (4) | close the capability gaps the comparison exposed — pyturb matches the others where it should and stays ahead where it already is |
+| **M4** (adoption) | Phase 6 + backlog P2 (analysis utils 5, site profiles 6) | docs site, PyPI release `v0.2.0`, README with animation |
+| **M5** (polish) | LGS cone (7), non-Kolmogorov hooks (8), threaded CPU FFT (9), interop recipes (10), conda-forge | differentiating extras |
+
+Backlog item numbers refer to *Critical review after the M3 comparison* above.
 
 Rules of thumb while executing: every new physics feature lands with an
 ensemble-statistics test against theory (the repo's existing standard — keep
 it); every performance claim lands with a benchmark script; every feature
-lands with a docs page. M1 is the highest-value single step: it converts
-pyturb from "phase-screen library" into "atmosphere for AO".
+lands with a docs page. **M3.5 is now the highest-value next step**: the
+comparison showed the non-periodic extruder (P0-1) is the one architectural gap
+between pyturb and the field — everything else is either already ahead or a
+cheap add.
