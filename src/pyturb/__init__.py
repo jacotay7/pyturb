@@ -17,9 +17,11 @@ unless a ``wavelength`` is given.
 """
 
 from .atmosphere import Atmosphere
-from .backend import get_array_module, to_numpy
+from .backend import get_array_module, get_fft_workers, set_fft_workers, to_numpy
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
+from . import analysis
+from .analysis import zernike_basis, zernike_decompose
 from .infinite import InfinitePhaseScreen, phase_covariance
 from .io import load, save
 from .profiles import (
@@ -73,7 +75,12 @@ __all__ = [
     "air_refractivity",
     "save",
     "load",
+    "analysis",
+    "zernike_basis",
+    "zernike_decompose",
     "to_numpy",
     "get_array_module",
+    "set_fft_workers",
+    "get_fft_workers",
     "__version__",
 ]

@@ -181,30 +181,39 @@ Prioritised backlog (each item names the library to learn from):
    small (~2 % V→K) chromatic term. The metre-valued OPD is untouched; the
    correction is exactly unity at the reference wavelength. 3 tests.
 
-**P2 — depth and reach.**
+**P2 — depth and reach. ✅ ALL DONE.**
 
-5. **Analysis/validation utilities, exported** (learn from `aotools`
-   `temporal_ps`, Zernikes). A small `pyturb.analysis` with: Zernike
-   decomposition (Noll variances), temporal-PSD slope fitting (−11/3 along-wind,
-   −14/3 transverse), and angular decorrelation. These double as the Phase 5
-   validation gallery *and* as user-facing tools. Keep a tiny internal Zernike
-   helper and export it.
-6. **More named site profiles** (learn from `HCIPy`: Keck, Las Campanas, Mauna
-   Kea tables). Cheap, high-value: add Keck, La Silla, Cerro Pachón, and an
-   ELT/Armazones profile. Each is a few lines of cited numbers.
-7. **LGS cone effect** (learn from `soapy` line-of-sight). Per-layer footprint
-   magnification `(1 − h/H_LGS)` for finite-altitude guide stars. Already
-   deferred to M5; the geometry drops into the Phase 3.2 `directions=` path.
+5. **Analysis/validation utilities, exported.** **DONE** — new
+   `pyturb.analysis`: `zernike_basis`/`zernike_decompose` (Noll-ordered basis +
+   least-squares projection, exported at top level), `noll_variance`/
+   `noll_residual_variance` (Noll 1976 Kolmogorov mode variances + asymptote),
+   `temporal_psd` + `fit_power_law` (log-log slope), and `differential_variance`
+   (angular decorrelation). Validated: exact coefficient recovery, orthonormal
+   basis, ensemble Zernike variances match Noll (~7 % aggregate), frozen-flow
+   temporal PSD slope ≈ −8/3. 9 tests. Doubles as the Phase 5 gallery backbone.
+6. **More named site profiles.** **DONE** — added `"keck"` and `"las-campanas"`
+   (HCIPy's cited layer tables) alongside `paranal-median`/`mauna-kea`/`hv57`.
+   (Cerro Pachón / Armazones remain easy future adds.)
+7. **LGS cone effect.** **DONE** — `Atmosphere(engine="extrude",
+   lgs_altitude=90e3)` magnifies each layer's footprint by `(1 − h/H_LGS)`, so a
+   finite-range beacon senses focal anisoplanatism. Lives in the extruder
+   (per-layer resampling); the spectral engine rejects it with a clear error, as
+   anticipated. Verified: the NGS-vs-LGS differential variance grows as the
+   beacon lowers. 2 tests.
 
-**P3 — nice-to-have, keep hooks.**
+**P3 — nice-to-have, keep hooks. ✅ ALL DONE.**
 
-8. **Non-Kolmogorov spectra**: general power-law exponent and inner scale
-   (modified von Kármán / Hill) — a few lines in `_psd`, leave the hook.
-9. **Threaded CPU FFT** (`scipy.fft(workers=)`) to close the single-thread CPU
-   gap; keep the pure-NumPy path dependency-light.
-10. **Interop recipes, not dependencies**: documented adapters for HCIPy
-    wavefronts, poppy, and DM-fitting pipelines. `frames()` already returns a
-    plain array, so these are docs, not code.
+8. **Non-Kolmogorov spectra.** **DONE** — `PhaseScreen(power_law=…,
+   inner_scale=…)`: general PSD index (`D(r) ~ r^{power_law−2}`, Kolmogorov =
+   11/3) and a modified-von-Kármán/Hill inner-scale roll-off. Verified the SF
+   slope tracks `power_law−2` and the inner scale suppresses small-scale power.
+   3 tests.
+9. **Threaded CPU FFT.** **DONE** — `pyturb.set_fft_workers(-1)` threads the
+   SciPy CPU FFTs across cores (read at call time, result-invariant); GPU path
+   untouched. 1 test.
+10. **Interop recipes, not dependencies.** **DONE** — `docs/interop.md` with
+    copy-paste recipes for HCIPy wavefronts, poppy OPD elements, and DM/modal
+    fitting via `analysis.zernike_decompose`. Docs, no new dependencies.
 
 **Explicit non-goals reaffirmed** (from the comparison): WFS/DM/controller
 simulation (soapy), tomographic reconstructors and slope covariance (aotools),
@@ -550,8 +559,9 @@ Documented as out of scope (with pointers), unless demand pulls them in:
 | **M2** (product) ✅ | Phase 3 + spectral engine (2.3) | **Done** — OPD in metres, off-axis directions, field-of-view oversizing, boiling. (LGS cone deferred to M5) |
 | **M3** (proof) 🟡 | Phase 4 ✅ + Phase 5 | **Phase 4 done** — published benchmarks + honest comparison vs aotools/soapy/HCIPy (`bench_compare.py`, `RESULTS.md`, `docs/comparison.md`). Phase 5 validation gallery still open. |
 | **M3.5** (parity) ✅ | **Backlog P0–P1 — all done**: non-periodic extruder (1, ring buffer + sub-pixel + arbitrary direction + `Atmosphere` `engine="extrude"`); FITS/npz I/O (2); moment-conserving compression (3); chromatic-OPD option (4) | closed the capability gaps the comparison exposed — pyturb now matches the others where it should and stays ahead where it already is |
-| **M4** (adoption) | Phase 6 + backlog P2 (analysis utils 5, site profiles 6) | docs site, PyPI release `v0.2.0`, README with animation |
-| **M5** (polish) | LGS cone (7), non-Kolmogorov hooks (8), threaded CPU FFT (9), interop recipes (10), conda-forge | differentiating extras |
+| **M3.6** (depth) ✅ | **Backlog P2–P3 — all done**: analysis utils (5, `pyturb.analysis` — Zernike/Noll, temporal PSD, angular); site profiles (6, keck, las-campanas); LGS cone (7); non-Kolmogorov spectra (8); threaded CPU FFT (9); interop recipes (10, `docs/interop.md`) | depth + reach: the validation toolkit, extra sites, focal anisoplanatism, non-Kolmogorov hooks, and dependency-free interop |
+| **M4** (adoption) | Phase 6 | docs site, PyPI release `v0.2.0`, README with animation, Phase 5 validation gallery (now easy — `pyturb.analysis` provides the primitives) |
+| **M5** (polish) | conda-forge, `optimal_grouping`/GCTM compression, dry/wet chromatic split, `cho_factor` extruder polish | differentiating extras |
 
 Backlog item numbers refer to *Critical review after the M3 comparison* above.
 

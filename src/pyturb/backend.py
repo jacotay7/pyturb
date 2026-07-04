@@ -42,17 +42,69 @@ def get_array_module(device: str):
     )
 
 
+# CPU FFT thread count: None -> scipy default (1 thread); -1 -> all cores.
+_fft_workers = None
+
+
+def set_fft_workers(workers):
+    """Set the thread count for CPU (SciPy) FFTs; affects all pyturb objects.
+
+    ``None`` (default) is single-threaded; ``-1`` uses every core; a positive
+    integer pins that many. No effect on the GPU path (CuPy). Returns the
+    previous value.
+
+    >>> import pyturb                       # doctest: +SKIP
+    >>> pyturb.set_fft_workers(-1)          # use all cores for CPU FFTs
+    """
+    global _fft_workers
+    if workers is not None and workers == 0:
+        raise ValueError("workers must be None, -1, or a non-zero integer")
+    previous = _fft_workers
+    _fft_workers = None if workers is None else int(workers)
+    return previous
+
+
+def get_fft_workers():
+    """Return the current CPU FFT thread setting (see :func:`set_fft_workers`)."""
+    return _fft_workers
+
+
+class _ThreadedScipyFFT:
+    """``scipy.fft`` wrapper that injects the pyturb ``workers`` setting.
+
+    The 2-D transforms pyturb uses (``ifft2``/``fft2``) are threaded across
+    cores when :func:`set_fft_workers` asks for it; everything else forwards to
+    ``scipy.fft`` unchanged. The worker count is read at call time, so changing
+    it affects screens that already exist.
+    """
+
+    def __init__(self, scipy_fft):
+        self._m = scipy_fft
+
+    def __getattr__(self, name):
+        return getattr(self._m, name)
+
+    def ifft2(self, a, **kwargs):
+        kwargs.setdefault("workers", _fft_workers)
+        return self._m.ifft2(a, **kwargs)
+
+    def fft2(self, a, **kwargs):
+        kwargs.setdefault("workers", _fft_workers)
+        return self._m.fft2(a, **kwargs)
+
+
 def get_fft_module(xp):
     """Return an FFT module that preserves single precision.
 
     ``numpy.fft`` always computes in double precision, so on CPU we use
-    ``scipy.fft`` (which keeps complex64 as complex64). On GPU, ``cupy.fft``
-    already preserves precision.
+    ``scipy.fft`` (which keeps complex64 as complex64) wrapped so the
+    :func:`set_fft_workers` thread count applies. On GPU, ``cupy.fft`` already
+    preserves precision.
     """
     if xp is np:
         import scipy.fft
 
-        return scipy.fft
+        return _ThreadedScipyFFT(scipy.fft)
     return xp.fft
 
 

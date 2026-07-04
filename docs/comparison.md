@@ -140,9 +140,10 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
    the default) sets each layer to the `Cn²·h^{5/3}` and `Cn²·v^{5/3}` moments,
    conserving θ₀ *and* τ₀ to <0.1 % (the old centroid method drifts up to
    ~12 %). `optimal_grouping`/GCTM tomography variants remain optional extras.
-3. **Validation tooling.** `temporal_ps` fits the −11/3 (along-wind) and −14/3
-   (transverse) slope laws — exactly the kind of check the Phase 5 validation
-   gallery needs.
+3. **Validation tooling** — **adopted.** `pyturb.analysis` now provides Zernike
+   decomposition + Noll (1976) variances, a temporal-PSD slope fit, and angular
+   decorrelation — the same family of checks as aotools' `temporal_ps`, plus the
+   Zernike spectrum, usable both as validation and as user tools.
 
 **From HCIPy**
 
@@ -150,9 +151,9 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
    `InfiniteAtmosphericLayer` pairs the extruder with bilinear interpolation and
    a real `evolve_until(t)` clock — the design pyturb's non-periodic engine
    should match so it is not limited to integer pixels.
-5. **More named site atmospheres.** HCIPy ships Keck, Las Campanas, and Mauna
-   Kea layer tables. pyturb has Paranal, Mauna Kea, HV5/7, and toy profiles —
-   adding Keck/La Silla is a cheap, high-value win.
+5. **More named site atmospheres** — **adopted.** Added `"keck"` and
+   `"las-campanas"` from HCIPy's cited tables, alongside Paranal, Mauna Kea,
+   HV5/7 and the toy profiles. (Cerro Pachón / Armazones are easy future adds.)
 6. **Clean Monte-Carlo reset.** `reset(make_independent_realization=True)` is a
    tidy way to draw independent realisations from a configured layer.
 7. **Scintillation is explicitly *not* our job.** HCIPy's `MultiLayerAtmosphere`

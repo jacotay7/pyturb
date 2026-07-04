@@ -119,6 +119,26 @@ def _mauna_kea() -> List[Layer]:
     ]
 
 
+def _keck() -> List[Layer]:
+    # Keck / Mauna Kea 7-layer model (as used by HCIPy; TMT site survey), L0=20.
+    altitudes = [0, 2100, 4100, 6500, 9000, 12000, 14800]
+    fractions = [0.369, 0.219, 0.127, 0.101, 0.046, 0.111, 0.027]
+    winds = [6.7, 13.9, 20.8, 29.0, 29.0, 29.0, 29.0]
+    directions = [0, 30, 60, 90, 120, 150, 180]
+    return [Layer(a, f, w, d, L0=20.0)
+            for a, f, w, d in zip(altitudes, fractions, winds, directions)]
+
+
+def _las_campanas() -> List[Layer]:
+    # Las Campanas (GMTO site) 7-layer model (as used by HCIPy), L0=25.
+    altitudes = [250, 500, 1000, 2000, 4000, 8000, 16000]
+    fractions = [0.42, 0.03, 0.06, 0.16, 0.11, 0.10, 0.12]
+    winds = [10, 10, 20, 20, 25, 30, 25]
+    directions = [0, 30, 60, 90, 120, 150, 180]
+    return [Layer(a, f, w, d, L0=25.0)
+            for a, f, w, d in zip(altitudes, fractions, winds, directions)]
+
+
 def _hv57(n_layers: int = 10) -> List[Layer]:
     heights = np.geomspace(10.0, 25000.0, 4096)
     cn2 = hufnagel_valley(heights)
@@ -130,6 +150,8 @@ _PROFILES = {
     "two-layer": _two_layer,
     "paranal-median": _paranal_median,
     "mauna-kea": _mauna_kea,
+    "keck": _keck,
+    "las-campanas": _las_campanas,
     "hv57": _hv57,
 }
 
@@ -143,7 +165,8 @@ def get_profile(name: str) -> List[Layer]:
     """Return a fresh list of :class:`Layer` for a named profile.
 
     Names: ``"single-layer"``, ``"two-layer"``, ``"paranal-median"``,
-    ``"mauna-kea"``, ``"hv57"``. See :func:`list_profiles`.
+    ``"mauna-kea"``, ``"keck"``, ``"las-campanas"``, ``"hv57"``. See
+    :func:`list_profiles`.
     """
     key = str(name).lower()
     if key not in _PROFILES:

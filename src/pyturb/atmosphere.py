@@ -109,6 +109,13 @@ class Atmosphere:
         batched FFT. :meth:`sample` (Monte-Carlo) is unaffected by this choice.
     interp : {"cubic", "linear"}, optional
         Sub-pixel interpolation kernel for ``engine="extrude"``. Default cubic.
+    lgs_altitude : float, optional
+        Altitude [m] of a laser guide star (e.g. ``90e3`` for sodium). When
+        set, each layer's footprint is magnified by ``(1 - h/lgs_altitude)`` —
+        the **cone effect** (focal anisoplanatism) that a finite-range beacon
+        senses. ``None`` (default) is a natural-guide-star / science source at
+        infinity. Requires ``engine="extrude"`` (the cone needs per-layer
+        resampling, which the batched spectral engine cannot do).
     dispersion : {None, "edlen"}, optional
         Chromatic model for the OPD. ``None`` (default) treats the turbulence
         OPD as perfectly achromatic (phase at ``wavelength`` is just
@@ -152,6 +159,7 @@ class Atmosphere:
         tau_boil=None,
         engine: str = "spectral",
         interp: str = "cubic",
+        lgs_altitude: Optional[float] = None,
         dispersion=None,
         device: str = "cpu",
         dtype: str = "float32",
@@ -172,10 +180,16 @@ class Atmosphere:
             raise ValueError("engine must be 'spectral' or 'extrude'")
         if engine == "extrude" and tau_boil is not None:
             raise ValueError("boiling (tau_boil) requires engine='spectral'")
+        if lgs_altitude is not None:
+            if engine != "extrude":
+                raise ValueError("lgs_altitude (cone effect) requires engine='extrude'")
+            if lgs_altitude <= 0:
+                raise ValueError("lgs_altitude must be positive [m]")
         if dispersion not in (None, "edlen"):
             raise ValueError("dispersion must be None or 'edlen'")
         self.engine = engine
         self.interp = interp
+        self.lgs_altitude = lgs_altitude
         self.dispersion = dispersion
 
         self.wavelength = float(wavelength)
@@ -293,6 +307,8 @@ class Atmosphere:
                 layer_altitude_los=ext_alt,
                 field_of_view_pix=float(self.margin_pix),
                 interp=self.interp,
+                lgs_altitude_los=(None if lgs_altitude is None
+                                  else float(lgs_altitude) * self.airmass),
                 device=device,
                 dtype=dtype,
                 seeds=ext_seeds,

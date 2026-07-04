@@ -312,3 +312,26 @@ def test_gpu_extrude_and_spectral_match_theory(engine):
         mid = (r >= 4 * atm.pixel_scale) & (r <= 8.0 / 4)
         ratio = d[mid] / theory[mid]
         assert np.all(ratio > 0.8) and np.all(ratio < 1.2), (engine, dev)
+
+
+def test_lgs_cone_effect_grows_as_beacon_lowers():
+    """Focal anisoplanatism (NGS-vs-LGS difference) increases at lower H_LGS."""
+    from pyturb.analysis import differential_variance
+    kw = dict(seeing=0.8, n=64, engine="extrude", seed=1)
+    ngs = pyturb.to_numpy(
+        pyturb.Atmosphere.from_profile("paranal-median", **kw).opd(0.0, wavelength=500e-9))
+    var = []
+    for H in (200e3, 90e3, 30e3):
+        lgs = pyturb.Atmosphere.from_profile("paranal-median", lgs_altitude=H, **kw)
+        var.append(differential_variance(
+            ngs, pyturb.to_numpy(lgs.opd(0.0, wavelength=500e-9))))
+    assert 0 < var[0] < var[1] < var[2]
+
+
+def test_lgs_requires_extruder_and_positive_altitude():
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       lgs_altitude=90e3)  # spectral engine
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       engine="extrude", lgs_altitude=-1.0)

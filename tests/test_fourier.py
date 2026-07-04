@@ -98,3 +98,41 @@ def test_invalid_arguments():
         pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1, dtype="int32")
     with pytest.raises(ValueError):
         pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1).generate(0)
+
+
+def _sf_slope(power_law=11.0 / 3.0, inner_scale=0.0, draws=25):
+    n, dx, r0 = 256, 8.0 / 256, 0.15
+    gen = pyturb.PhaseScreen(n=n, pixel_scale=dx, r0=r0, L0=np.inf,
+                             power_law=power_law, inner_scale=inner_scale,
+                             seed=1, dtype="float64")
+    acc = None
+    for _ in range(draws):
+        r, d = pyturb.structure_function(gen.generate(), dx)
+        acc = d if acc is None else acc + d
+    d = acc / draws
+    band = (r >= 3 * dx) & (r <= 8.0 / 6)
+    return np.polyfit(np.log(r[band]), np.log(d[band]), 1)[0]
+
+
+def test_non_kolmogorov_power_law_sets_structure_function_slope():
+    # D(r) ~ r^{power_law - 2}: steeper PSD -> steeper structure function.
+    assert abs(_sf_slope(11.0 / 3.0) - 5.0 / 3.0) < 0.12
+    assert abs(_sf_slope(3.2) - 1.2) < 0.15
+    assert _sf_slope(4.0) > _sf_slope(11.0 / 3.0) > _sf_slope(3.2)
+
+
+def test_inner_scale_suppresses_small_scale_power():
+    n, dx, r0 = 256, 8.0 / 256, 0.15
+    kw = dict(n=n, pixel_scale=dx, r0=r0, L0=np.inf, seed=2, dtype="float64")
+    none = pyturb.PhaseScreen(**kw)
+    hill = pyturb.PhaseScreen(inner_scale=0.2, **kw)
+    _, d_none = pyturb.structure_function(none.generate(40), dx)
+    _, d_hill = pyturb.structure_function(hill.generate(40), dx)
+    assert d_hill[0] < 0.9 * d_none[0]           # less structure at 1 pixel
+
+
+def test_spectrum_argument_validation():
+    with pytest.raises(ValueError):
+        pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1, power_law=2.0)
+    with pytest.raises(ValueError):
+        pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1, inner_scale=-1.0)

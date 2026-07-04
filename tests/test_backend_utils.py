@@ -63,3 +63,22 @@ def test_structure_function_input_validation():
     r, d = pyturb.structure_function(screen)
     assert len(r) == 4  # default n // 4
     np.testing.assert_array_equal(d, 0.0)
+
+
+def test_fft_workers_setting_is_result_invariant():
+    import pyturb
+    prev = pyturb.set_fft_workers(None)
+    try:
+        g = pyturb.PhaseScreen(n=128, pixel_scale=0.02, r0=0.15, seed=0,
+                               dtype="float64")
+        single = g.generate(3)
+        pyturb.set_fft_workers(-1)
+        assert pyturb.get_fft_workers() == -1
+        g2 = pyturb.PhaseScreen(n=128, pixel_scale=0.02, r0=0.15, seed=0,
+                                dtype="float64")
+        threaded = g2.generate(3)
+        np.testing.assert_allclose(single, threaded, rtol=1e-10)
+        with pytest.raises(ValueError):
+            pyturb.set_fft_workers(0)
+    finally:
+        pyturb.set_fft_workers(prev)

@@ -52,6 +52,15 @@ class PhaseScreen:
         Each level extends spectral coverage by a further factor of 3 in
         scale; the default of 8 reproduces the Kolmogorov structure
         function to within a few percent.
+    power_law : float, optional
+        Power-law index of the phase PSD, ``PSD ~ f^{-power_law}``. Default
+        ``11/3`` (Kolmogorov, structure function ``~ r^{5/3}``). Other values
+        give non-Kolmogorov turbulence (``D(r) ~ r^{power_law-2}``); ``r0`` then
+        acts as an amplitude knob rather than the strict Fried parameter.
+    inner_scale : float, optional
+        Inner scale l0 [m]. ``0`` (default) disables it; a positive value rolls
+        the PSD off above ``fm = 5.92/(2 pi l0)`` (modified von Kármán / Hill),
+        flattening the structure function at small separations.
     seed : int, optional
         Seed for the random generator. Screens are reproducible for a fixed
         seed, backend and dtype.
@@ -76,6 +85,8 @@ class PhaseScreen:
         r0,
         L0=25.0,
         subharmonics=8,
+        power_law=11.0 / 3.0,
+        inner_scale=0.0,
         seed=None,
         device="cpu",
         dtype="float32",
@@ -90,12 +101,18 @@ class PhaseScreen:
             raise ValueError("L0 must be positive (use numpy.inf for Kolmogorov)")
         if subharmonics < 0:
             raise ValueError("subharmonics must be >= 0")
+        if power_law <= 2.0:
+            raise ValueError("power_law must be > 2 (Kolmogorov is 11/3)")
+        if inner_scale < 0:
+            raise ValueError("inner_scale must be >= 0 (0 disables it)")
 
         self.n = int(n)
         self.pixel_scale = float(pixel_scale)
         self.r0 = float(r0)
         self.L0 = float(L0)
         self.subharmonics = int(subharmonics)
+        self.power_law = float(power_law)
+        self.inner_scale = float(inner_scale)
         self.device = device
 
         self.xp = get_array_module(device)
@@ -112,9 +129,24 @@ class PhaseScreen:
     # setup
     # ------------------------------------------------------------------
     def _psd(self, f_squared):
-        """Von Kármán phase PSD (rad^2 m^2) at squared frequency (m^-2)."""
+        """Von Kármán phase PSD (rad^2 m^2) at squared frequency (m^-2).
+
+        The general (modified) von Kármán form
+        ``0.023 r0^{-5/3} exp(-f^2/fm^2) (f^2 + 1/L0^2)^{-power_law/2}``:
+        ``power_law=11/3`` is Kolmogorov, the outer scale ``L0`` caps the low
+        frequencies, and a non-zero ``inner_scale`` l0 rolls off the high ones
+        with ``fm = 5.92/(2 pi l0)`` (Tatarski/Hill). For ``power_law != 11/3``
+        the ``0.023 r0^{-5/3}`` amplitude is retained but ``r0`` is then just an
+        amplitude knob, not strictly the Fried parameter.
+        """
         f0_squared = 0.0 if np.isinf(self.L0) else 1.0 / self.L0**2
-        return 0.023 * self.r0 ** (-5.0 / 3.0) * (f_squared + f0_squared) ** (-11.0 / 6.0)
+        psd = 0.023 * self.r0 ** (-5.0 / 3.0) * (f_squared + f0_squared) ** (
+            -self.power_law / 2.0
+        )
+        if self.inner_scale > 0.0:
+            fm = 5.92 / (2.0 * np.pi * self.inner_scale)
+            psd = psd * np.exp(-f_squared / fm**2)
+        return psd
 
     def _band_amplitude(self, fx, fy, width, samples=33):
         """Amplitude for a discrete mode representing a frequency cell.
@@ -235,8 +267,13 @@ class PhaseScreen:
         return screens[0] if squeeze else screens
 
     def __repr__(self):
+        extra = ""
+        if self.power_law != 11.0 / 3.0:
+            extra += f", power_law={self.power_law}"
+        if self.inner_scale > 0.0:
+            extra += f", inner_scale={self.inner_scale}"
         return (
             f"PhaseScreen(n={self.n}, pixel_scale={self.pixel_scale}, "
-            f"r0={self.r0}, L0={self.L0}, subharmonics={self.subharmonics}, "
+            f"r0={self.r0}, L0={self.L0}, subharmonics={self.subharmonics}{extra}, "
             f"device={self.device!r}, dtype={self.dtype.name!r})"
         )

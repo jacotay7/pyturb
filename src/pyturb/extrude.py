@@ -100,6 +100,7 @@ class _ExtrudeLayer:
         rng,
         a_matrix,
         b_unit,
+        magnification=1.0,
     ):
         self.n = int(n)
         self.W = int(width)
@@ -120,8 +121,11 @@ class _ExtrudeLayer:
         self._a = a_matrix
         self._b = (b_unit * (float(r0) ** (-5.0 / 6.0))).astype(self.dtype)
 
-        # Pupil pixel coordinates (centred) projected into the wind frame.
-        g = np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0
+        # Pupil pixel coordinates (centred) projected into the wind frame. The
+        # LGS cone effect shrinks the footprint by ``magnification =
+        # 1 - h/H_LGS`` for a guide star at finite altitude.
+        mag = float(magnification)
+        g = (np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0) * mag
         gx = g[:, None]
         gy = g[None, :]
         along = gx * c + gy * s
@@ -250,6 +254,7 @@ class ExtrudedAtmosphere:
         field_of_view_pix=0.0,
         stencil_rows=2,
         interp="cubic",
+        lgs_altitude_los=None,
         device="cpu",
         dtype="float32",
         seeds=None,
@@ -280,6 +285,12 @@ class ExtrudedAtmosphere:
                 )
             a_matrix, b_unit = self._ab_cache[key]
             rng = xp.random.default_rng(seed)
+            # LGS cone: a layer at altitude h seen from a guide star at range
+            # H_LGS has its footprint magnified by (1 - h/H_LGS).
+            if lgs_altitude_los is not None:
+                magnification = max(0.0, 1.0 - float(alt) / float(lgs_altitude_los))
+            else:
+                magnification = 1.0
             self.layers.append(
                 _ExtrudeLayer(
                     n=self.n,
@@ -297,6 +308,7 @@ class ExtrudedAtmosphere:
                     rng=rng,
                     a_matrix=a_matrix,
                     b_unit=b_unit,
+                    magnification=magnification,
                 )
             )
 

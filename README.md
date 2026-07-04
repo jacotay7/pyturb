@@ -102,9 +102,9 @@ pip install pyturb[cuda11]    # + CuPy for CUDA 11.x
 ### Profiles
 
 `Atmosphere.from_profile(name, ...)` accepts representative, citable profiles —
-`"paranal-median"`, `"mauna-kea"`, `"hv57"` (Hufnagel–Valley 5/7), plus
-`"single-layer"` / `"two-layer"` for teaching and quick tests. Build your own
-from a continuous `Cn2(h)` model:
+`"paranal-median"`, `"mauna-kea"`, `"keck"`, `"las-campanas"`, `"hv57"`
+(Hufnagel–Valley 5/7), plus `"single-layer"` / `"two-layer"` for teaching and
+quick tests. Build your own from a continuous `Cn2(h)` model:
 
 ```python
 import numpy as np
@@ -131,6 +131,26 @@ data, meta = pyturb.load("opd.fits")                  #   (array, metadata)
 OPD is achromatic by default. For the small (~2% visible→K) chromatic term from
 air dispersion, pass `dispersion="edlen"`; then `opd(..., wavelength=λ)` scales
 the path by the dry-air refractivity ratio (`pyturb.air_refractivity`).
+
+## Diagnostics and advanced options
+
+`pyturb.analysis` turns screens into the usual AO diagnostics: `zernike_basis` /
+`zernike_decompose` (Noll-ordered), `noll_variance` / `noll_residual_variance`
+(Kolmogorov theory to validate against), `temporal_psd` + `fit_power_law`, and
+`differential_variance` for angular decorrelation.
+
+More knobs, all off by default:
+
+- **LGS cone effect** — `Atmosphere(engine="extrude", lgs_altitude=90e3)`
+  magnifies each layer by `(1 − h/H_LGS)` for a finite-range beacon.
+- **Non-Kolmogorov turbulence** — `PhaseScreen(power_law=…, inner_scale=…)` for
+  a general PSD slope (`D(r) ~ r^{power_law−2}`) and a modified-von-Kármán inner
+  scale.
+- **Threaded CPU FFTs** — `pyturb.set_fft_workers(-1)` uses all cores (GPU
+  unaffected).
+
+Dropping pyturb output into HCIPy, poppy, or a DM-fitting loop:
+see [`docs/interop.md`](docs/interop.md).
 
 ## Performance
 
