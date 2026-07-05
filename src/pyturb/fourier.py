@@ -18,6 +18,8 @@ References
 
 from __future__ import annotations
 
+from typing import Any, Optional, Union
+
 import numpy as np
 
 from .backend import get_array_module, get_fft_module
@@ -80,16 +82,16 @@ class PhaseScreen:
 
     def __init__(
         self,
-        n,
-        pixel_scale,
-        r0,
-        L0=25.0,
-        subharmonics=8,
-        power_law=11.0 / 3.0,
-        inner_scale=0.0,
-        seed=None,
-        device="cpu",
-        dtype="float32",
+        n: int,
+        pixel_scale: float,
+        r0: float,
+        L0: float = 25.0,
+        subharmonics: int = 8,
+        power_law: float = 11.0 / 3.0,
+        inner_scale: float = 0.0,
+        seed: Any = None,
+        device: str = "cpu",
+        dtype: Union[str, np.dtype] = "float32",
     ):
         if n < 2:
             raise ValueError("n must be at least 2")
@@ -221,7 +223,7 @@ class PhaseScreen:
     # ------------------------------------------------------------------
     # generation
     # ------------------------------------------------------------------
-    def generate(self, count=None):
+    def generate(self, count: Optional[int] = None) -> Any:
         """Generate independent phase screens.
 
         Parameters
@@ -266,7 +268,7 @@ class PhaseScreen:
         screens = xp.ascontiguousarray(screens.astype(self.dtype, copy=False))
         return screens[0] if squeeze else screens
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         extra = ""
         if self.power_law != 11.0 / 3.0:
             extra += f", power_law={self.power_law}"

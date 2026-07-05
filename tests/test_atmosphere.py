@@ -362,6 +362,48 @@ def test_extrude_rejects_boiling():
                                        engine="extrude", tau_boil=0.1)
 
 
+def test_power_law_and_inner_scale_reach_sample_and_spectral():
+    """power_law/inner_scale, previously only reachable via the low-level
+    PhaseScreen, must work through Atmosphere for sample() and the spectral
+    engine (frames()/opd())."""
+    kolmo = pyturb.Atmosphere.from_profile("single-layer", seeing=0.8, n=64,
+                                           dtype="float64", seed=1)
+    non_kolmo = pyturb.Atmosphere.from_profile(
+        "single-layer", seeing=0.8, n=64, dtype="float64", seed=1,
+        power_law=4.0, inner_scale=0.05)
+    a = pyturb.to_numpy(kolmo.sample())
+    b = pyturb.to_numpy(non_kolmo.sample())
+    assert a.shape == b.shape
+    assert not np.allclose(a, b)  # different PSD -> different realisation
+
+    opd = pyturb.to_numpy(non_kolmo.opd(0.001))
+    assert opd.shape == (64, 64)
+    assert np.isfinite(opd).all()
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(power_law=4.0),
+    dict(inner_scale=0.05),
+    dict(L0=np.inf),
+])
+def test_extrude_rejects_non_von_karman_options(kwargs):
+    """The extruder's recurrence is a closed form for the standard von Karman
+    covariance (power_law=11/3, inner_scale=0, finite L0); anything else must
+    raise a clear error rather than silently mismatch statistics."""
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       engine="extrude", **kwargs)
+
+
+def test_invalid_power_law_and_inner_scale():
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       power_law=2.0)
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       inner_scale=-1.0)
+
+
 @pytest.mark.parametrize("engine", ["spectral", "extrude"])
 def test_gpu_extrude_and_spectral_match_theory(engine):
     """Both engines, on both devices, follow the total-r0 von Karman law.

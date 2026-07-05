@@ -13,6 +13,8 @@ The ``.npz`` path has no extra dependencies.
 from __future__ import annotations
 
 import json
+import os
+from typing import Any, Dict, Tuple, Union
 
 import numpy as np
 
@@ -23,18 +25,18 @@ __all__ = ["save", "load"]
 _META_KEY = "__pyturb_meta__"
 
 
-def _version():
+def _version() -> str:
     from . import __version__
 
     return __version__
 
 
-def _clean_meta(meta):
+def _clean_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
     """Drop ``None`` values and coerce keys to strings."""
     return {str(k): v for k, v in meta.items() if v is not None}
 
 
-def save(path, data, **metadata):
+def save(path: Union[str, os.PathLike], data: Any, **metadata: Any) -> None:
     """Write ``data`` (a phase/OPD array) to ``path`` with ``metadata``.
 
     Parameters
@@ -68,7 +70,7 @@ def save(path, data, **metadata):
         np.savez(path, data=array, **{_META_KEY: json.dumps(meta)})
 
 
-def load(path):
+def load(path: Union[str, os.PathLike]) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Load an array and its metadata written by :func:`save`.
 
     Returns
@@ -99,12 +101,12 @@ def _require_astropy():
     return fits
 
 
-def _fits_key(key):
+def _fits_key(key: str) -> str:
     """FITS keyword: <=8 chars, upper case, else HIERARCH handles the rest."""
     return key.upper()
 
 
-def _save_fits(path, array, meta):
+def _save_fits(path: str, array: np.ndarray, meta: Dict[str, Any]) -> None:
     import warnings
 
     fits = _require_astropy()
@@ -126,7 +128,7 @@ def _save_fits(path, array, meta):
         hdu.writeto(path, overwrite=True)
 
 
-def _load_fits(path):
+def _load_fits(path: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     fits = _require_astropy()
     reserved = {"SIMPLE", "BITPIX", "EXTEND", "COMMENT", "HISTORY", "BUNIT"}
     naxis = {"NAXIS"} | {f"NAXIS{i}" for i in range(1, 10)}

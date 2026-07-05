@@ -29,7 +29,10 @@ Reference: Assémat, Wilson & Gendron (2006), Optics Express 14, 988.
 
 from __future__ import annotations
 
+from typing import Any, Union
+
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy import linalg
 from scipy.special import gamma, kv
 
@@ -52,7 +55,7 @@ def _spd_solve(spd, rhs):
         return np.linalg.lstsq(spd, rhs, rcond=None)[0]
 
 
-def phase_covariance(r, r0, L0):
+def phase_covariance(r: ArrayLike, r0: float, L0: float) -> np.ndarray:
     """Von Kármán phase covariance :math:`C_\\phi(r)` in rad^2.
 
     Parameters
@@ -130,15 +133,15 @@ class InfinitePhaseScreen:
 
     def __init__(
         self,
-        n,
-        pixel_scale,
-        r0,
-        L0=25.0,
-        stencil_rows=2,
-        interp="cubic",
-        seed=None,
-        device="cpu",
-        dtype="float32",
+        n: int,
+        pixel_scale: float,
+        r0: float,
+        L0: float = 25.0,
+        stencil_rows: int = 2,
+        interp: str = "cubic",
+        seed: Any = None,
+        device: str = "cpu",
+        dtype: Union[str, np.dtype] = "float32",
     ):
         if not np.isfinite(L0) or L0 <= 0:
             raise ValueError(
@@ -310,11 +313,11 @@ class InfinitePhaseScreen:
     # public API
     # ------------------------------------------------------------------
     @property
-    def screen(self):
+    def screen(self) -> Any:
         """Current ``(n, n)`` phase screen in radians (device array)."""
         return self._current
 
-    def step(self, steps=1):
+    def step(self, steps: int = 1) -> Any:
         """Advance the wind by ``steps`` whole pixels and return the screen.
 
         Each step shifts the screen one row along axis 0 and extrudes a new
@@ -327,7 +330,7 @@ class InfinitePhaseScreen:
         self._advance_to(self._travel + steps)
         return self._current
 
-    def advance(self, pixels):
+    def advance(self, pixels: float) -> Any:
         """Advance the wind by ``pixels`` (any non-negative float) and return it.
 
         The pupil is interpolated at the exact sub-pixel offset (see ``interp``);
@@ -341,11 +344,11 @@ class InfinitePhaseScreen:
         return self._current
 
     @property
-    def travel(self):
+    def travel(self) -> float:
         """Total wind travel so far, in pixels (metres = ``travel * pixel_scale``)."""
         return self._travel
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"InfinitePhaseScreen(n={self.n}, pixel_scale={self.pixel_scale}, "
             f"r0={self.r0}, L0={self.L0}, stencil_rows={self.stencil_rows}, "

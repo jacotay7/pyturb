@@ -69,9 +69,18 @@ atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8)
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, engine="extrude")
 ```
 
-Both produce identical statistics (von Kármán to ~1–2%); pick the extruder when
-a repeating screen would bias a long run, the spectral engine when you want raw
-speed and the period is longer than your simulation.
+Both match von Kármán theory to ~1–2% in the mid-spatial-frequency range
+(separations of a few pixels and up). At the *finest* scale (1-2 px) the
+extruder's sub-pixel interpolation is a position-dependent low-pass filter —
+exact at integer pixel travel, maximally smoothing at half-pixel travel — so
+its finest-scale power deviates from theory by 5-15% and oscillates with the
+sub-pixel phase of the wind travel (a spurious line at `v / pixel_scale` Hz
+and harmonics). The spectral engine has no such artifact (it is exact at any
+offset) but is periodic. Pick the extruder when a repeating screen would bias
+a long run and the fine-scale tail near the actuator/WFS-sampling Nyquist
+frequency is not what you're studying; pick the spectral engine when you want
+raw speed, fine-scale fidelity, and the period is longer than your
+simulation.
 
 ### Lower-level building blocks
 
@@ -106,10 +115,14 @@ pip install pyturb[cuda11]    # + CuPy for CUDA 11.x
 
 ### Profiles
 
-`Atmosphere.from_profile(name, ...)` accepts representative, citable profiles —
+`Atmosphere.from_profile(name, ...)` accepts named profiles —
 `"paranal-median"`, `"mauna-kea"`, `"keck"`, `"las-campanas"`, `"hv57"`
 (Hufnagel–Valley 5/7), plus `"single-layer"` / `"two-layer"` for teaching and
-quick tests. Build your own from a continuous `Cn2(h)` model:
+quick tests. `"mauna-kea"`, `"keck"` and `"las-campanas"` are traceable to a
+specific published table (cited in `pyturb.profiles`'s source); the others
+are representative/illustrative rather than a specific site survey. Wind
+*direction* is illustrative in every profile — see `pyturb.get_profile`'s
+docstring. Build your own from a continuous `Cn2(h)` model:
 
 ```python
 import numpy as np
@@ -148,9 +161,12 @@ More knobs, all off by default:
 
 - **LGS cone effect** — `Atmosphere(engine="extrude", lgs_altitude=90e3)`
   magnifies each layer by `(1 − h/H_LGS)` for a finite-range beacon.
-- **Non-Kolmogorov turbulence** — `PhaseScreen(power_law=…, inner_scale=…)` for
-  a general PSD slope (`D(r) ~ r^{power_law−2}`) and a modified-von-Kármán inner
-  scale.
+- **Non-Kolmogorov turbulence** — `power_law=…, inner_scale=…` for a general
+  PSD slope (`D(r) ~ r^{power_law−2}`) and a modified-von-Kármán inner scale.
+  Available on `PhaseScreen` directly and on `Atmosphere` (`sample()` and
+  `engine="spectral"` `frames()`/`opd()`); `engine="extrude"` requires the
+  standard von Kármán exponent (its row recurrence is a closed form derived
+  specifically for it).
 - **Threaded CPU FFTs** — `pyturb.set_fft_workers(-1)` uses all cores (GPU
   unaffected).
 
@@ -195,10 +211,17 @@ Measured head-to-head on an RTX 5090 (8 m pupil, 512²):
 - **Monte-Carlo generation** — pyturb produces **14,000 independent 512²
   screens/s** on the GPU (55,000 at 256²) by drawing two screens per FFT and
   batching the stack; that is **~1000× the pure-Python FFT loops** in
-  aotools/soapy, and ~13× even on one CPU core.
+  aotools/soapy (which were never built as batched Monte-Carlo generators),
+  and ~13× even on one CPU core.
 - **Frozen flow** — a full **9-layer 512² atmosphere at ~800 fps** on GPU via
-  the spectral shift-theorem engine (exact sub-pixel, any direction, all layers
-  in one FFT).
+  the spectral (periodic) shift-theorem engine — exact sub-pixel, any
+  direction, all layers in one FFT. This is the fastest configuration: on
+  CPU the same job runs at ~25-30 fps (~14× slower than the equivalent
+  aotools integer-pixel loop), the non-periodic `engine="extrude"` costs
+  ~7× throughput relative to the periodic engine on GPU, and enabling
+  `tau_boil` costs a further ~35-50%. Full numbers for every
+  engine/device/feature combination:
+  [`benchmarks/RESULTS.md` §2b](benchmarks/RESULTS.md#2b-the-full-9-layer-closed-loop-every-configuration-512-same-machine).
 - **Accuracy** — pyturb's structure function tracks von Kármán theory to
   **~1%** systematic bias (measured on large ensembles; comparable to HCIPy
   and soapy, and lower than aotools). At the ensemble sizes a quick benchmark

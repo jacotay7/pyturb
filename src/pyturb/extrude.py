@@ -14,6 +14,16 @@ The spectral engine (:class:`pyturb.FourierFlowScreen`) remains the faster,
 fixed-period default; this engine is the one to reach for on long closed-loop
 runs where a wrapping screen would bias the statistics.
 
+Caveat: the sub-pixel readout is a position-dependent low-pass filter,
+exact at integer pixel travel and most aggressive at half-pixel travel (a
+Catmull-Rom kernel has zero gain at the Nyquist frequency for a half-pixel
+shift). This puts a 5-15% deviation into the finest-scale (1-2 px) structure
+function that oscillates with the sub-pixel phase of the wind travel — a
+spurious line at ``wind_speed / pixel_scale`` Hz and harmonics. It does not
+affect statistics at separations of a few pixels and up. The spectral engine
+has no such artifact (exact at any offset) but is periodic; prefer it when
+fine-scale (near-Nyquist) fidelity matters more than non-periodicity.
+
 Two facts keep the setup cheap across a multi-layer atmosphere:
 
 * the mean matrix ``A = C_xz C_zz^-1`` is **independent of r0** (the ``r0^{-5/3}``
@@ -23,6 +33,8 @@ Two facts keep the setup cheap across a multi-layer atmosphere:
 """
 
 from __future__ import annotations
+
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -262,19 +274,19 @@ class ExtrudedAtmosphere:
 
     def __init__(
         self,
-        n,
-        pixel_scale,
-        layer_r0,
-        layer_L0,
-        layer_wind,
-        layer_altitude_los,
-        field_of_view_pix=0.0,
-        stencil_rows=2,
-        interp="cubic",
-        lgs_altitude_los=None,
-        device="cpu",
-        dtype="float32",
-        seeds=None,
+        n: int,
+        pixel_scale: float,
+        layer_r0: Sequence[float],
+        layer_L0: Sequence[float],
+        layer_wind: Sequence[Tuple[float, float]],
+        layer_altitude_los: Sequence[float],
+        field_of_view_pix: float = 0.0,
+        stencil_rows: int = 2,
+        interp: str = "cubic",
+        lgs_altitude_los: Optional[float] = None,
+        device: str = "cpu",
+        dtype: Union[str, np.dtype] = "float32",
+        seeds: Optional[Sequence[Any]] = None,
     ):
         self.n = int(n)
         self.dx = float(pixel_scale)
@@ -330,12 +342,12 @@ class ExtrudedAtmosphere:
                 )
             )
 
-    def set_time(self, t):
+    def set_time(self, t: float) -> None:
         """Advance every layer to simulation time ``t`` seconds."""
         for layer in self.layers:
             layer.set_travel(layer.speed * t / self.dx)
 
-    def integrate(self, thx=0.0, thy=0.0):
+    def integrate(self, thx: float = 0.0, thy: float = 0.0) -> Any:
         """Summed reference-wavelength phase ``(n, n)`` toward one direction."""
         total = None
         for layer in self.layers:

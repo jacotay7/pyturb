@@ -72,6 +72,28 @@ def test_non_periodic():
     assert abs(np.corrcoef(a.ravel(), b.ravel())[0, 1]) < 0.9
 
 
+def test_finescale_readout_flicker_is_bounded():
+    """Characterizes (does not eliminate) the sub-pixel readout's known
+    position-dependent behaviour: the finest-scale (1 px) structure function
+    measurably differs between integer and half-pixel wind travel (the
+    combination of the stencil recurrence's own discretisation bias and the
+    Catmull-Rom kernel's position-dependent frequency response). Bounded to a
+    known range so a much larger swing (a new bug) or ~0 swing (a change to
+    the recurrence or interpolation that would invalidate this
+    characterization) gets caught."""
+    def d1px(screen):
+        return 0.5 * (np.mean(np.diff(screen, axis=0) ** 2)
+                      + np.mean(np.diff(screen, axis=1) ** 2))
+
+    eng = _engine(0.0, seed=3)
+    eng.set_time(0.0)
+    at_int = d1px(np.array(eng.integrate()))
+    eng.set_time(0.5 * DX / 10.0)
+    at_half = d1px(np.array(eng.integrate()))
+    rise = at_half / at_int - 1.0
+    assert 0.03 < rise < 0.20
+
+
 def test_subpixel_advance_is_continuous():
     """A tiny sub-pixel step changes the screen only slightly (no jumps)."""
     eng = _engine(0.0, seed=2)

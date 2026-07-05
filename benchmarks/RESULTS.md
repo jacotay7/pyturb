@@ -69,6 +69,46 @@ This axis is **not apples-to-apples**, and that is the interesting part:
 - **HCIPy `InfiniteAtmosphericLayer`** interpolates a stored screen (sub-pixel,
   fixed direction), CPU-only.
 
+### 2b. The full 9-layer closed loop, every configuration (512², same machine)
+
+The table above only shows *1-layer* CPU numbers for the competitors and
+pyturb's GPU spectral engine for the "real product" row. Here is the same
+9-layer paranal-median job across every engine/device combination, plus the
+equivalent full job built directly from aotools and HCIPy on CPU:
+
+| configuration | fps |
+|---|---:|
+| pyturb spectral, GPU (periodic) | 801 |
+| pyturb extrude, GPU (non-periodic — the engine long runs need) | 120 |
+| pyturb spectral + boiling, GPU | 530 |
+| pyturb spectral, CPU, 1 thread | 24.8 |
+| pyturb spectral, CPU, `set_fft_workers(-1)` | 30.9 |
+| pyturb spectral + boiling, CPU | 12.9 |
+| pyturb extrude, CPU | 6.1 |
+| aotools, 9x `add_row` + sum, CPU (integer-pixel, axis-aligned) | 422.3 |
+| HCIPy, 9-layer `evolve_until`+`phase_for`, CPU (sub-pixel, non-periodic) | 5.7 |
+
+Reading this honestly:
+
+- The GPU spectral number is the one that headlines elsewhere in this
+  document; it is real, but it is the *periodic* engine — a run longer than
+  `n·pixel_scale / wind_speed` re-samples the same screen realisation for
+  that layer (`Atmosphere.time_to_wrap` reports the threshold;
+  `PeriodicWrapWarning` fires the first time a run crosses it).
+- On CPU, the same 9-layer job runs at 24.8-30.9 fps — about 14-17x slower
+  than the equivalent aotools loop (422 fps) built from integer-pixel,
+  axis-aligned steps. `set_fft_workers(-1)`, the only CPU knob offered, buys
+  ~1.25x; the per-frame cost here is not FFT-bound.
+- The non-periodic engine (`engine="extrude"`) costs real throughput relative
+  to the periodic one: 120 vs 801 fps on GPU (6.7x), 6.1 vs 24.8 fps on CPU.
+  On CPU it lands at essentially the same rate as HCIPy's pure-Python
+  non-periodic equivalent (5.7 fps) — no throughput advantage over the
+  incumbent for the equivalent (non-periodic, CPU) job.
+- Boiling costs ~34% of GPU throughput and ~48% of CPU throughput for this
+  job (801→530 fps GPU, 24.8→12.9 fps CPU): each mode needs its own
+  scale-dependent retention coefficient rather than one scalar multiply per
+  layer.
+
 ## 3. Structure-function accuracy — fractional-RMS error vs von Kármán (lower is better)
 
 Methodology: every library is scored on the same ensemble size (no exceptions
@@ -76,9 +116,8 @@ for slower libraries), and each point estimate is reported with a
 bootstrap-estimated standard deviation (200 resamples of the same ensemble,
 so no extra screen generation is needed). pyturb is scored both at its
 default subharmonic depth (8 levels) and at aotools' hard-coded depth (3
-levels), so one row is directly configuration-matched. Methodology detail and
-a standalone reproduction of the numbers below:
-[`trade_study_review/06_accuracy_claim_statistics/`](../trade_study_review/06_accuracy_claim_statistics/README.md).
+levels), so one row is directly configuration-matched. Regenerate with
+`python benchmarks/bench_compare.py --json results.json`.
 
 Ensemble of 120 screens at 256² (equal for every library), error over
 separations `r ∈ [4·dx, D/4]`, mean ± bootstrap std (200 resamples, seed 0):

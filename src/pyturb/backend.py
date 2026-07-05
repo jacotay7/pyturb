@@ -8,13 +8,16 @@ backend. The only CPU-pinned work is the one-time covariance/matrix setup in
 
 from __future__ import annotations
 
+from types import ModuleType
+from typing import Any, Optional
+
 import numpy as np
 
 _CPU_NAMES = frozenset({"cpu", "numpy"})
 _GPU_NAMES = frozenset({"gpu", "cuda", "cupy"})
 
 
-def get_array_module(device: str):
+def get_array_module(device: str) -> ModuleType:
     """Return the array module (``numpy`` or ``cupy``) for a device name.
 
     Parameters
@@ -46,7 +49,7 @@ def get_array_module(device: str):
 _fft_workers = None
 
 
-def set_fft_workers(workers):
+def set_fft_workers(workers: Optional[int]) -> Optional[int]:
     """Set the thread count for CPU (SciPy) FFTs; affects all pyturb objects.
 
     ``None`` (default) is single-threaded; ``-1`` uses every core; a positive
@@ -64,7 +67,7 @@ def set_fft_workers(workers):
     return previous
 
 
-def get_fft_workers():
+def get_fft_workers() -> Optional[int]:
     """Return the current CPU FFT thread setting (see :func:`set_fft_workers`)."""
     return _fft_workers
 
@@ -93,7 +96,7 @@ class _ThreadedScipyFFT:
         return self._m.fft2(a, **kwargs)
 
 
-def get_fft_module(xp):
+def get_fft_module(xp: ModuleType) -> ModuleType:
     """Return an FFT module that preserves single precision.
 
     ``numpy.fft`` always computes in double precision, so on CPU we use
@@ -108,7 +111,7 @@ def get_fft_module(xp):
     return xp.fft
 
 
-def to_numpy(array) -> np.ndarray:
+def to_numpy(array: Any) -> np.ndarray:
     """Copy an array to host memory as a ``numpy.ndarray``.
 
     A no-op (beyond ``asarray``) for arrays that are already on the CPU.

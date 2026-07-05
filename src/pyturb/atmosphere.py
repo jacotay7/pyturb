@@ -21,7 +21,7 @@ wavelength instead.
 from __future__ import annotations
 
 import warnings
-from typing import List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -62,7 +62,14 @@ class _LayerState:
 
     __slots__ = ("generator", "flow", "vx", "vy", "altitude_los")
 
-    def __init__(self, generator, flow, vx, vy, altitude_los):
+    def __init__(
+        self,
+        generator: PhaseScreen,
+        flow: Optional[FourierFlowScreen],
+        vx: float,
+        vy: float,
+        altitude_los: float,
+    ):
         self.generator = generator
         self.flow = flow
         self.vx = vx
@@ -98,6 +105,19 @@ class Atmosphere:
     L0 : float, optional
         Override the outer scale [m] for every layer. Default: use each
         layer's own ``L0``.
+    power_law : float, optional
+        Power-law index of the phase PSD, ``PSD ~ f^{-power_law}``. Default
+        ``11/3`` (Kolmogorov/von Karman). Other values give non-Kolmogorov
+        turbulence; ``r0`` then acts as an amplitude knob rather than the
+        strict Fried parameter. Applies to :meth:`sample` and to
+        ``engine="spectral"`` :meth:`frames`/:meth:`opd`. Requires
+        ``engine="spectral"``: the extruder's row recurrence is a closed-form
+        conditional distribution derived specifically for ``power_law=11/3``.
+    inner_scale : float, optional
+        Inner scale [m]. ``0`` (default) disables it; a positive value rolls
+        off the PSD above the corresponding spatial frequency (see
+        :class:`pyturb.PhaseScreen`). Same engine restriction as
+        ``power_law``.
     subharmonics : int, optional
         Subharmonic levels for low-frequency correction. Default 8.
     field_of_view : float, optional
@@ -125,7 +145,13 @@ class Atmosphere:
         Assémat–Wilson row extruder in a wind-aligned frame with rotated
         sub-pixel sampling: **unbounded and non-periodic**, the right choice for
         long closed-loop runs, at the cost of per-layer sampling instead of one
-        batched FFT. :meth:`sample` (Monte-Carlo) is unaffected by this choice.
+        batched FFT. Its sub-pixel interpolation is a position-dependent
+        low-pass filter (exact at integer pixel travel, most attenuating at
+        half-pixel travel), so its finest-scale (1-2 px) structure function
+        deviates from theory by 5-15% and oscillates with the sub-pixel travel
+        phase; ``"spectral"`` has no such artifact. Prefer ``"spectral"`` when
+        fine-scale (near-Nyquist) fidelity matters more than non-periodicity.
+        :meth:`sample` (Monte-Carlo) is unaffected by this choice.
     interp : {"cubic", "linear"}, optional
         Sub-pixel interpolation kernel for ``engine="extrude"``. Default cubic.
     lgs_altitude : float, optional
@@ -152,6 +178,30 @@ class Atmosphere:
         Master seed. Per-layer streams are spawned from it so results are
         reproducible and independent of layer count.
 
+    Feature compatibility
+    ----------------------
+    ``engine="spectral"`` (default) and ``engine="extrude"`` are not two
+    interchangeable ways to get the same features faster/slower -- each
+    supports a different subset:
+
+    - ``tau_boil`` (boiling), non-Kolmogorov ``power_law``/``inner_scale``,
+      and Kolmogorov ``L0=inf`` all require ``engine="spectral"``: they need
+      either discrete Fourier modes to apply a per-mode operation to, or a
+      closed-form covariance that only exists for the standard von Karman
+      case. None of these three can be combined with ``lgs_altitude`` or with
+      genuinely non-periodic (``engine="extrude"``) evolution.
+    - ``lgs_altitude`` (the LGS cone effect) requires ``engine="extrude"``:
+      the cone shrinks each layer's footprint by a per-layer factor, which
+      needs the extruder's per-layer resampling; the batched spectral engine
+      cannot do it. It therefore cannot combine with ``tau_boil`` or
+      non-Kolmogorov statistics, and runs at the extruder's throughput, not
+      the spectral engine's (see ``benchmarks/RESULTS.md``).
+    - ``directions`` (off-axis/tomography) works with both engines, but every
+      requested direction must lie within the declared ``field_of_view`` (a
+      ``ValueError`` is raised otherwise, in both engines) -- construct the
+      ``Atmosphere`` with a ``field_of_view`` covering every direction you
+      plan to request.
+
     Examples
     --------
     >>> import pyturb
@@ -173,13 +223,15 @@ class Atmosphere:
         diameter: float = 8.0,
         n: int = 512,
         L0: Optional[float] = None,
+        power_law: float = 11.0 / 3.0,
+        inner_scale: float = 0.0,
         subharmonics: int = 8,
         field_of_view: float = 0.0,
-        tau_boil=None,
+        tau_boil: Union[float, Sequence[float], None] = None,
         engine: str = "spectral",
         interp: str = "cubic",
         lgs_altitude: Optional[float] = None,
-        dispersion=None,
+        dispersion: Optional[str] = None,
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
@@ -197,8 +249,36 @@ class Atmosphere:
             raise ValueError("field_of_view must be >= 0 arcsec")
         if engine not in ("spectral", "extrude"):
             raise ValueError("engine must be 'spectral' or 'extrude'")
+        if power_law <= 2.0:
+            raise ValueError("power_law must be > 2 (Kolmogorov is 11/3)")
+        if inner_scale < 0:
+            raise ValueError("inner_scale must be >= 0 (0 disables it)")
+        if engine == "extrude":
+            if power_law != 11.0 / 3.0:
+                raise ValueError(
+                    "non-Kolmogorov power_law requires engine='spectral': the "
+                    "extruder's row-to-row recurrence is a closed-form "
+                    "conditional distribution derived specifically for the "
+                    "von Karman covariance (power_law=11/3); generalizing it "
+                    "to other exponents needs a different closed form, not "
+                    "just a different PSD, so it is not offered here. "
+                    "power_law is available for sample() and "
+                    "engine='spectral' frames()/opd()."
+                )
+            if inner_scale > 0:
+                raise ValueError(
+                    "inner_scale requires engine='spectral': the extruder's "
+                    "recurrence has no inner-scale term in its closed-form "
+                    "covariance. inner_scale is available for sample() and "
+                    "engine='spectral' frames()/opd()."
+                )
         if engine == "extrude" and tau_boil is not None:
-            raise ValueError("boiling (tau_boil) requires engine='spectral'")
+            raise ValueError(
+                "boiling (tau_boil) requires engine='spectral': the "
+                "extruder has no discrete 'modes' to apply a per-mode "
+                "retention coefficient to (see tau_boil's docstring for the "
+                "scale-dependent model) -- only a ring buffer of rows."
+            )
         if lgs_altitude is not None:
             if engine != "extrude":
                 raise ValueError("lgs_altitude (cone effect) requires engine='extrude'")
@@ -219,6 +299,8 @@ class Atmosphere:
         self.diameter = float(diameter)
         self.n = int(n)
         self.subharmonics = int(subharmonics)
+        self.power_law = float(power_law)
+        self.inner_scale = float(inner_scale)
         self.field_of_view = float(field_of_view)
         self.device = device
         self.dtype = dtype
@@ -242,6 +324,14 @@ class Atmosphere:
                     wind_direction=layer.wind_direction,
                     L0=layer.L0 if L0 is None else float(L0),
                 )
+            )
+        if engine == "extrude" and any(not np.isfinite(ly.L0) for ly in self.layers):
+            raise ValueError(
+                "engine='extrude' requires a finite outer scale L0 for every "
+                "layer: the extruder's row recurrence conditions on the von "
+                "Karman phase covariance, which is only well-defined (finite "
+                "variance) for finite L0. Kolmogorov (L0=inf) is only "
+                "available for engine='spectral' or sample()."
             )
 
         # Oversize the generated screens so off-axis footprints (up to
@@ -288,6 +378,8 @@ class Atmosphere:
                 r0=r0_i,
                 L0=layer.L0,
                 subharmonics=self.subharmonics,
+                power_law=self.power_law,
+                inner_scale=self.inner_scale,
                 seed=int(gen_seed.generate_state(1)[0]),
                 device=device,
                 dtype=dtype,
@@ -477,7 +569,7 @@ class Atmosphere:
         finite = periods[np.isfinite(periods)]
         return float(finite.min()) if finite.size else float("inf")
 
-    def _check_wrap(self, disp_x, disp_y):
+    def _check_wrap(self, disp_x: np.ndarray, disp_y: np.ndarray) -> None:
         """Warn once (per instance) the first time a spectral layer wraps."""
         disp = np.hypot(np.asarray(disp_x), np.asarray(disp_y))
         wrapped = disp > self._screen_period_m
@@ -498,7 +590,7 @@ class Atmosphere:
             stacklevel=3,
         )
 
-    def _los_layers(self):
+    def _los_layers(self) -> List[Layer]:
         # Layers with altitudes projected to the line of sight (for theta0).
         return [
             Layer(layer.altitude * self.airmass, layer.cn2_fraction,
@@ -509,7 +601,7 @@ class Atmosphere:
     # ------------------------------------------------------------------
     # output
     # ------------------------------------------------------------------
-    def _to_opd(self, phase, wavelength):
+    def _to_opd(self, phase: Any, wavelength: Optional[float]) -> Any:
         """Convert reference-wavelength phase [rad] to the requested output.
 
         Returns achromatic OPD [m] when ``wavelength`` is ``None``; otherwise
@@ -526,14 +618,24 @@ class Atmosphere:
             )
         return opd * (2.0 * np.pi / float(wavelength))
 
-    def opd(self, t: float = 0.0, directions=None, wavelength=None):
+    def opd(
+        self,
+        t: float = 0.0,
+        directions: Optional[Sequence[Tuple[float, float]]] = None,
+        wavelength: Optional[float] = None,
+    ) -> Any:
         """OPD at time ``t`` [s] under frozen flow.
 
         Parameters
         ----------
         t : float
-            Time since the start of the simulation [s]. Each layer is blown
-            by ``wind_vector * t``.
+            Time since the start of the simulation [s]. Taylor frozen flow:
+            each layer's phase evolves as ``phi(x, t) = phi_0(x + wind_vector
+            * t)`` — a fixed pupil point sees the turbulence that was
+            ``wind_vector * t`` metres further along the wind direction at
+            ``t=0`` (the pattern is carried past the aperture by the wind,
+            not translated bodily along ``+wind_vector`` in pupil
+            coordinates).
         directions : sequence of (thx, thy), optional
             Off-axis directions [arcsec] from the on-axis line of sight. Each
             component of each direction (not just the radius) must lie within
@@ -566,7 +668,7 @@ class Atmosphere:
         stacked = xp.stack(out)
         return self._to_opd(stacked, wavelength)
 
-    def _phase(self, t, ox, oy):
+    def _phase(self, t: float, ox: float, oy: float) -> Any:
         """Reference-wavelength pupil phase at time ``t`` toward slope (ox, oy).
 
         Dispatches to the periodic spectral engine or the non-periodic extruder;
@@ -577,7 +679,7 @@ class Atmosphere:
         self._ext.set_time(t)
         return self._ext.integrate(ox, oy)
 
-    def _integrate(self, t, ox, oy):
+    def _integrate(self, t: float, ox: float, oy: float) -> Any:
         """Sum all layers at time ``t`` with per-layer angular offset slopes.
 
         Batched over layers: one ``(L, n, n)`` inverse FFT plus one matmul per
@@ -616,7 +718,7 @@ class Atmosphere:
         total = total[self._crop, self._crop]
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
-    def _boil_step(self, dt):
+    def _boil_step(self, dt: float) -> None:
         """Advance boiling by ``dt`` seconds: one AR(1) update per mode.
 
         Each Fourier mode relaxes toward a fresh draw of its stationary
@@ -654,7 +756,9 @@ class Atmosphere:
             new_sh.append((coeffs, amps, basis, fp))
         self._sh_batched = new_sh
 
-    def frames(self, dt: float, steps: int, wavelength=None):
+    def frames(
+        self, dt: float, steps: int, wavelength: Optional[float] = None
+    ) -> Iterator[Tuple[float, Any]]:
         """Yield ``(t, opd)`` for ``steps`` frames spaced by ``dt`` seconds.
 
         Advances the internal clock, so successive calls continue the wind.
@@ -678,7 +782,7 @@ class Atmosphere:
             if self.engine == "spectral":
                 self._boil_step(float(dt))  # no-op unless tau_boil is finite
 
-    def sample(self, count: Optional[int] = None, wavelength=None):
+    def sample(self, count: Optional[int] = None, wavelength: Optional[float] = None) -> Any:
         """Draw statistically independent integrated OPDs.
 
         Each call produces fresh, uncorrelated realisations of the summed
@@ -701,7 +805,7 @@ class Atmosphere:
         total = total[..., self._crop, self._crop]
         return self._to_opd(total, wavelength)
 
-    def reset(self):
+    def reset(self) -> "Atmosphere":
         """Reset the internal clock to ``t = 0``. Returns ``self``.
 
         For ``engine="extrude"`` the extruded layers are rebuilt from their
@@ -719,7 +823,7 @@ class Atmosphere:
         return self._t
 
     @property
-    def metadata(self) -> dict:
+    def metadata(self) -> Dict[str, Any]:
         """The parameters that define this atmosphere, for saving with output.
 
         A flat dict of scalars/strings suitable for :func:`pyturb.save`
@@ -742,7 +846,7 @@ class Atmosphere:
             "dispersion": self.dispersion,
         }
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"Atmosphere(layers={len(self.layers)}, r0={self.r0_los:.3f} m, "
             f"seeing={self.seeing:.2f}\", theta0={self.theta0:.2f}\", "

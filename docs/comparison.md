@@ -78,7 +78,13 @@ the covariance matrices stay small no matter how long you extrude.
 - This was the one capability all three had that pyturb lacked; pyturb now
   implements it too, as `Atmosphere(engine="extrude")` (method 4 below plus a
   wind-aligned ring buffer and rotated sub-pixel sampling). See "What we
-  learned" below.
+  learned" below. Any sub-pixel interpolation layer — pyturb's Catmull-Rom
+  included — is a position-dependent low-pass filter: exact at integer pixel
+  travel, most aggressive at half-pixel travel (zero gain at the Nyquist
+  frequency for a Catmull-Rom kernel). This shows up as a 5-15% fine-scale
+  (1-2 px) structure-function deviation that oscillates with the sub-pixel
+  phase of the wind travel — see the README's engine comparison for the
+  measured numbers. The spectral engine (method 4) has no such artifact.
 
 ### 3. Large static screen + bilinear panning
 
@@ -103,11 +109,15 @@ multiply.
 - **Strength:** sub-pixel and any-direction *for free and exactly*; one
   elementwise multiply + IFFT is ideal for the GPU, and **all layers batch into
   a single `(L, n, n)` FFT** — the basis for ~800 fps of a 9-layer 512²
-  atmosphere. Boiling is nearly free.
+  atmosphere.
 - **Weakness:** periodic (period `n·pixel_scale`), like any FFT screen, so it is
   not the right tool for genuinely unbounded runs — that is what pyturb's own
   extruder (method 2, `engine="extrude"`) is for. Both engines share the
-  `Atmosphere` API; pick per run.
+  `Atmosphere` API; pick per run. Boiling costs real throughput: ~25-35% on
+  GPU and ~45-50% on CPU for a 9-layer 512² atmosphere (see `RESULTS.md` §2),
+  since each mode needs its own scale-dependent retention coefficient (finer
+  spatial structure decorrelates faster, per Kolmogorov eddy-turnover
+  scaling) rather than one scalar multiply per layer.
 
 ## Benchmark summary
 
@@ -154,9 +164,11 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
    `InfiniteAtmosphericLayer` pairs the extruder with bilinear interpolation and
    a real `evolve_until(t)` clock — the design pyturb's non-periodic engine
    should match so it is not limited to integer pixels.
-5. **More named site atmospheres** — **adopted.** Added `"keck"` and
-   `"las-campanas"` from HCIPy's cited tables, alongside Paranal, Mauna Kea,
-   HV5/7 and the toy profiles. (Cerro Pachón / Armazones are easy future adds.)
+5. **More named site atmospheres** — **adopted.** Added `"keck"`,
+   `"las-campanas"` and `"mauna-kea"` from HCIPy's cited tables (Guyon 2005 /
+   Tokovinin et al. 2005 for Mauna Kea; see `pyturb.profiles` for the other
+   citations), alongside a representative Paranal profile, HV5/7 and the toy
+   profiles. (Cerro Pachón / Armazones are easy future adds.)
 6. **Clean Monte-Carlo reset.** `reset(make_independent_realization=True)` is a
    tidy way to draw independent realisations from a configured layer.
 7. **Scintillation is explicitly *not* our job.** HCIPy's `MultiLayerAtmosphere`
@@ -190,8 +202,11 @@ tool:
   and the reason a 9-layer 512² atmosphere runs at loop rate.
 - **Boiling.** Per-layer temporal decorrelation (spectral AR(1)); none of the
   others model non-frozen turbulence.
-- **Best statistical accuracy.** The integrated-per-cell subharmonic correction
-  gives ~2% structure-function fidelity.
+- **Low systematic bias.** The integrated-per-cell subharmonic correction
+  gives ~1% systematic structure-function bias on large ensembles — smaller
+  than aotools' centre-sampled approach — though at practical (small)
+  ensemble sizes the metric's own Monte-Carlo noise dominates that
+  difference (see `RESULTS.md` §3).
 - **OPD in metres, natively.** Achromatic OPD is the product; phase at any
   wavelength is a one-line helper. The others hand you radians at the r0
   wavelength and leave the bookkeeping to you.

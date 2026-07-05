@@ -22,6 +22,8 @@ tip/tilt/low-order power blows with the wind too.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from .fourier import PhaseScreen
@@ -52,7 +54,7 @@ class FourierFlowScreen:
     >>> b = layer.translate(1.3, -0.4)         # blown 1.3 m / -0.4 m
     """
 
-    def __init__(self, template: PhaseScreen, seed=None):
+    def __init__(self, template: PhaseScreen, seed: Any = None):
         self.template = template
         self.xp = template.xp
         self.n = template.n
@@ -66,7 +68,7 @@ class FourierFlowScreen:
         self._rng = self.xp.random.default_rng(seed)
         self.reseed()
 
-    def reseed(self, seed=None):
+    def reseed(self, seed: Any = None) -> "FourierFlowScreen":
         """Draw a fresh fixed realisation of the layer's Fourier coefficients.
 
         With no argument, advances the existing random stream; pass ``seed``
@@ -88,7 +90,7 @@ class FourierFlowScreen:
             )
         return self
 
-    def translate(self, sx, sy):
+    def translate(self, sx: float, sy: float) -> Any:
         """Return the screen blown by ``(sx, sy)`` metres, shape ``(n, n)``.
 
         ``sx`` is displacement along axis 0 (rows), ``sy`` along axis 1
@@ -125,7 +127,7 @@ class FourierFlowScreen:
     def _f(self):
         return self.template._f
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"FourierFlowScreen(n={self.n}, pixel_scale={self.pixel_scale}, "
             f"r0={self.r0}, L0={self.L0}, device={self.device!r})"

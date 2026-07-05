@@ -23,9 +23,10 @@ References
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple, Union
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 # np.trapezoid was added in NumPy 2.0; np.trapz still works there but is
 # deprecated. Fall back for the NumPy 1.22-1.x floor declared in pyproject.
@@ -74,7 +75,7 @@ class Layer:
     L0: float = 25.0
 
     @property
-    def wind_vector(self):
+    def wind_vector(self) -> Tuple[float, float]:
         """``(vx, vy)`` wind components [m/s] along axes 0 and 1."""
         theta = np.deg2rad(self.wind_direction)
         return self.wind_speed * np.cos(theta), self.wind_speed * np.sin(theta)
@@ -83,16 +84,23 @@ class Layer:
 # ---------------------------------------------------------------------------
 # Named profiles
 # ---------------------------------------------------------------------------
-# Representative profiles for common sites. Altitudes in metres, wind in m/s,
-# fractions are relative Cn2 weights (normalised on use). These are convenient,
-# citable starting points — edit or build your own with discretize_cn2().
+# Altitudes in metres, wind speed in m/s, fractions are relative Cn2 weights
+# (normalised on use). Provenance varies by profile -- see each function's
+# comment: "keck", "las-campanas" and "mauna-kea" are traceable to a specific
+# published table (cited below); "paranal-median" is representative/
+# illustrative (ground-layer-dominated, jet-stream enhancement near 9-18 km,
+# in the general shape of published Paranal turbulence statistics) but not
+# tied to one specific citable table -- treat it as a convenient starting
+# point, not a site-survey result. Wind DIRECTION is not part of any of the
+# cited sources below (none tabulate per-layer direction); every profile's
+# directions are illustrative placeholders, not measured/published data.
 
 def _single_layer() -> List[Layer]:
     return [Layer(altitude=0.0, cn2_fraction=1.0, wind_speed=10.0, wind_direction=0.0)]
 
 
 def _two_layer() -> List[Layer]:
-    # Ground layer plus a fast high-altitude (jet-stream) layer.
+    # Illustrative: ground layer plus a fast high-altitude (jet-stream) layer.
     return [
         Layer(altitude=0.0, cn2_fraction=0.7, wind_speed=8.0, wind_direction=0.0),
         Layer(altitude=10000.0, cn2_fraction=0.3, wind_speed=30.0, wind_direction=90.0),
@@ -100,7 +108,10 @@ def _two_layer() -> List[Layer]:
 
 
 def _paranal_median() -> List[Layer]:
-    # Condensed, Paranal-like 9-layer median profile (ESO reference, binned).
+    # Representative, ground-layer-dominated 9-layer profile in the general
+    # shape of published Paranal median turbulence statistics; not tied to one
+    # specific citable table (see module note above) -- a convenient starting
+    # point for a realistic multi-layer case, not a site-survey result.
     altitudes = [30, 140, 281, 562, 1125, 2250, 4500, 9000, 18000]
     fractions = [0.242, 0.12, 0.098, 0.059, 0.043, 0.061, 0.13, 0.13, 0.117]
     winds = [5.5, 6.6, 6.7, 8.0, 9.9, 15.0, 25.0, 32.0, 14.0]
@@ -112,19 +123,22 @@ def _paranal_median() -> List[Layer]:
 
 
 def _mauna_kea() -> List[Layer]:
-    # Representative Mauna Kea / TMT-style 7-layer profile.
-    altitudes = [0, 500, 1000, 2000, 4000, 8000, 16000]
-    fractions = [0.35, 0.15, 0.10, 0.10, 0.10, 0.10, 0.10]
-    winds = [6.0, 7.0, 8.0, 10.0, 15.0, 28.0, 12.0]
-    directions = [0, 30, 60, 90, 120, 150, 180]
-    return [
-        Layer(a, f, w, d)
-        for a, f, w, d in zip(altitudes, fractions, winds, directions)
-    ]
+    # Guyon (2005), ApJ 629, 592, in turn derived from Tokovinin et al.
+    # (2005), PASP 117, 395 -- the table HCIPy ships
+    # (make_mauna_kea_atmospheric_layers): 6 layers, no ground layer, L0=10 m,
+    # a uniform 10 m/s wind speed per layer (the cited table does not specify
+    # per-layer wind direction; see module note above).
+    altitudes = [500, 1000, 2000, 4000, 8000, 16000]
+    fractions = [0.2283, 0.0883, 0.0666, 0.1458, 0.3350, 0.1350]
+    winds = [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+    directions = [0, 30, 60, 90, 120, 150]
+    return [Layer(a, f, w, d, L0=10.0)
+            for a, f, w, d in zip(altitudes, fractions, winds, directions)]
 
 
 def _keck() -> List[Layer]:
-    # Keck / Mauna Kea 7-layer model (as used by HCIPy; TMT site survey), L0=20.
+    # Keck AO note KAON 303 (as used by HCIPy's make_keck_atmospheric_layers),
+    # L0=20 m. Wind direction is not part of the cited table.
     altitudes = [0, 2100, 4100, 6500, 9000, 12000, 14800]
     fractions = [0.369, 0.219, 0.127, 0.101, 0.046, 0.111, 0.027]
     winds = [6.7, 13.9, 20.8, 29.0, 29.0, 29.0, 29.0]
@@ -134,7 +148,10 @@ def _keck() -> List[Layer]:
 
 
 def _las_campanas() -> List[Layer]:
-    # Las Campanas (GMTO site) 7-layer model (as used by HCIPy), L0=25.
+    # Males et al. (2018), JATIS 4, 019001, based on Prieto et al. (2010) and
+    # Thomas-Osip et al. (2011) site testing (as used by HCIPy's
+    # make_las_campanas_atmospheric_layers), L0=25 m. Wind direction is not
+    # part of the cited table.
     altitudes = [250, 500, 1000, 2000, 4000, 8000, 16000]
     fractions = [0.42, 0.03, 0.06, 0.16, 0.11, 0.10, 0.12]
     winds = [10, 10, 20, 20, 25, 30, 25]
@@ -171,6 +188,13 @@ def get_profile(name: str) -> List[Layer]:
     Names: ``"single-layer"``, ``"two-layer"``, ``"paranal-median"``,
     ``"mauna-kea"``, ``"keck"``, ``"las-campanas"``, ``"hv57"``. See
     :func:`list_profiles`.
+
+    ``"mauna-kea"``, ``"keck"`` and ``"las-campanas"`` are traceable to a
+    specific published table (see each profile-building function's source
+    comment for the citation); ``"paranal-median"``, ``"single-layer"`` and
+    ``"two-layer"`` are representative/illustrative rather than a specific
+    cited site survey. Wind *direction* is illustrative in every profile —
+    none of the cited sources tabulate it.
     """
     key = str(name).lower()
     if key not in _PROFILES:
@@ -183,7 +207,9 @@ def get_profile(name: str) -> List[Layer]:
 # ---------------------------------------------------------------------------
 # Continuous models and discretisation
 # ---------------------------------------------------------------------------
-def hufnagel_valley(h, wind_rms=21.0, ground=1.7e-14):
+def hufnagel_valley(
+    h: ArrayLike, wind_rms: float = 21.0, ground: float = 1.7e-14
+) -> np.ndarray:
     r"""Hufnagel-Valley :math:`C_n^2(h)` model [m^{-2/3}].
 
     Parameters
@@ -205,14 +231,20 @@ def hufnagel_valley(h, wind_rms=21.0, ground=1.7e-14):
     )
 
 
-def bufton_wind(h):
+def bufton_wind(h: ArrayLike) -> np.ndarray:
     """Bufton wind-speed model [m/s] versus altitude [m] (peaks near 9.4 km)."""
     h = np.asarray(h, dtype=np.float64)
     return 5.0 + 30.0 * np.exp(-(((h - 9400.0) / 4800.0) ** 2))
 
 
-def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0,
-                   method="equivalent"):
+def discretize_cn2(
+    heights: ArrayLike,
+    cn2: ArrayLike,
+    n_layers: int = 10,
+    wind: Union[str, float, ArrayLike] = "bufton",
+    L0: float = 25.0,
+    method: str = "equivalent",
+) -> List[Layer]:
     r"""Bin a continuous :math:`C_n^2(h)` profile into equivalent layers.
 
     The altitude range is split into ``n_layers`` contiguous log-spaced bins;
@@ -343,7 +375,7 @@ def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0,
 # ---------------------------------------------------------------------------
 # Integrated quantities
 # ---------------------------------------------------------------------------
-def _fractions(layers):
+def _fractions(layers: List[Layer]) -> np.ndarray:
     frac = np.asarray([layer.cn2_fraction for layer in layers], dtype=np.float64)
     if np.any(frac < 0):
         raise ValueError("cn2_fraction values must be non-negative")
@@ -353,21 +385,21 @@ def _fractions(layers):
     return frac / total
 
 
-def mean_turbulence_height(layers):
+def mean_turbulence_height(layers: List[Layer]) -> float:
     r"""Effective turbulence height :math:`\bar h = (\sum f_i h_i^{5/3})^{3/5}` [m]."""
     frac = _fractions(layers)
     h = np.asarray([layer.altitude for layer in layers], dtype=np.float64)
     return float((np.sum(frac * h ** (5.0 / 3.0))) ** (3.0 / 5.0))
 
 
-def effective_wind_speed(layers):
+def effective_wind_speed(layers: List[Layer]) -> float:
     r"""Effective wind speed :math:`\bar v = (\sum f_i v_i^{5/3})^{3/5}` [m/s]."""
     frac = _fractions(layers)
     v = np.asarray([layer.wind_speed for layer in layers], dtype=np.float64)
     return float((np.sum(frac * v ** (5.0 / 3.0))) ** (3.0 / 5.0))
 
 
-def isoplanatic_angle(layers, r0):
+def isoplanatic_angle(layers: List[Layer], r0: float) -> float:
     r"""Isoplanatic angle :math:`\theta_0 = 0.314\, r_0 / \bar h` [rad].
 
     ``r0`` and the layer altitudes must be expressed along the same
@@ -379,7 +411,7 @@ def isoplanatic_angle(layers, r0):
     return 0.314 * r0 / h_bar
 
 
-def coherence_time(layers, r0):
+def coherence_time(layers: List[Layer], r0: float) -> float:
     r"""Atmospheric coherence time :math:`\tau_0 = 0.314\, r_0 / \bar v` [s]."""
     v_bar = effective_wind_speed(layers)
     if v_bar == 0:
@@ -387,7 +419,7 @@ def coherence_time(layers, r0):
     return 0.314 * r0 / v_bar
 
 
-def greenwood_frequency(layers, r0):
+def greenwood_frequency(layers: List[Layer], r0: float) -> float:
     r"""Greenwood frequency :math:`f_G = 0.134 / \tau_0` [Hz]."""
     tau0 = coherence_time(layers, r0)
     return 0.134 / tau0

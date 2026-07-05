@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Optional, Tuple, Union
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .backend import to_numpy
 
@@ -19,7 +22,7 @@ __all__ = [
 _RAD_TO_ARCSEC = 180.0 / np.pi * 3600.0
 
 
-def air_refractivity(wavelength):
+def air_refractivity(wavelength: ArrayLike) -> Union[float, np.ndarray]:
     """Refractivity ``n - 1`` of standard dry air at ``wavelength`` [m].
 
     Edlén (1966) dispersion formula for dry air at 15 °C, 101.325 kPa, 0.03 %
@@ -50,7 +53,7 @@ def air_refractivity(wavelength):
     return refractivity if refractivity.ndim else float(refractivity)
 
 
-def opd_to_phase(opd, wavelength):
+def opd_to_phase(opd: ArrayLike, wavelength: float) -> Union[float, np.ndarray]:
     """Convert optical path difference [m] to phase [rad] at ``wavelength`` [m].
 
     ``phase = 2 pi * opd / wavelength``. OPD is achromatic, so the same OPD
@@ -59,7 +62,7 @@ def opd_to_phase(opd, wavelength):
     return opd * (2.0 * np.pi / wavelength)
 
 
-def phase_to_opd(phase, wavelength):
+def phase_to_opd(phase: ArrayLike, wavelength: float) -> Union[float, np.ndarray]:
     """Convert phase [rad] at ``wavelength`` [m] to optical path difference [m].
 
     ``opd = phase * wavelength / (2 pi)``.
@@ -67,7 +70,7 @@ def phase_to_opd(phase, wavelength):
     return phase * (wavelength / (2.0 * np.pi))
 
 
-def r0_from_seeing(seeing, wavelength=500e-9):
+def r0_from_seeing(seeing: float, wavelength: float = 500e-9) -> float:
     """Fried parameter (m) from seeing FWHM (arcsec) at ``wavelength`` (m).
 
     Uses the Kolmogorov relation ``FWHM = 0.98 lambda / r0``.
@@ -75,12 +78,12 @@ def r0_from_seeing(seeing, wavelength=500e-9):
     return 0.98 * wavelength / (seeing / _RAD_TO_ARCSEC)
 
 
-def seeing_from_r0(r0, wavelength=500e-9):
+def seeing_from_r0(r0: float, wavelength: float = 500e-9) -> float:
     """Seeing FWHM (arcsec) from the Fried parameter (m) at ``wavelength`` (m)."""
     return 0.98 * wavelength / r0 * _RAD_TO_ARCSEC
 
 
-def r0_at_wavelength(r0, wavelength_in, wavelength_out):
+def r0_at_wavelength(r0: float, wavelength_in: float, wavelength_out: float) -> float:
     """Rescale the Fried parameter between wavelengths (``r0 ~ lambda^(6/5)``).
 
     Example: convert an r0 quoted at 500 nm to the K band,
@@ -89,7 +92,11 @@ def r0_at_wavelength(r0, wavelength_in, wavelength_out):
     return r0 * (wavelength_out / wavelength_in) ** (6.0 / 5.0)
 
 
-def structure_function(phase, pixel_scale=1.0, max_separation=None):
+def structure_function(
+    phase: ArrayLike,
+    pixel_scale: float = 1.0,
+    max_separation: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """Azimuthally averaged (along both axes) phase structure function.
 
     ``D(r) = <[phase(x) - phase(x + r)]^2>``, estimated from pixel pairs

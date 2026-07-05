@@ -19,8 +19,10 @@ for the reductions). Reference: Noll, R. J. (1976), JOSA 66, 207.
 from __future__ import annotations
 
 from math import factorial
+from typing import Optional, Tuple
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .backend import to_numpy
 
@@ -56,7 +58,7 @@ def _noll_residual_coeff(j):
     return 0.2944 * j ** (-np.sqrt(3.0) / 2.0)
 
 
-def noll_to_zernike(j):
+def noll_to_zernike(j: int) -> Tuple[int, int]:
     """Radial/azimuthal orders ``(n, m)`` for Noll single index ``j`` (>= 1)."""
     if j < 1:
         raise ValueError("Noll index j must be >= 1")
@@ -82,7 +84,9 @@ def _radial(n, m, rho):
     return out
 
 
-def zernike_basis(n_modes, n_pixels, diameter_pixels=None):
+def zernike_basis(
+    n_modes: int, n_pixels: int, diameter_pixels: Optional[float] = None
+) -> np.ndarray:
     """Noll-ordered Zernike basis over a circular pupil.
 
     Parameters
@@ -122,7 +126,9 @@ def zernike_basis(n_modes, n_pixels, diameter_pixels=None):
     return basis
 
 
-def zernike_decompose(phase, n_modes, basis=None):
+def zernike_decompose(
+    phase: ArrayLike, n_modes: int, basis: Optional[np.ndarray] = None
+) -> np.ndarray:
     """Least-squares Zernike coefficients of ``phase`` over the pupil.
 
     Parameters
@@ -156,7 +162,7 @@ def zernike_decompose(phase, n_modes, basis=None):
     return coeffs[0] if single else coeffs
 
 
-def noll_variance(j, diameter, r0):
+def noll_variance(j: int, diameter: float, r0: float) -> float:
     """Kolmogorov variance of Zernike mode ``j`` [rad^2] (Noll 1976).
 
     The per-mode variance is ``Delta_{j-1} - Delta_j`` in ``(D/r0)^{5/3}``
@@ -168,13 +174,13 @@ def noll_variance(j, diameter, r0):
     return coeff * (diameter / r0) ** (5.0 / 3.0)
 
 
-def noll_residual_variance(j, diameter, r0):
+def noll_residual_variance(j: int, diameter: float, r0: float) -> float:
     """Residual wavefront variance [rad^2] after correcting the first ``j``
     Zernike modes (Noll 1976)."""
     return _noll_residual_coeff(j) * (diameter / r0) ** (5.0 / 3.0)
 
 
-def temporal_psd(series, dt):
+def temporal_psd(series: ArrayLike, dt: float) -> Tuple[np.ndarray, np.ndarray]:
     """One-sided temporal power spectral density of a time series.
 
     Parameters
@@ -202,7 +208,12 @@ def temporal_psd(series, dt):
     return freq[1:], psd[1:]
 
 
-def fit_power_law(freq, psd, fmin=None, fmax=None):
+def fit_power_law(
+    freq: ArrayLike,
+    psd: ArrayLike,
+    fmin: Optional[float] = None,
+    fmax: Optional[float] = None,
+) -> Tuple[float, float]:
     """Fit ``psd ~ freq**slope`` over ``[fmin, fmax]`` (log-log least squares).
 
     Returns
@@ -224,7 +235,7 @@ def fit_power_law(freq, psd, fmin=None, fmax=None):
     return float(slope), float(np.exp(intercept))
 
 
-def differential_variance(reference, other):
+def differential_variance(reference: ArrayLike, other: ArrayLike) -> float:
     """Variance of ``other - reference`` [same units squared].
 
     With ``reference`` the on-axis OPD/phase and ``other`` an off-axis one, this

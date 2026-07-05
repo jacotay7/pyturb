@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import time
+from typing import Dict
 
 from .atmosphere import Atmosphere
 from .backend import get_array_module
 
 
-def _sync(device):
+def _sync(device: str) -> None:
     if device != "cpu":
         import cupy
 
         cupy.cuda.runtime.deviceSynchronize()
 
 
-def benchmark(n=512, profile="paranal-median", device="cpu", seconds=1.0,
-              seeing=0.8, engine="spectral"):
+def benchmark(
+    n: int = 512,
+    profile: str = "paranal-median",
+    device: str = "cpu",
+    seconds: float = 1.0,
+    seeing: float = 0.8,
+    engine: str = "spectral",
+) -> Dict[str, float]:
     """Measure and print closed-loop and Monte-Carlo throughput.
 
     Parameters
