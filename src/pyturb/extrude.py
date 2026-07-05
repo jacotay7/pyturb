@@ -30,11 +30,17 @@ Two facts keep the setup cheap across a multi-layer atmosphere:
   prefactor cancels), so all layers that share ``L0`` share one ``A``;
 * the noise matrix scales as ``B = B_unit * r0^{-5/6}``, one cheap per-layer
   rescale of a single ``B_unit``.
+
+Every layer's ring buffer lives as a slab of one contiguous ``(L, cap, W)``
+array, so the per-frame pupil readout — the hot path — is a **single fused
+gather** over all layers at once instead of one bicubic gather per layer. On
+the GPU this removes the per-layer kernel-launch latency that otherwise
+dominates a multi-layer frame.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -45,7 +51,7 @@ from .infinite import _spd_solve, phase_covariance
 __all__ = ["ExtrudedAtmosphere"]
 
 
-def _catmull_rom_weights(t):
+def _catmull_rom_weights(t: Any) -> Tuple[Any, Any, Any, Any]:
     """Catmull-Rom cubic weights for the four taps at fraction ``t`` in [0, 1)."""
     t2 = t * t
     t3 = t2 * t
@@ -57,7 +63,14 @@ def _catmull_rom_weights(t):
     )
 
 
-def build_extrusion(width, stencil_rows, pixel_scale, L0, xp, dtype):
+def build_extrusion(
+    width: int,
+    stencil_rows: int,
+    pixel_scale: float,
+    L0: float,
+    xp: Any,
+    dtype: Any,
+) -> Tuple[Any, Any]:
     """Return ``(A, B_unit)`` for extruding one ``width``-pixel row.
 
     Built at ``r0 = 1``; ``A`` is r0-independent and ``B`` for a layer of Fried
@@ -86,34 +99,38 @@ def build_extrusion(width, stencil_rows, pixel_scale, L0, xp, dtype):
 
 
 class _ExtrudeLayer:
-    """One turbulent layer: wind-aligned ring buffer + rotated pupil sampler.
+    """One turbulent layer: wind-aligned ring buffer + rotated pupil geometry.
 
-    The screen extrudes along ``+row`` (its wind axis). The pupil's ``n x n``
-    pixel grid is expressed in this wind-aligned frame once at construction as
-    ``along`` (row) and ``perp`` (column) coordinates in pixels; a readout at
-    wind travel ``s`` pixels samples the buffer at ``along + s`` (rows) and
-    ``perp`` (columns), interpolated to sub-pixel accuracy.
+    The screen extrudes along ``+row`` (its wind axis) into a slab of a shared
+    ``(L, capacity, W)`` buffer owned by :class:`ExtrudedAtmosphere`. The pupil's
+    ``n x n`` pixel grid is expressed in this wind-aligned frame once at
+    construction as ``along`` (row) and ``perp`` (column) coordinates in pixels;
+    a readout at wind travel ``s`` pixels samples the buffer at ``along + s``
+    (rows) and ``perp`` (columns), interpolated to sub-pixel accuracy. The
+    interpolation itself is batched across layers by the parent, so this class
+    only holds the geometry and drives the (amortised) row extrusion.
     """
 
     def __init__(
         self,
-        n,
-        width,
-        pixel_scale,
-        r0,
-        L0,
-        wind_vx,
-        wind_vy,
-        altitude_los,
-        stencil_rows,
-        interp,
-        xp,
-        dtype,
-        rng,
-        a_matrix,
-        b_unit,
-        magnification=1.0,
-        fov_margin_pix=0.0,
+        n: int,
+        width: int,
+        pixel_scale: float,
+        r0: float,
+        L0: float,
+        wind_vx: float,
+        wind_vy: float,
+        altitude_los: float,
+        stencil_rows: int,
+        interp: str,
+        xp: Any,
+        dtype: Any,
+        rng: Any,
+        a_matrix: Any,
+        b_unit: Any,
+        buf: Any,
+        magnification: float = 1.0,
+        fov_margin_pix: float = 0.0,
     ):
         self.n = int(n)
         self.W = int(width)
@@ -154,15 +171,18 @@ class _ExtrudeLayer:
         # extruded row for any off-axis request.
         self._fov_margin = float(fov_margin_pix)
 
-        # Ring buffer of extruded rows. Virtual row ``base + i`` lives at
-        # ``_buf[i]``; the readout window spans a fixed ~1.41 n rows plus the
-        # off-axis margin, so a constant capacity plus a small lookahead
-        # suffices for any run length.
-        extent_max = self._along_max + self._fov_margin
+        # Ring buffer slab (a view into the parent's contiguous (L, cap, W)
+        # array). Virtual row ``base + i`` lives at ``_buf[i]``; the readout
+        # window spans a fixed ~1.41 n rows plus the off-axis margin, so a
+        # constant capacity plus a small lookahead suffices for any run length.
+        self._buf = buf
+        self._capacity = int(buf.shape[0])
         extent_min = self._along_min - self._fov_margin
-        span = int(np.ceil(extent_max)) - int(np.floor(extent_min)) + 3
-        self._capacity = span + self.n + self.m + 32
-        self._buf = xp.empty((self._capacity, self.W), dtype=self.dtype)
+        span = (
+            int(np.ceil(self._along_max + self._fov_margin))
+            - int(np.floor(extent_min))
+            + 3
+        )
         self._base = int(np.floor(extent_min)) - 2
         # Seed with a von Kármán screen (subharmonics included), sliced to the
         # rows the buffer starts with.
@@ -182,7 +202,7 @@ class _ExtrudeLayer:
         self._travel = 0.0
 
     # -- ring-buffer extrusion ----------------------------------------
-    def _extrude_one(self):
+    def _extrude_one(self) -> None:
         if self._fill == self._capacity:
             self._compact()
         z = self._buf[self._fill - self.m : self._fill].ravel()
@@ -190,7 +210,7 @@ class _ExtrudeLayer:
         self._buf[self._fill] = self._a @ z + self._b @ beta
         self._fill += 1
 
-    def _compact(self):
+    def _compact(self) -> None:
         # ``self._travel`` is the eventual target set by set_travel() before
         # extrusion catches up; for a jump bigger than the buffer it can be
         # far beyond what has actually been extruded, so the bound derived
@@ -207,19 +227,19 @@ class _ExtrudeLayer:
         self._base += keep_from
         self._fill = keep
 
-    def _ensure(self):
+    def _ensure(self) -> None:
         top = int(np.ceil(self._along_max + self._fov_margin + self._travel)) + 2
         while self._base + self._fill - 1 < top:
             self._extrude_one()
 
-    # -- readout ------------------------------------------------------
-    def set_travel(self, travel):
+    # -- readout geometry ---------------------------------------------
+    def set_travel(self, travel: float) -> None:
         if travel < self._travel:
             raise ValueError("wind travel is monotonic; travel cannot decrease")
         self._travel = float(travel)
         self._ensure()
 
-    def offsets_for_direction(self, thx, thy):
+    def offsets_for_direction(self, thx: float, thy: float) -> Tuple[float, float]:
         """(along, perp) pixel shift of the footprint for an off-axis angle.
 
         ``thx``/``thy`` are direction tangents (``tan(theta)``); the footprint
@@ -232,46 +252,17 @@ class _ExtrudeLayer:
         perp = -dx_pix * self._sin + dy_pix * self._cos
         return along, perp
 
-    def sample(self, off_along=0.0, off_perp=0.0):
-        """Interpolate the ``(n, n)`` pupil at the current travel + offset."""
-        xp = self.xp
-        buf, fill = self._buf, self._fill
-        row = self._along + (self._travel + off_along) - self._base
-        col = self._perp + off_perp
-        r0 = xp.floor(row).astype(xp.int64)
-        c0 = xp.floor(col).astype(xp.int64)
-        fr = row - r0
-        fc = col - c0
-
-        if self.interp == "linear":
-            taps_r = ((0, 1.0 - fr), (1, fr))
-            taps_c = ((0, 1.0 - fc), (1, fc))
-        else:
-            wr = _catmull_rom_weights(fr)
-            wc = _catmull_rom_weights(fc)
-            taps_r = tuple(zip((-1, 0, 1, 2), wr))
-            taps_c = tuple(zip((-1, 0, 1, 2), wc))
-
-        out = None
-        for dr, weight_r in taps_r:
-            rr = xp.clip(r0 + dr, 0, fill - 1)
-            row_term = None
-            for dc, weight_c in taps_c:
-                cc = xp.clip(c0 + dc, 0, self.W - 1)
-                term = weight_c * buf[rr, cc]
-                row_term = term if row_term is None else row_term + term
-            contrib = weight_r * row_term
-            out = contrib if out is None else out + contrib
-        return out.astype(self.dtype, copy=False)
-
 
 class ExtrudedAtmosphere:
     """Multi-layer extrusion engine used by :class:`pyturb.Atmosphere`.
 
     Holds one :class:`_ExtrudeLayer` per turbulent layer (sharing the ``A``
-    matrix across layers of equal ``L0``) and sums their pupil samples into a
-    single reference-wavelength phase screen. The public :class:`Atmosphere`
-    wraps this and converts to OPD.
+    matrix across layers of equal ``L0``) whose ring buffers are slabs of a
+    single contiguous ``(L, capacity, W)`` array. Extrusion is driven per layer
+    (amortised, one small mat-vec per new row) but the per-frame pupil readout
+    is a single fused bicubic gather over all layers, summed into one
+    reference-wavelength phase screen. The public :class:`Atmosphere` wraps this
+    and converts to OPD.
     """
 
     def __init__(
@@ -296,18 +287,29 @@ class ExtrudedAtmosphere:
         xp = self.xp
         self.device = device
         self.dtype = xp.dtype(dtype)
+        self.interp = interp
+        self.m = int(stencil_rows)
 
         # One uniform buffer width covers the rotated pupil (diagonal ~n*sqrt2)
         # plus the off-axis footprint travel, for every layer/direction.
         width = int(np.ceil(self.n * np.sqrt(2.0) + 2.0 * field_of_view_pix)) + 4
         self.width = width
 
+        # One uniform ring-buffer capacity, sized for the worst case (a 45-deg
+        # wind, no LGS cone shrink) so every layer's slab is big enough. This
+        # makes the buffer a single contiguous (L, cap, W) array whose slabs
+        # can be gathered in one kernel at readout.
+        capacity = self._uniform_capacity(self.n, field_of_view_pix, self.m)
+        self.capacity = capacity
+
         # Share A across layers with identical L0; B rescales per layer.
-        self._ab_cache = {}
-        self.layers = []
-        seeds = list(seeds) if seeds is not None else [None] * len(layer_r0)
-        for r0, L0, (vx, vy), alt, seed in zip(
-            layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds
+        self._ab_cache: dict = {}
+        self.layers: List[_ExtrudeLayer] = []
+        n_layers = len(layer_r0)
+        self._buf = xp.empty((n_layers, capacity, width), dtype=self.dtype)
+        seeds = list(seeds) if seeds is not None else [None] * n_layers
+        for i, (r0, L0, (vx, vy), alt, seed) in enumerate(
+            zip(layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds)
         ):
             key = round(float(L0), 9)
             if key not in self._ab_cache:
@@ -339,10 +341,38 @@ class ExtrudedAtmosphere:
                     rng=rng,
                     a_matrix=a_matrix,
                     b_unit=b_unit,
+                    buf=self._buf[i],
                     magnification=magnification,
                     fov_margin_pix=field_of_view_pix,
                 )
             )
+
+        # Stack the (never-changing) rotated pupil grids once, so the readout
+        # touches one (L, n, n) array instead of a Python list. Drop the
+        # per-layer copies to keep only one on the device.
+        self._along = xp.stack([layer._along for layer in self.layers])
+        self._perp = xp.stack([layer._perp for layer in self.layers])
+        for layer in self.layers:
+            layer._along = None
+            layer._perp = None
+        self._layer_index = xp.arange(n_layers)[:, None, None]
+
+    @staticmethod
+    def _uniform_capacity(n: int, fov_margin_pix: float, stencil_rows: int) -> int:
+        """Ring-buffer row capacity that fits every wind direction at this ``n``.
+
+        The along-wind extent of the rotated pupil is largest at a 45-deg wind
+        (``(n-1)/2 * sqrt2``); add the off-axis reach and the readout lookahead.
+        Independent of per-layer direction/LGS magnification (both only shrink
+        the extent), so all slabs share one capacity.
+        """
+        worst_along = (n - 1) / 2.0 * np.sqrt(2.0)
+        span = (
+            int(np.ceil(worst_along + fov_margin_pix))
+            - int(np.floor(-worst_along - fov_margin_pix))
+            + 3
+        )
+        return span + n + int(stencil_rows) + 32
 
     def set_time(self, t: float) -> None:
         """Advance every layer to simulation time ``t`` seconds."""
@@ -350,10 +380,109 @@ class ExtrudedAtmosphere:
             layer.set_travel(layer.speed * t / self.dx)
 
     def integrate(self, thx: float = 0.0, thy: float = 0.0) -> Any:
-        """Summed reference-wavelength phase ``(n, n)`` toward one direction."""
+        """Summed reference-wavelength phase ``(n, n)`` toward one direction.
+
+        On the GPU this is a single fused bicubic (or bilinear) gather over all
+        layers' ring buffers at once — one kernel launch instead of one per
+        layer — then summed over the layer axis. On the CPU the per-layer loop
+        keeps each gather a cache-friendly ``(n, n)`` and wins instead, so the
+        backend picks the readout: identical results, best throughput on each.
+        The gather indices are the rotated pupil grids offset by each layer's
+        wind travel and its (per-layer) off-axis footprint shift.
+        """
+        if self.xp is np:
+            return self._integrate_looped(thx, thy)
+        return self._integrate_batched(thx, thy)
+
+    def _readout_shifts(self, thx: float, thy: float):
+        """Per-layer (along-shift, perp-shift, fill) readout scalars, host-side.
+
+        The along-wind shift keeps travel and base combined in float64 before
+        touching the grid, so precision holds over an unbounded run.
+        """
+        layers = self.layers
+        shift_along = np.empty(len(layers), dtype=np.float64)
+        shift_perp = np.empty(len(layers), dtype=np.float64)
+        fill = np.empty(len(layers), dtype=np.int64)
+        for i, layer in enumerate(layers):
+            off_along, off_perp = layer.offsets_for_direction(thx, thy)
+            shift_along[i] = (layer._travel - layer._base) + off_along
+            shift_perp[i] = off_perp
+            fill[i] = layer._fill
+        return shift_along, shift_perp, fill
+
+    def _integrate_batched(self, thx: float, thy: float) -> Any:
+        """GPU readout: one fused gather over the stacked ``(L, cap, W)`` buffer."""
+        xp = self.xp
+        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        sa = xp.asarray(shift_along)[:, None, None]
+        sp = xp.asarray(shift_perp)[:, None, None]
+        row = self._along + sa  # (L, n, n) float64
+        col = self._perp + sp
+        r0 = xp.floor(row).astype(xp.int64)
+        c0 = xp.floor(col).astype(xp.int64)
+        fr = row - r0
+        fc = col - c0
+
+        if self.interp == "linear":
+            taps_r = ((0, 1.0 - fr), (1, fr))
+            taps_c = ((0, 1.0 - fc), (1, fc))
+        else:
+            taps_r = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fr)))
+            taps_c = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc)))
+
+        buf = self._buf
+        li = self._layer_index
+        fill_max = xp.asarray(fill - 1)[:, None, None]
+        wmax = self.width - 1
+        out = None
+        for dr, weight_r in taps_r:
+            rr = xp.clip(r0 + dr, 0, fill_max)
+            row_term = None
+            for dc, weight_c in taps_c:
+                cc = xp.clip(c0 + dc, 0, wmax)
+                term = weight_c * buf[li, rr, cc]  # (L, n, n) fused gather
+                row_term = term if row_term is None else row_term + term
+            contrib = weight_r * row_term
+            out = contrib if out is None else out + contrib
+        total = out.sum(axis=0)  # sum over layers -> (n, n)
+        return xp.ascontiguousarray(total.astype(self.dtype, copy=False))
+
+    def _integrate_looped(self, thx: float, thy: float) -> Any:
+        """CPU readout: per-layer ``(n, n)`` gather, summed as we go.
+
+        A big fused ``(L, n, n)`` fancy-index gather is memory-bound and cache-
+        hostile on NumPy; looping keeps each gather 2-D and contiguous, which is
+        markedly faster on the CPU than the batched path the GPU prefers.
+        """
+        xp = self.xp
+        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        wmax = self.width - 1
         total = None
-        for layer in self.layers:
-            oa, op = layer.offsets_for_direction(thx, thy)
-            contrib = layer.sample(oa, op)
-            total = contrib if total is None else total + contrib
-        return self.xp.ascontiguousarray(total)
+        for i in range(len(self.layers)):
+            buf = self._buf[i]
+            row = self._along[i] + shift_along[i]
+            col = self._perp[i] + shift_perp[i]
+            r0 = xp.floor(row).astype(xp.int64)
+            c0 = xp.floor(col).astype(xp.int64)
+            fr = row - r0
+            fc = col - c0
+            if self.interp == "linear":
+                taps_r = ((0, 1.0 - fr), (1, fr))
+                taps_c = ((0, 1.0 - fc), (1, fc))
+            else:
+                taps_r = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fr)))
+                taps_c = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc)))
+            fmax = int(fill[i]) - 1
+            out = None
+            for dr, weight_r in taps_r:
+                rr = xp.clip(r0 + dr, 0, fmax)
+                row_term = None
+                for dc, weight_c in taps_c:
+                    cc = xp.clip(c0 + dc, 0, wmax)
+                    term = weight_c * buf[rr, cc]
+                    row_term = term if row_term is None else row_term + term
+                contrib = weight_r * row_term
+                out = contrib if out is None else out + contrib
+            total = out if total is None else total + out
+        return xp.ascontiguousarray(total.astype(self.dtype, copy=False))

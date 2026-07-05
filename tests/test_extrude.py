@@ -1,6 +1,7 @@
 """Tests for the arbitrary-direction, non-periodic extrusion engine."""
 
 import numpy as np
+import pytest
 
 import pyturb
 from pyturb.extrude import ExtrudedAtmosphere
@@ -138,6 +139,24 @@ def test_memory_bounded_over_long_run():
         eng.integrate()
     assert eng.layers[0]._buf.shape[0] == cap
     assert np.isfinite(np.array(eng.integrate())).all()
+
+
+@pytest.mark.gpu
+def test_gpu_batched_readout_matches_looped():
+    """The fused-gather GPU readout equals the per-layer loop it replaces.
+
+    Both paths are exercised on the same GPU buffers (on- and off-axis) so a
+    regression in the batched gather can't hide behind independent RNG streams;
+    they must agree to float64 round-off (only the layer-sum order differs)."""
+    atm = pyturb.Atmosphere.from_profile(
+        "paranal-median", seeing=0.8, n=48, engine="extrude", device="gpu",
+        dtype="float64", seed=0, field_of_view=20)
+    ext = atm._ext
+    ext.set_time(0.05)
+    for thx, thy in [(0.0, 0.0), (np.tan(np.deg2rad(12 / 3600.0)), 0.0)]:
+        batched = pyturb.to_numpy(ext._integrate_batched(thx, thy))
+        looped = pyturb.to_numpy(ext._integrate_looped(thx, thy))
+        np.testing.assert_allclose(batched, looped, rtol=1e-10, atol=1e-9)
 
 
 def test_large_single_time_jump_matches_many_small_steps():

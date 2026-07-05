@@ -257,15 +257,7 @@ def test_invalid_boiling_and_fov():
         pyturb.Atmosphere(layers, r0=0.15, field_of_view=-5.0)
 
 
-def _cupy_available():
-    try:
-        pyturb.get_array_module("gpu")
-        return True
-    except ImportError:
-        return False
-
-
-@pytest.mark.skipif(not _cupy_available(), reason="CuPy not installed")
+@pytest.mark.gpu
 def test_gpu_matches_cpu_statistics():
     kw = dict(seeing=0.8, diameter=8.0, n=256, L0=np.inf, dtype="float64", seed=9)
     atm_c = pyturb.Atmosphere.from_profile("paranal-median", device="cpu", **kw)
@@ -362,6 +354,45 @@ def test_extrude_rejects_boiling():
                                        engine="extrude", tau_boil=0.1)
 
 
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_evolve_steps_in_seconds_and_matches_frames(engine):
+    """evolve(dt) advances the clock by dt and yields the same OPD as sampling
+    the equivalent absolute time; repeated calls reproduce frames()."""
+    kw = dict(seeing=0.8, diameter=8.0, n=48, engine=engine, L0=25.0,
+              dtype="float64", seed=4)
+    dt = 2e-3
+    a = pyturb.Atmosphere.from_profile("two-layer", **kw)
+    assert a.time == 0.0
+    stepped = pyturb.to_numpy(a.evolve(dt))
+    assert a.time == pytest.approx(dt)
+    # Same as sampling a fresh atmosphere at the same absolute time.
+    ref = pyturb.to_numpy(pyturb.Atmosphere.from_profile("two-layer", **kw).opd(dt))
+    np.testing.assert_allclose(stepped, ref, rtol=1e-9, atol=1e-13)
+    # Repeated evolve() reproduces frames() from its second frame onward.
+    seq = [pyturb.to_numpy(o)
+           for _, o in pyturb.Atmosphere.from_profile("two-layer", **kw).frames(dt, 4)]
+    d = pyturb.Atmosphere.from_profile("two-layer", **kw)
+    for k in range(1, 4):
+        ev = pyturb.to_numpy(d.evolve(dt))
+        np.testing.assert_allclose(ev, seq[k], rtol=1e-9, atol=1e-13)
+    with pytest.raises(ValueError):
+        a.evolve(0.0)
+
+
+def test_evolve_boiling_advances_like_frames():
+    """With tau_boil, evolve() applies one boiling step per dt just as frames()
+    does, so the two stay in lock-step."""
+    kw = dict(seeing=0.8, diameter=8.0, n=32, L0=25.0, dtype="float64",
+              seed=6, tau_boil=0.02)
+    dt = 1e-3
+    seq = [pyturb.to_numpy(o)
+           for _, o in pyturb.Atmosphere.from_profile("two-layer", **kw).frames(dt, 4)]
+    d = pyturb.Atmosphere.from_profile("two-layer", **kw)
+    for k in range(1, 4):
+        ev = pyturb.to_numpy(d.evolve(dt))
+        np.testing.assert_allclose(ev, seq[k], rtol=1e-9, atol=1e-13)
+
+
 def test_power_law_and_inner_scale_reach_sample_and_spectral():
     """power_law/inner_scale, previously only reachable via the low-level
     PhaseScreen, must work through Atmosphere for sample() and the spectral
@@ -405,34 +436,30 @@ def test_invalid_power_law_and_inner_scale():
 
 
 @pytest.mark.parametrize("engine", ["spectral", "extrude"])
-def test_gpu_extrude_and_spectral_match_theory(engine):
+def test_extrude_and_spectral_match_theory(device, engine):
     """Both engines, on both devices, follow the total-r0 von Karman law.
 
     (CuPy and NumPy have independent RNG streams, so the *realisations* differ;
     only the ensemble statistics are comparable — each is checked against
-    theory, the repo's standard.)
+    theory, the repo's standard.) The ``device`` fixture runs this on CPU
+    always and on GPU under ``--run-gpu``.
     """
-    try:
-        pyturb.get_array_module("gpu")
-    except ImportError:
-        pytest.skip("CuPy not available")
     kw = dict(seeing=0.8, diameter=8.0, n=64, L0=25.0, engine=engine,
               dtype="float64")
-    for dev in ("cpu", "gpu"):
-        acc = None
-        for seed in range(16):
-            atm = pyturb.Atmosphere.from_profile("paranal-median", device=dev,
-                                                 seed=seed, **kw)
-            r, d = pyturb.structure_function(
-                pyturb.to_numpy(atm.opd(0.0, wavelength=500e-9)), atm.pixel_scale)
-            acc = d if acc is None else acc + d
-            r0 = atm.r0
-        d = acc / 16
-        theory = 2.0 * (phase_covariance(0.0, r0, 25.0)
-                        - phase_covariance(r, r0, 25.0))
-        mid = (r >= 4 * atm.pixel_scale) & (r <= 8.0 / 4)
-        ratio = d[mid] / theory[mid]
-        assert np.all(ratio > 0.8) and np.all(ratio < 1.2), (engine, dev)
+    acc = None
+    for seed in range(16):
+        atm = pyturb.Atmosphere.from_profile("paranal-median", device=device,
+                                             seed=seed, **kw)
+        r, d = pyturb.structure_function(
+            pyturb.to_numpy(atm.opd(0.0, wavelength=500e-9)), atm.pixel_scale)
+        acc = d if acc is None else acc + d
+        r0 = atm.r0
+    d = acc / 16
+    theory = 2.0 * (phase_covariance(0.0, r0, 25.0)
+                    - phase_covariance(r, r0, 25.0))
+    mid = (r >= 4 * atm.pixel_scale) & (r <= 8.0 / 4)
+    ratio = d[mid] / theory[mid]
+    assert np.all(ratio > 0.8) and np.all(ratio < 1.2), (engine, device)
 
 
 def test_lgs_cone_effect_grows_as_beacon_lowers():

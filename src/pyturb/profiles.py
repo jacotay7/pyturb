@@ -89,13 +89,14 @@ class Layer:
 # Altitudes in metres, wind speed in m/s, fractions are relative Cn2 weights
 # (normalised on use). Provenance varies by profile -- see each function's
 # comment: "keck", "las-campanas" and "mauna-kea" are traceable to a specific
-# published table (cited below); "paranal-median" is representative/
-# illustrative (ground-layer-dominated, jet-stream enhancement near 9-18 km,
-# in the general shape of published Paranal turbulence statistics) but not
-# tied to one specific citable table -- treat it as a convenient starting
-# point, not a site-survey result. Wind DIRECTION is not part of any of the
-# cited sources below (none tabulate per-layer direction); every profile's
-# directions are illustrative placeholders, not measured/published data.
+# published table (cited below); "paranal-median", "cerro-pachon" and
+# "armazones" are representative/illustrative (ground-layer-dominated,
+# jet-stream enhancement near 9-18 km, in the general shape of published
+# turbulence statistics for those sites) but not tied to one specific citable
+# table -- treat them as convenient starting points, not site-survey results.
+# Wind DIRECTION is not part of any of the cited sources below (none tabulate
+# per-layer direction); every profile's directions are illustrative
+# placeholders, not measured/published data.
 
 def _single_layer() -> List[Layer]:
     return [Layer(altitude=0.0, cn2_fraction=1.0, wind_speed=10.0, wind_direction=0.0)]
@@ -162,6 +163,38 @@ def _las_campanas() -> List[Layer]:
             for a, f, w, d in zip(altitudes, fractions, winds, directions)]
 
 
+def _cerro_pachon() -> List[Layer]:
+    # Representative Cerro Pachon (Gemini South / future GMT neighbour, ~2715 m)
+    # profile: ground-layer-dominated with a jet-stream enhancement near 11 km,
+    # in the general shape of the Cerro Pachon optical-turbulence model of
+    # Tokovinin & Travouillon (2006), MNRAS 365, 1235. As with
+    # "paranal-median", the exact per-bin Cn2 fractions here are a convenient
+    # representative discretisation, not a reproduction of one published table;
+    # wind direction is illustrative (see module note above). L0 = 25 m.
+    altitudes = [0, 500, 1000, 2000, 4000, 8000, 11000, 16000]
+    fractions = [0.34, 0.10, 0.08, 0.08, 0.10, 0.12, 0.11, 0.07]
+    winds = [6.0, 8.0, 10.0, 12.0, 15.0, 25.0, 32.0, 20.0]
+    directions = [0, 20, 40, 70, 100, 130, 160, 190]
+    return [Layer(a, f, w, d, L0=25.0)
+            for a, f, w, d in zip(altitudes, fractions, winds, directions)]
+
+
+def _armazones() -> List[Layer]:
+    # Representative Cerro Armazones (ESO ELT site, ~3060 m) profile: a strong
+    # surface/ground layer over weaker free-atmosphere layers and a jet stream
+    # near 11 km, in the general shape of the Armazones site-testing statistics
+    # reported by Sarazin and the ESO site-characterisation campaigns. Like
+    # "paranal-median"/"cerro-pachon" this is a representative discretisation,
+    # not a reproduction of one published table; direction is illustrative.
+    # L0 = 25 m.
+    altitudes = [0, 300, 900, 1800, 4500, 7500, 11000, 17000]
+    fractions = [0.40, 0.11, 0.07, 0.07, 0.08, 0.09, 0.11, 0.07]
+    winds = [5.0, 7.0, 9.0, 12.0, 18.0, 24.0, 34.0, 22.0]
+    directions = [0, 25, 55, 80, 110, 140, 170, 200]
+    return [Layer(a, f, w, d, L0=25.0)
+            for a, f, w, d in zip(altitudes, fractions, winds, directions)]
+
+
 def _hv57(n_layers: int = 10) -> List[Layer]:
     heights = np.geomspace(10.0, 25000.0, 4096)
     cn2 = hufnagel_valley(heights)
@@ -175,6 +208,8 @@ _PROFILES = {
     "mauna-kea": _mauna_kea,
     "keck": _keck,
     "las-campanas": _las_campanas,
+    "cerro-pachon": _cerro_pachon,
+    "armazones": _armazones,
     "hv57": _hv57,
 }
 
@@ -188,15 +223,16 @@ def get_profile(name: str) -> List[Layer]:
     """Return a fresh list of :class:`Layer` for a named profile.
 
     Names: ``"single-layer"``, ``"two-layer"``, ``"paranal-median"``,
-    ``"mauna-kea"``, ``"keck"``, ``"las-campanas"``, ``"hv57"``. See
-    :func:`list_profiles`.
+    ``"mauna-kea"``, ``"keck"``, ``"las-campanas"``, ``"cerro-pachon"``,
+    ``"armazones"``, ``"hv57"``. See :func:`list_profiles`.
 
     ``"mauna-kea"``, ``"keck"`` and ``"las-campanas"`` are traceable to a
     specific published table (see each profile-building function's source
-    comment for the citation); ``"paranal-median"``, ``"single-layer"`` and
-    ``"two-layer"`` are representative/illustrative rather than a specific
-    cited site survey. Wind *direction* is illustrative in every profile —
-    none of the cited sources tabulate it.
+    comment for the citation); ``"paranal-median"``, ``"cerro-pachon"``,
+    ``"armazones"``, ``"single-layer"`` and ``"two-layer"`` are
+    representative/illustrative rather than a specific cited site survey. Wind
+    *direction* is illustrative in every profile — none of the cited sources
+    tabulate it.
     """
     key = str(name).lower()
     if key not in _PROFILES:

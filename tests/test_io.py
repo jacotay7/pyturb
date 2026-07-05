@@ -82,6 +82,65 @@ def test_dispersion_validation():
 
 
 # ---------------------------------------------------------------------------
+# wet/dry chromatic split (dispersion="ciddor")
+# ---------------------------------------------------------------------------
+def test_water_vapour_refractivity_dispersion():
+    wv = pyturb.water_vapour_refractivity
+    v, k = wv(500e-9), wv(2200e-9)
+    assert v > 0 and k > 0
+    assert k < v                                       # normal dispersion
+    assert np.isfinite(wv(np.array([0.5e-6, 2.2e-6, 10e-6]))).all()
+    # Disperses differently from dry air: the two ratios visible->mid-IR differ.
+    dry_ratio = pyturb.air_refractivity(10e-6) / pyturb.air_refractivity(500e-9)
+    wet_ratio = wv(10e-6) / wv(500e-9)
+    assert abs(wet_ratio - dry_ratio) > 1e-3
+
+
+def test_ciddor_dry_equals_edlen():
+    """dispersion='ciddor' with wet_fraction=0 is exactly the dry-air model."""
+    kw = dict(seeing=0.8, n=32, seed=1)
+    edlen = pyturb.Atmosphere.from_profile("two-layer", dispersion="edlen", **kw)
+    ciddor0 = pyturb.Atmosphere.from_profile(
+        "two-layer", dispersion="ciddor", wet_fraction=0.0, **kw)
+    for lam in (900e-9, 2200e-9, 10000e-9):
+        np.testing.assert_allclose(
+            pyturb.to_numpy(ciddor0.opd(0.0, wavelength=lam)),
+            pyturb.to_numpy(edlen.opd(0.0, wavelength=lam)), rtol=1e-9)
+
+
+def test_wet_fraction_blends_dry_and_wet_dispersion():
+    """The wet_fraction linearly blends the dry-air and water-vapour chromatic
+    scalings, and moves the phase output by the matching amount."""
+    kw = dict(seeing=0.8, n=32, seed=2)
+    lam = 10000e-9                                     # mid-IR, where it matters
+    dry = pyturb.Atmosphere.from_profile(
+        "two-layer", dispersion="ciddor", wet_fraction=0.0, **kw)
+    wet = pyturb.Atmosphere.from_profile(
+        "two-layer", dispersion="ciddor", wet_fraction=1.0, **kw)
+    mid = pyturb.Atmosphere.from_profile(
+        "two-layer", dispersion="ciddor", wet_fraction=0.4, **kw)
+    s_dry = dry._chromatic_scale(lam)
+    s_wet = wet._chromatic_scale(lam)
+    s_mid = mid._chromatic_scale(lam)
+    assert abs(s_wet - s_dry) > 1e-3                   # a real wet/dry split
+    assert min(s_dry, s_wet) < s_mid < max(s_dry, s_wet)
+    assert s_mid == pytest.approx(0.6 * s_dry + 0.4 * s_wet, rel=1e-9)
+    # A wet fraction shifts the mid-IR phase relative to the dry-only model.
+    p_dry = pyturb.to_numpy(dry.opd(0.0, wavelength=lam))
+    p_mid = pyturb.to_numpy(mid.opd(0.0, wavelength=lam))
+    np.testing.assert_allclose(p_mid, p_dry * (s_mid / s_dry), rtol=1e-6)
+
+
+def test_wet_fraction_validation():
+    with pytest.raises(ValueError):    # wet_fraction needs dispersion='ciddor'
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=16,
+                                       wet_fraction=0.3)
+    with pytest.raises(ValueError):    # out of [0, 1]
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=16,
+                                       dispersion="ciddor", wet_fraction=1.5)
+
+
+# ---------------------------------------------------------------------------
 # moment-conserving profile compression
 # ---------------------------------------------------------------------------
 def test_equivalent_layers_conserve_theta0_and_tau0():

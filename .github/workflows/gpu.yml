@@ -1,0 +1,33 @@
+name: GPU
+
+# The CuPy path is not exercised by the CPU-only `CI` workflow. This job runs
+# the GPU-marked tests (pytest --run-gpu) on a self-hosted runner that has a
+# CUDA GPU + CuPy. It is manual (workflow_dispatch) and, optionally, scheduled;
+# it never blocks a PR, so a repo without a GPU runner is unaffected.
+#
+# To use it: register a self-hosted runner with the labels [self-hosted, gpu]
+# on a CUDA machine, then trigger this workflow from the Actions tab. Locally,
+# the same check is just `pytest --run-gpu` in an env with cupy installed.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 06:00 UTC — a low-frequency regression guard for the
+    # CuPy path. Harmless (a no-op) if no self-hosted GPU runner is online.
+    - cron: "0 6 * * 1"
+
+jobs:
+  gpu-test:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with CUDA 12 extras
+        run: pip install -e ".[test,fits,cuda12]"
+      - name: Show GPU
+        run: |
+          python -c "import cupy; print('CuPy', cupy.__version__); \
+            print(cupy.cuda.runtime.getDeviceProperties(0)['name'])"
+      - name: Run GPU-marked tests
+        run: pytest -q --run-gpu -m gpu
+      - name: Run full suite on the GPU host (CPU + GPU)
+        run: pytest -q --run-gpu

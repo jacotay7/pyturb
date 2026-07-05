@@ -30,12 +30,19 @@ written (`.github/workflows/release.yml`, `docs.yml`).
 The spectral engine already hits target loop rates; the extruder is correct but
 not yet fused for the GPU.
 
-- [ ] **Batch the per-layer gathers into one kernel.** Today
-      `ExtrudedAtmosphere.integrate` loops layers with ~16 bicubic gathers each
-      (~120 fps for a 9-layer 512² screen vs ~800 fps spectral). Stack the
-      layers and fuse the sampling to close the gap.
-- [ ] **`evolve(dt)` convenience** keyed to per-layer `wind_speed`, mirroring
-      HCIPy's `evolve_until(t)`, so callers step in seconds not pixels.
+- [x] **Batch the per-layer gathers into one kernel.** Every layer's ring
+      buffer is now a slab of one contiguous `(L, cap, W)` array, and the GPU
+      readout is a single fused bicubic gather over all layers
+      (`_integrate_batched`); the CPU keeps the per-layer loop
+      (`_integrate_looped`), which its cache prefers, chosen by backend in
+      `ExtrudedAtmosphere.integrate`. Measured on an RTX 5090, 9-layer
+      paranal-median: **121 → 870 fps at 256² (7.1×)** and **118 → 290 fps at
+      512² (2.5×)**, closing most of the gap to the spectral engine; CPU
+      throughput is unchanged. Locked in by `test_gpu_batched_readout_matches_looped`.
+- [x] **`evolve(dt)` convenience** keyed to per-layer `wind_speed`, mirroring
+      HCIPy's `evolve_until(t)`, so callers step in seconds not pixels
+      (`Atmosphere.evolve`). Repeated calls reproduce `frames(dt)` (boiling
+      included); see `test_evolve_steps_in_seconds_and_matches_frames`.
 - [ ] **Fractal 2ⁿ stencil** (aotools-style) as an option over the current dense
       stencil — smaller covariance setup and memory at large `n`.
 - [ ] **Tighten the per-layer along-wind buffer margin.** Every `_ExtrudeLayer`
@@ -85,18 +92,6 @@ because they're implemented against different internal representations.
 - [ ] **More site profiles** — Cerro Pachón (Gemini/GMT) and Armazones (ELT);
       each is a few lines of cited layer numbers, following `keck` /
       `las-campanas`.
-- [ ] **Find a citable source for `paranal-median`.** Its layer shape (ground-
-      dominated, jet-stream enhancement at 9-18 km) is physically plausible
-      and matches `mauna-kea`/`keck`/`las-campanas` in form, but no published
-      table was found that matches its exact numbers — it's currently
-      documented as illustrative, not site-survey data. Replace with a cited
-      table if one turns up (e.g. an ESO/Sarazin & Tokovinin-style source), the
-      same way `mauna-kea` was corrected against Guyon 2005.
-- [ ] **Real per-site wind-direction climatology.** Every named profile's
-      per-layer wind direction is currently a disclosed arithmetic-sequence
-      placeholder (no cited source tabulates it). Sourcing real values would
-      need the same MASS/SCIDAR/wind-profiler campaigns that produced the
-      Cn² tables.
 - [ ] **Time-varying atmosphere parameters** — gusting/wind-direction drift
       over a run, time-variable Cn² profiles, and per-layer (rather than
       global) `inner_scale`/`power_law`. All are currently static-per-run;
@@ -105,9 +100,13 @@ because they're implemented against different internal representations.
 
 ## Testing & typing
 
-- [ ] **Self-hosted GPU CI job** (or a scheduled manual workflow) so the CuPy
-      path is continuously tested; the current matrix is CPU-only and skips GPU
-      tests. Parameterise the statistics tests over `device`.
+- [x] **Self-hosted GPU CI job** (manual/scheduled workflow) so the CuPy path
+      is tested off the CPU-only matrix. GPU tests carry `@pytest.mark.gpu` and
+      are skipped unless `pytest --run-gpu` is passed (see `tests/conftest.py`);
+      `.github/workflows/gpu.yml` runs them on a `[self-hosted, gpu]` runner on
+      demand and weekly. Statistics tests are parameterised over `device` via a
+      fixture, so the same body checks NumPy and CuPy. (Remaining: register a
+      GPU runner; the workflow is a no-op until one is online.)
 - [ ] **Complete type hints** on all public signatures (the `py.typed` marker
       already ships). Currently 76% of public-function parameters and 75% of
       public-function return types are annotated (up from 14%/30%); remaining

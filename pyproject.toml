@@ -52,6 +52,9 @@ packages = ["src/pyturb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "gpu: test needs a CUDA GPU + CuPy; skipped unless run with --run-gpu.",
+]
 
 [tool.ruff]
 line-length = 90

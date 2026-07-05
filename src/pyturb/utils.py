@@ -16,6 +16,7 @@ __all__ = [
     "opd_to_phase",
     "phase_to_opd",
     "air_refractivity",
+    "water_vapour_refractivity",
     "structure_function",
 ]
 
@@ -50,6 +51,51 @@ def air_refractivity(wavelength: ArrayLike) -> Union[float, np.ndarray]:
     refractivity = (
         8342.13 + 2406030.0 / (130.0 - sigma2) + 15997.0 / (38.9 - sigma2)
     ) * 1e-8
+    return refractivity if refractivity.ndim else float(refractivity)
+
+
+def water_vapour_refractivity(wavelength: ArrayLike) -> Union[float, np.ndarray]:
+    r"""Dispersion of the water-vapour refractivity at ``wavelength`` [m].
+
+    The wavelength-dependent part of the pure-water-vapour refractivity from
+    Ciddor (1996), *Refractive index of air: new equations for the visible and
+    near infrared*, Applied Optics 35, 1566::
+
+        (n_wv - 1) x 1e8 = 1.022 (295.235 + 2.6422 s^2
+                                  - 0.032380 s^4 + 0.004028 s^6)
+
+    with ``s = 1 / lambda`` in micron^-1. The overall scale depends on the
+    water-vapour partial pressure/temperature (a density factor) and cancels in
+    any *ratio* between wavelengths, so this returns the dispersion **shape**
+    only — exactly what the wet/dry chromatic OPD split needs.
+
+    Water vapour disperses differently from dry air (:func:`air_refractivity`):
+    across the visible-to-NIR the two shapes track loosely, but into the
+    mid-IR the dry term flattens while the wet term keeps more structure. That
+    divergence is the "wet–dry" problem in interferometry, where the
+    water-vapour contribution to the turbulent OPD dominates.
+
+    Parameters
+    ----------
+    wavelength : float or array_like
+        Wavelength in metres.
+
+    Returns
+    -------
+    float or ndarray
+        A quantity proportional to the water-vapour ``n - 1`` (dimensionless),
+        same shape as ``wavelength``.
+    """
+    sigma2 = (1.0 / (np.asarray(wavelength, dtype=np.float64) * 1e6)) ** 2
+    refractivity = (
+        1.022e-8
+        * (
+            295.235
+            + 2.6422 * sigma2
+            - 0.032380 * sigma2**2
+            + 0.004028 * sigma2**3
+        )
+    )
     return refractivity if refractivity.ndim else float(refractivity)
 
 

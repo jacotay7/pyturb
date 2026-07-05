@@ -21,6 +21,25 @@ def test_unknown_profile_raises():
         pyturb.get_profile("does-not-exist")
 
 
+@pytest.mark.parametrize("name", ["cerro-pachon", "armazones"])
+def test_site_profiles_are_physically_sane(name):
+    """New site profiles: ground-layer-dominated, normalisable, and giving
+    integrated quantities in the range expected for a good 8-m-class site."""
+    assert name in pyturb.list_profiles()
+    layers = pyturb.get_profile(name)
+    assert len(layers) >= 6
+    fracs = np.array([ly.cn2_fraction for ly in layers])
+    assert np.all(fracs >= 0) and fracs.sum() > 0
+    # Ground layer carries the most turbulence (both sites are ground-dominated).
+    assert layers[0].altitude == 0.0
+    assert np.argmax(fracs) == 0 and fracs[0] > 0.25
+    # Build an atmosphere and check theta0/tau0 land in a sensible band at
+    # 500 nm for r0 ~ 15 cm (a few arcsec seeing regime).
+    atm = pyturb.Atmosphere.from_profile(name, r0=0.15, n=32)
+    assert 0.5 < atm.theta0 < 8.0        # isoplanatic angle [arcsec]
+    assert 1e-3 < atm.tau0 < 20e-3       # coherence time [s]
+
+
 def test_layer_wind_vector():
     layer = pyturb.Layer(altitude=0.0, cn2_fraction=1.0, wind_speed=10.0,
                          wind_direction=90.0)

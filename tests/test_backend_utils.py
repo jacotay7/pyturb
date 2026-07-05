@@ -25,7 +25,7 @@ def test_gpu_without_cupy_raises_helpful_error():
         pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1, device="gpu")
 
 
-@pytest.mark.skipif(not CUPY_INSTALLED, reason="CuPy not installed")
+@pytest.mark.gpu
 def test_gpu_generation_matches_cpu_statistics():
     import cupy
 

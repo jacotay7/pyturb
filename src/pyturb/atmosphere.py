@@ -36,6 +36,7 @@ from .utils import (
     r0_at_wavelength,
     r0_from_seeing,
     seeing_from_r0,
+    water_vapour_refractivity,
 )
 
 __all__ = ["Atmosphere", "PeriodicWrapWarning"]
@@ -161,15 +162,27 @@ class Atmosphere:
         senses. ``None`` (default) is a natural-guide-star / science source at
         infinity. Requires ``engine="extrude"`` (the cone needs per-layer
         resampling, which the batched spectral engine cannot do).
-    dispersion : {None, "edlen"}, optional
+    dispersion : {None, "edlen", "ciddor"}, optional
         Chromatic model for the OPD. ``None`` (default) treats the turbulence
         OPD as perfectly achromatic (phase at ``wavelength`` is just
         ``2 pi * OPD / wavelength``). ``"edlen"`` additionally scales the OPD by
         the dry-air refractivity ratio ``(n(wavelength)-1)/(n(lambda_ref)-1)``
         before converting to phase — the small (~1-2 % visible-to-NIR)
         chromatic term that matters for high-contrast, astrometry and LGS error
-        budgets. Only affects output methods called with an explicit
+        budgets. ``"ciddor"`` splits that scaling into a dry-air part and a
+        water-vapour part weighted by ``wet_fraction`` (the "wet–dry" problem):
+        because water vapour disperses differently from dry air, a dry-only
+        correction is wrong in the mid-IR and for interferometry where the wet
+        turbulence dominates. ``"ciddor"`` with ``wet_fraction=0`` is identical
+        to ``"edlen"``. Only affects output methods called with an explicit
         ``wavelength``; the metre-valued OPD is unchanged.
+    wet_fraction : float, optional
+        Fraction (0–1) of the reference-wavelength turbulent refractivity
+        carried by water vapour rather than dry air, used only by
+        ``dispersion="ciddor"``. ``0`` (default) is pure dry air; typical
+        near-surface visible/NIR values are small, but the wet term grows
+        important in the thermal IR. Must be ``0`` unless
+        ``dispersion="ciddor"``.
     device : str, optional
         ``"cpu"`` (default) or ``"gpu"``.
     dtype : str, optional
@@ -232,6 +245,7 @@ class Atmosphere:
         interp: str = "cubic",
         lgs_altitude: Optional[float] = None,
         dispersion: Optional[str] = None,
+        wet_fraction: float = 0.0,
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
@@ -284,12 +298,22 @@ class Atmosphere:
                 raise ValueError("lgs_altitude (cone effect) requires engine='extrude'")
             if lgs_altitude <= 0:
                 raise ValueError("lgs_altitude must be positive [m]")
-        if dispersion not in (None, "edlen"):
-            raise ValueError("dispersion must be None or 'edlen'")
+        if dispersion not in (None, "edlen", "ciddor"):
+            raise ValueError("dispersion must be None, 'edlen', or 'ciddor'")
+        if not 0.0 <= wet_fraction <= 1.0:
+            raise ValueError("wet_fraction must be in [0, 1]")
+        if wet_fraction > 0.0 and dispersion != "ciddor":
+            raise ValueError(
+                "wet_fraction > 0 requires dispersion='ciddor' (the wet/dry "
+                "chromatic split): dispersion='edlen' models dry air only and "
+                "dispersion=None is achromatic, so neither has a water-vapour "
+                "term to weight."
+            )
         self.engine = engine
         self.interp = interp
         self.lgs_altitude = lgs_altitude
         self.dispersion = dispersion
+        self.wet_fraction = float(wet_fraction)
 
         self.wavelength = float(wavelength)
         if seeing is not None:
@@ -607,16 +631,36 @@ class Atmosphere:
         Returns achromatic OPD [m] when ``wavelength`` is ``None``; otherwise
         phase [rad] at ``wavelength``. With ``dispersion="edlen"`` the path
         length is scaled by the dry-air refractivity ratio before the phase
-        conversion (see the ``dispersion`` constructor argument).
+        conversion; with ``dispersion="ciddor"`` by a ``wet_fraction``-weighted
+        blend of the dry-air and water-vapour dispersion ratios (see the
+        ``dispersion`` constructor argument).
         """
         opd = phase * (self.wavelength / (2.0 * np.pi))
         if wavelength is None:
             return opd
-        if self.dispersion == "edlen":
-            opd = opd * (
-                air_refractivity(float(wavelength)) / air_refractivity(self.wavelength)
-            )
+        opd = opd * self._chromatic_scale(float(wavelength))
         return opd * (2.0 * np.pi / float(wavelength))
+
+    def _chromatic_scale(self, wavelength: float) -> float:
+        """OPD scale factor from the reference wavelength to ``wavelength``.
+
+        ``1`` for ``dispersion=None`` (achromatic); the dry-air refractivity
+        ratio for ``"edlen"``; and a ``wet_fraction``-weighted blend of the
+        dry-air and water-vapour dispersion ratios for ``"ciddor"``. The wet
+        term uses :func:`pyturb.water_vapour_refractivity`; both ratios are 1 at
+        the reference wavelength, so the blend is too.
+        """
+        if self.dispersion is None:
+            return 1.0
+        dry = air_refractivity(wavelength) / air_refractivity(self.wavelength)
+        if self.dispersion == "edlen":
+            return dry
+        wet = (
+            water_vapour_refractivity(wavelength)
+            / water_vapour_refractivity(self.wavelength)
+        )
+        w = self.wet_fraction
+        return (1.0 - w) * dry + w * wet
 
     def opd(
         self,
@@ -782,6 +826,39 @@ class Atmosphere:
             if self.engine == "spectral":
                 self._boil_step(float(dt))  # no-op unless tau_boil is finite
 
+    def evolve(self, dt: float, wavelength: Optional[float] = None) -> Any:
+        """Advance the wind by ``dt`` seconds and return the new pupil OPD.
+
+        A single-step, in-seconds convenience over :meth:`frames` for callers
+        driving their own loop (mirrors HCIPy's ``evolve_until``): each layer's
+        frozen flow is stepped by its own ``wind_speed`` — you pass a time, not
+        a pixel count. Advances the internal clock, so successive calls continue
+        the wind; use :meth:`reset` to return to ``t = 0``.
+
+        Repeated ``evolve(dt)`` calls reproduce the same sequence as
+        ``frames(dt, ...)`` (from its second frame on): both apply one boiling
+        step per ``dt`` when ``tau_boil`` is set.
+
+        Parameters
+        ----------
+        dt : float
+            Time step [s] (> 0).
+        wavelength : float, optional
+            If given, return phase [rad] at this wavelength; otherwise OPD [m].
+
+        Returns
+        -------
+        ndarray
+            The pupil OPD [m] (or phase [rad]) at the new time, shape
+            ``(n, n)`` on the device.
+        """
+        if dt <= 0:
+            raise ValueError("dt must be positive")
+        self._t += float(dt)
+        if self.engine == "spectral":
+            self._boil_step(float(dt))
+        return self._to_opd(self._phase(self._t, 0.0, 0.0), wavelength)
+
     def sample(
         self, count: Optional[int] = None, wavelength: Optional[float] = None
     ) -> Any:
@@ -846,6 +923,7 @@ class Atmosphere:
             "n_layers": len(self.layers),
             "engine": self.engine,
             "dispersion": self.dispersion,
+            "wet_fraction": self.wet_fraction,
         }
 
     def __repr__(self) -> str:

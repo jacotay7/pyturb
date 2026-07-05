@@ -49,6 +49,7 @@ from .utils import (
     r0_from_seeing,
     seeing_from_r0,
     structure_function,
+    water_vapour_refractivity,
 )
 
 try:  # single source of truth is the installed package metadata (pyproject.toml)
@@ -81,6 +82,7 @@ __all__ = [
     "opd_to_phase",
     "phase_to_opd",
     "air_refractivity",
+    "water_vapour_refractivity",
     "save",
     "load",
     "analysis",
