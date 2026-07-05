@@ -63,6 +63,44 @@ def test_structure_function_matches_von_karman():
     assert frac < 0.08
 
 
+def test_extruded_screen_is_isotropic_per_axis():
+    """The along-wind and cross-wind structure functions must agree (isotropy).
+
+    The azimuthally-averaged structure function used elsewhere sums both axes,
+    which can *hide* an anisotropy where one axis runs high and the other low
+    (the failure mode of extruding infinite-outer-scale/Kolmogorov turbulence:
+    the recurrence over-builds large scales along the wind while the joint row
+    covariance under-builds them across it). Finite-L0 von Karman is bounded and
+    stays isotropic; this checks each axis separately against theory and their
+    ratio, so such an anisotropy cannot slip through."""
+    def sf_axis(s, axis, maxsep):
+        return np.array([
+            np.mean((s[k:, :] - s[:-k, :]) ** 2) if axis == 0
+            else np.mean((s[:, k:] - s[:, :-k]) ** 2)
+            for k in range(1, maxsep + 1)])
+
+    maxsep = N // 4
+    acc_a = acc_c = None
+    for seed in range(60):
+        eng = _engine(37.0, seed=seed)          # rotated grid exercises both axes
+        eng.set_time(0.0)
+        s = np.array(eng.integrate())
+        a, c = sf_axis(s, 0, maxsep), sf_axis(s, 1, maxsep)
+        acc_a = a if acc_a is None else acc_a + a
+        acc_c = c if acc_c is None else acc_c + c
+    da, dc = acc_a / 60, acc_c / 60
+    r = np.arange(1, maxsep + 1) * DX
+    theory = 2.0 * (phase_covariance(0.0, R0, L0) - phase_covariance(r, R0, L0))
+    mid = np.arange(1, maxsep + 1) >= 3
+    # Each axis tracks theory, and the two axes track each other (isotropy):
+    # a Kolmogorov-style large-scale anisotropy would push this ratio well past
+    # ~1.8, far outside this band.
+    assert np.all((da / theory)[mid] > 0.82) and np.all((da / theory)[mid] < 1.15)
+    assert np.all((dc / theory)[mid] > 0.82) and np.all((dc / theory)[mid] < 1.15)
+    ratio = (da / dc)[mid]
+    assert np.all(ratio > 0.85) and np.all(ratio < 1.20)
+
+
 def test_non_periodic():
     """Unlike the spectral engine, the screen does not repeat after n pixels."""
     eng = _engine(0.0, seed=1)
