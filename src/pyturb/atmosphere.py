@@ -70,7 +70,7 @@ class _LayerState:
         vx: float,
         vy: float,
         altitude_los: float,
-    ):
+    ) -> None:
         self.generator = generator
         self.flow = flow
         self.vx = vx
@@ -249,7 +249,7 @@ class Atmosphere:
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
-    ):
+    ) -> None:
         layers = list(layers)
         if not layers:
             raise ValueError("at least one layer is required")

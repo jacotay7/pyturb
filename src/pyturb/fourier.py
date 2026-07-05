@@ -92,7 +92,7 @@ class PhaseScreen:
         seed: Any = None,
         device: str = "cpu",
         dtype: Union[str, np.dtype] = "float32",
-    ):
+    ) -> None:
         if n < 2:
             raise ValueError("n must be at least 2")
         if pixel_scale <= 0 or r0 <= 0:

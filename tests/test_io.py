@@ -175,3 +175,45 @@ def test_centroid_method_does_not_conserve_5_3_moment():
 def test_discretize_rejects_bad_method():
     with pytest.raises(ValueError):
         pyturb.discretize_cn2([0.0, 1.0], [1.0, 1.0], method="nope")
+
+
+def test_optimal_grouping_resolves_bimodal_profile():
+    """optimal_grouping places one layer on each turbulence spike of a bimodal
+    profile, where fixed log-spaced bins lump both into a single layer."""
+    h = np.linspace(0.0, 20000.0, 4000)
+    cn2 = (np.exp(-((h - 1000) / 300) ** 2)
+           + 0.8 * np.exp(-((h - 12000) / 400) ** 2) + 1e-6)
+
+    opt = pyturb.discretize_cn2(h, cn2, n_layers=2, wind=10.0,
+                                method="optimal_grouping")
+    eqv = pyturb.discretize_cn2(h, cn2, n_layers=2, wind=10.0,
+                                method="equivalent")
+
+    # Total turbulence conserved.
+    assert sum(ly.cn2_fraction for ly in opt) == pytest.approx(1.0)
+
+    # Optimal grouping lands one layer near each spike (both meaningfully
+    # weighted); the two carry comparable power.
+    opt_alts = sorted(ly.altitude for ly in opt)
+    assert abs(opt_alts[0] - 1000) < 400
+    assert abs(opt_alts[1] - 12000) < 600
+    assert min(ly.cn2_fraction for ly in opt) > 0.3
+
+    # Fixed log-spaced binning cannot: one of its two layers ends up with
+    # essentially no turbulence (both spikes fall in the same wide upper bin).
+    assert min(ly.cn2_fraction for ly in eqv) < 0.05
+
+
+def test_optimal_grouping_conserves_theta0_like_equivalent():
+    """Like equivalent layers, optimal_grouping preserves the h^{5/3} moment
+    (hence theta0) since each group uses the moment-conserving height."""
+    h = np.geomspace(10.0, 25000.0, 4096)
+    cn2 = pyturb.hufnagel_valley(h)
+    hbar_true = (_trapezoid(cn2 * h ** (5 / 3), h)
+                 / _trapezoid(cn2, h)) ** (3 / 5)
+    for n_layers in (4, 8, 12):
+        layers = pyturb.discretize_cn2(h, cn2, n_layers=n_layers,
+                                       method="optimal_grouping")
+        assert sum(ly.cn2_fraction for ly in layers) == pytest.approx(1.0)
+        assert len(layers) == n_layers
+        assert P.mean_turbulence_height(layers) == pytest.approx(hbar_true, rel=0.02)

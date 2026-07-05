@@ -54,7 +54,7 @@ class FourierFlowScreen:
     >>> b = layer.translate(1.3, -0.4)         # blown 1.3 m / -0.4 m
     """
 
-    def __init__(self, template: PhaseScreen, seed: Any = None):
+    def __init__(self, template: PhaseScreen, seed: Any = None) -> None:
         self.template = template
         self.xp = template.xp
         self.n = template.n

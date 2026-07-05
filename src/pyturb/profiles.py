@@ -275,6 +275,79 @@ def bufton_wind(h: ArrayLike) -> np.ndarray:
     return 5.0 + 30.0 * np.exp(-(((h - 9400.0) / 4800.0) ** 2))
 
 
+def _optimal_edges(heights: np.ndarray, cn2: np.ndarray, n_layers: int) -> np.ndarray:
+    r"""Bin edges that optimally group ``heights`` for atmospheric tomography.
+
+    Partitions the sorted altitude grid into ``n_layers`` contiguous groups that
+    minimise the total :math:`C_n^2`-weighted within-group variance of the
+    tomographic moment :math:`x = h^{5/3}` — the quantity that sets
+    :math:`\bar h`/:math:`\theta_0`. This is the exact 1-D weighted
+    :math:`k`-segment least-squares partition, solved by dynamic programming
+    over candidate boundaries with :math:`O(1)` segment costs from prefix sums
+    (Saxenhuber et al. 2017, "optimal grouping").
+
+    Returns ``n_layers + 1`` edge heights spanning ``[heights[0], heights[-1]]``.
+    """
+    N = int(heights.size)
+    n_layers = min(int(n_layers), N)
+    x = heights ** (5.0 / 3.0)
+    # Trapezoidal Cn2 weight per sample; the partition cost is weighted by it.
+    dh = np.gradient(heights)
+    w = np.clip(cn2 * dh, 0.0, None)
+    # Prefix sums (length N+1) give any segment's weighted moments in O(1).
+    W = np.concatenate(([0.0], np.cumsum(w)))
+    WX = np.concatenate(([0.0], np.cumsum(w * x)))
+    WX2 = np.concatenate(([0.0], np.cumsum(w * x * x)))
+
+    # Candidate boundary positions (sample indices 0..N), capped so the DP stays
+    # cheap on a fine input grid; full resolution is kept in the prefix sums, so
+    # only the boundary *locations* are quantised, not the integrals.
+    max_candidates = max(4 * n_layers, 400)
+    if N + 1 <= max_candidates:
+        cand = np.arange(N + 1)
+    else:
+        cand = np.unique(
+            np.concatenate(
+                [np.round(np.linspace(0, N, max_candidates)).astype(int), [0, N]]
+            )
+        )
+    m = cand.size
+
+    def seg_cost(a_idx: np.ndarray, b: int) -> np.ndarray:
+        """Weighted SSE of segments [a, b) for each sample-index ``a`` in a_idx."""
+        Wab = W[b] - W[a_idx]
+        good = Wab > 0
+        safe = np.where(good, Wab, 1.0)
+        mean_term = np.where(good, (WX[b] - WX[a_idx]) ** 2 / safe, 0.0)
+        return np.where(good, (WX2[b] - WX2[a_idx]) - mean_term, 0.0)
+
+    inf = np.inf
+    dp = np.full((n_layers + 1, m), inf)
+    back = np.zeros((n_layers + 1, m), dtype=np.int64)
+    dp[0, 0] = 0.0
+    for k in range(1, n_layers + 1):
+        for j in range(1, m):
+            prev = dp[k - 1, :j]
+            costs = prev + seg_cost(cand[:j], int(cand[j]))
+            a = int(np.argmin(costs))
+            dp[k, j] = costs[a]
+            back[k, j] = a
+
+    # Backtrack the k boundaries feeding dp[n_layers, last].
+    boundaries = []
+    j = m - 1
+    for k in range(n_layers, 0, -1):
+        a = int(back[k, j])
+        boundaries.append(cand[j])
+        j = a
+    boundaries.append(cand[0])
+    boundaries = sorted(set(int(b) for b in boundaries))
+    edges = heights[np.clip(boundaries, 0, N - 1)]
+    edges[0] = heights[0]
+    edges[-1] = heights[-1]
+    return np.asarray(edges, dtype=np.float64)
+
+
 def discretize_cn2(
     heights: ArrayLike,
     cn2: ArrayLike,
@@ -285,13 +358,14 @@ def discretize_cn2(
 ) -> List[Layer]:
     r"""Bin a continuous :math:`C_n^2(h)` profile into equivalent layers.
 
-    The altitude range is split into ``n_layers`` contiguous log-spaced bins;
-    each output layer carries that bin's integrated :math:`C_n^2\,dh`, so the
-    **total turbulence is always preserved**. The two methods differ in the
-    single height (and wind) assigned to each bin:
+    Each output layer carries its bin's integrated :math:`C_n^2\,dh`, so the
+    **total turbulence is always preserved**. The methods differ in how the bin
+    **edges** are chosen and in the single height (and wind) assigned to each
+    bin:
 
-    - ``method="equivalent"`` (default) — the **moment-conserving** equivalent
-      layer of Fusco (1999): the bin height is
+    - ``method="equivalent"`` (default) — contiguous **log-spaced** bin edges,
+      each bin represented by the **moment-conserving** equivalent layer of
+      Fusco (1999):
 
       .. math:: h_{\mathrm{eq}} = \Big(\frac{\int C_n^2\,h^{5/3}\,dh}
                                           {\int C_n^2\,dh}\Big)^{3/5},
@@ -300,9 +374,18 @@ def discretize_cn2(
       isoplanatic angle :math:`\theta_0`. When ``wind`` is given on the input
       grid the per-layer speed uses the matching :math:`v^{5/3}` moment, so the
       coherence time :math:`\tau_0` is conserved too.
-    - ``method="centroid"`` — the simpler :math:`C_n^2`-weighted mean height
-      (first moment). Preserves the turbulence centroid but not
-      :math:`\theta_0`/:math:`\tau_0` exactly.
+    - ``method="centroid"`` — log-spaced edges, but each bin uses the simpler
+      :math:`C_n^2`-weighted mean height (first moment). Preserves the
+      turbulence centroid but not :math:`\theta_0`/:math:`\tau_0` exactly.
+    - ``method="optimal_grouping"`` — the bin **edges are optimised** (not fixed
+      log-spaced) to minimise the total :math:`C_n^2`-weighted within-group
+      variance of :math:`h^{5/3}`, so each output layer groups input layers that
+      are close in the tomographic (:math:`\theta_0`) sense. Chosen by exact
+      dynamic-programming partition; each group then uses the same
+      moment-conserving equivalent height/wind as ``"equivalent"``. This is the
+      profile-compression choice for MCAO/atmospheric-tomography reconstruction
+      layers, where *where* the layers sit matters more than an even altitude
+      spacing (Saxenhuber et al. 2017).
 
     Parameters
     ----------
@@ -319,8 +402,8 @@ def discretize_cn2(
         moment-averaged per bin so that :math:`\tau_0` is conserved.
     L0 : float
         Outer scale assigned to every layer [m].
-    method : {"equivalent", "centroid"}
-        Height/wind assignment rule (see above).
+    method : {"equivalent", "centroid", "optimal_grouping"}
+        Edge selection and height/wind assignment rule (see above).
     """
     heights = np.asarray(heights, dtype=np.float64)
     cn2 = np.asarray(cn2, dtype=np.float64)
@@ -328,8 +411,10 @@ def discretize_cn2(
         raise ValueError("heights and cn2 must be 1-D arrays of equal length")
     if n_layers < 1:
         raise ValueError("n_layers must be >= 1")
-    if method not in ("equivalent", "centroid"):
-        raise ValueError("method must be 'equivalent' or 'centroid'")
+    if method not in ("equivalent", "centroid", "optimal_grouping"):
+        raise ValueError(
+            "method must be 'equivalent', 'centroid', or 'optimal_grouping'"
+        )
 
     # Resolve wind onto the input grid where possible; an array matching the
     # input heights enables the tau0-conserving v^{5/3} moment per bin.
@@ -360,9 +445,12 @@ def discretize_cn2(
                if h_bin.size > 1 else c_bin[0] * values[0])
         return num / cn2_integral(c_bin, h_bin)
 
-    edges = np.geomspace(max(heights[0], 1.0), heights[-1], n_layers + 1)
-    edges[0] = heights[0]
-    edges[-1] = heights[-1]
+    if method == "optimal_grouping":
+        edges = _optimal_edges(heights, cn2, n_layers)
+    else:
+        edges = np.geomspace(max(heights[0], 1.0), heights[-1], n_layers + 1)
+        edges[0] = heights[0]
+        edges[-1] = heights[-1]
     weights, altitudes, bin_speeds = [], [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
         if hi <= lo:
@@ -378,10 +466,12 @@ def discretize_cn2(
         integral = cn2_integral(c_bin, h_bin)
         if integral <= 0:
             continue
-        if method == "equivalent":
-            altitude = moment(h_bin, c_bin, h_bin)
-        else:
+        # "centroid" uses the first moment; "equivalent"/"optimal_grouping" use
+        # the tau0/theta0-conserving 5/3 moment.
+        if method == "centroid":
             altitude = cn2_average(h_bin, c_bin, h_bin)
+        else:
+            altitude = moment(h_bin, c_bin, h_bin)
         weights.append(integral)
         altitudes.append(altitude)
         if wind_grid is not None:
@@ -390,8 +480,8 @@ def discretize_cn2(
                 wind_grid[interior],
                 [np.interp(hi, heights, wind_grid)],
             ))
-            speed = (moment(v_bin, c_bin, h_bin) if method == "equivalent"
-                     else cn2_average(v_bin, c_bin, h_bin))
+            speed = (cn2_average(v_bin, c_bin, h_bin) if method == "centroid"
+                     else moment(v_bin, c_bin, h_bin))
             bin_speeds.append(speed)
 
     weights = np.asarray(weights)

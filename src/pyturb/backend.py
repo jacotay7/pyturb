@@ -81,17 +81,17 @@ class _ThreadedScipyFFT:
     it affects screens that already exist.
     """
 
-    def __init__(self, scipy_fft):
+    def __init__(self, scipy_fft: ModuleType) -> None:
         self._m = scipy_fft
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self._m, name)
 
-    def ifft2(self, a, **kwargs):
+    def ifft2(self, a: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("workers", _fft_workers)
         return self._m.ifft2(a, **kwargs)
 
-    def fft2(self, a, **kwargs):
+    def fft2(self, a: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("workers", _fft_workers)
         return self._m.fft2(a, **kwargs)
 

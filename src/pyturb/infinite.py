@@ -142,7 +142,7 @@ class InfinitePhaseScreen:
         seed: Any = None,
         device: str = "cpu",
         dtype: Union[str, np.dtype] = "float32",
-    ):
+    ) -> None:
         if not np.isfinite(L0) or L0 <= 0:
             raise ValueError(
                 "InfinitePhaseScreen requires a finite positive outer scale L0"

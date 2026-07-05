@@ -131,7 +131,7 @@ class _ExtrudeLayer:
         buf: Any,
         magnification: float = 1.0,
         fov_margin_pix: float = 0.0,
-    ):
+    ) -> None:
         self.n = int(n)
         self.W = int(width)
         self.dx = float(pixel_scale)
@@ -280,7 +280,7 @@ class ExtrudedAtmosphere:
         device: str = "cpu",
         dtype: Union[str, np.dtype] = "float32",
         seeds: Optional[Sequence[Any]] = None,
-    ):
+    ) -> None:
         self.n = int(n)
         self.dx = float(pixel_scale)
         self.xp = get_array_module(device)
