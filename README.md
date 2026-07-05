@@ -200,7 +200,12 @@ Measured head-to-head on an RTX 5090 (8 m pupil, 512²):
   the spectral shift-theorem engine (exact sub-pixel, any direction, all layers
   in one FFT).
 - **Accuracy** — pyturb's structure function tracks von Kármán theory to
-  **~2%**, the best of the four (HCIPy ~3.7%, aotools/soapy ~4.9%).
+  **~1%** systematic bias (measured on large ensembles; comparable to HCIPy
+  and soapy, and lower than aotools). At the ensemble sizes a quick benchmark
+  can afford, this metric is noisy enough that the exact ranking between
+  tools moves run to run — see
+  [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md#3-structure-function-accuracy--fractional-rms-error-vs-von-kármán-lower-is-better)
+  for the full numbers with uncertainties and methodology.
 
 **Where the others are stronger, honestly:** single-layer integer-pixel CPU
 stepping in aotools/soapy is still faster *per step* than pyturb's per-layer

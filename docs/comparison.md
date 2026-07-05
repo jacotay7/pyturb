@@ -119,8 +119,11 @@ on an RTX 5090, 8 m pupil, 512²:
 - **Frozen flow:** pyturb runs a full **9-layer atmosphere at ~800 fps** on GPU.
   Single-layer integer-pixel CPU stepping in aotools/soapy is faster *per step*
   (5,200–5,400/s) but does strictly less general work and has no GPU path.
-- **Accuracy:** pyturb ~**2%** structure-function error vs von Kármán, the best
-  of the four (HCIPy ~3.7%, aotools/soapy ~4.9%).
+- **Accuracy:** pyturb ~**1%** systematic structure-function bias vs von
+  Kármán on large ensembles — comparable to HCIPy/soapy and lower than
+  aotools, but at benchmark-scale ensembles the metric's own Monte-Carlo
+  noise is large enough that the ranking between tools is not reliable run to
+  run; see `RESULTS.md` §3 for the numbers with uncertainties.
 
 ## What we learned — and what we're adopting
 

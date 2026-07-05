@@ -177,7 +177,15 @@ def bench_flow(n, seconds):
 # ----------------------------------------------------------------------
 # 3. structure-function accuracy (fractional-RMS error vs von Karman)
 # ----------------------------------------------------------------------
-def bench_accuracy(n, count):
+# This metric -- fractional RMS deviation of an ENSEMBLE-MEAN structure
+# function from theory -- is dominated by Monte-Carlo noise at ensemble sizes
+# a benchmark can afford (its spread across independent draws is comparable
+# to the differences between libraries). Every library below therefore gets
+# (a) exactly the same ensemble size and (b) a bootstrap-estimated standard
+# deviation reported alongside the point estimate. pyturb is additionally
+# scored at aotools' hard-coded subharmonic depth (3 levels, vs pyturb's own
+# default of 8) so the comparison has one row at matched configuration.
+def bench_accuracy(n, count, n_boot=200, boot_seed=0):
     dx = DIAMETER / n
     seps = np.arange(1, n // 4 + 1)
     r = seps * dx
@@ -186,36 +194,54 @@ def bench_accuracy(n, count):
     target = np.asarray(_vk(r, R0, L0))
     mid = (r >= 4 * dx) & (r <= DIAMETER / 4)
 
-    def frac_err(get_screen, m):
-        acc = np.zeros(n // 4)
-        for i in range(m):
-            s = np.asarray(get_screen(i)).reshape(n, n).astype(np.float64)
-            _, dd = pyturb.structure_function(s, dx)
-            acc += dd
-        acc /= m
-        rel = (acc[mid] - target[mid]) / target[mid]
+    def frac_err(dd_mean):
+        rel = (dd_mean[mid] - target[mid]) / target[mid]
         return 100.0 * float(np.sqrt(np.mean(rel ** 2)))
+
+    def score(get_screen, m):
+        """(point estimate, bootstrap std) of frac_err over m screens.
+
+        The point estimate uses the full pool exactly as before; the std
+        comes from resampling that same pool with replacement, so it costs
+        no extra (slow) screen generation -- only cheap array arithmetic.
+        """
+        pool = np.stack([
+            pyturb.structure_function(
+                np.asarray(get_screen(i)).reshape(n, n).astype(np.float64), dx
+            )[1]
+            for i in range(m)
+        ])
+        point = frac_err(pool.mean(axis=0))
+        rng = np.random.default_rng(boot_seed)
+        boot = np.empty(n_boot)
+        for b in range(n_boot):
+            idx = rng.integers(0, m, size=m)
+            boot[b] = frac_err(pool[idx].mean(axis=0))
+        return point, float(boot.std())
 
     out = {}
     g = pyturb.PhaseScreen(n, dx, R0, L0, seed=1)
-    out["pyturb"] = frac_err(lambda i: g.generate(), count)
+    out["pyturb"] = score(lambda i: g.generate(), count)
+    g3 = pyturb.PhaseScreen(n, dx, R0, L0, subharmonics=3, seed=2)
+    out["pyturb (sh=3, aotools depth)"] = score(lambda i: g3.generate(), count)
     if _aotools_ps:
-        out["aotools"] = frac_err(
-            lambda i: _aotools_ps.ft_sh_phase_screen(R0, n, dx, L0, 0.01, seed=i), count)
+        out["aotools"] = score(
+            lambda i: _aotools_ps.ft_sh_phase_screen(R0, n, dx, L0, 0.01,
+                                                     seed=1000 + i), count)
     if _soapy_atm:
-        out["soapy"] = frac_err(
+        out["soapy"] = score(
             lambda i: _soapy_atm.phasescreen.ft_sh_phase_screen(R0, n, dx, L0, 0.01,
-                                                                seed=i), count)
+                                                                seed=2000 + i), count)
     if _hcipy:
         grid = _hcipy.make_pupil_grid(n, DIAMETER)
         cn2 = _hcipy.Cn_squared_from_fried_parameter(R0, WAVELENGTH)
 
         def hci(i):
             lay = _hcipy.InfiniteAtmosphericLayer(grid, cn2, L0, velocity=10.0,
-                                                  height=0, seed=i)
+                                                  height=0, seed=3000 + i)
             return np.asarray(lay.phase_for(WAVELENGTH))
 
-        out["hcipy"] = frac_err(hci, max(20, count // 3))
+        out["hcipy"] = score(hci, count)  # same ensemble size as every other library
     return out
 
 
@@ -247,6 +273,9 @@ def _fmt(v, kind):
         return "n/a"
     if kind == "rate":
         return f"{v:,.0f}" if v >= 1 else f"{v:.2g}"
+    if kind == "pct_pm":
+        mean, std = v
+        return f"{mean:.1f}% (+/-{std:.1f}%)"
     return f"{v:.1f}%"
 
 
@@ -272,7 +301,8 @@ def main():
     p.add_argument("--seconds", type=float, default=1.5,
                    help="wall-clock budget per timed cell")
     p.add_argument("--accuracy-count", type=int, default=120,
-                   help="ensemble size for the structure-function accuracy test")
+                   help="ensemble size for the structure-function accuracy "
+                        "test -- same size for every library")
     p.add_argument("--accuracy-n", type=int, default=256,
                    help="single screen size for the accuracy test (n-robust, so "
                         "not swept -- a big ensemble at one size is what matters)")
@@ -301,8 +331,10 @@ def main():
            gen, gorder, "rate")
     _table("Frozen-flow throughput (pupil phase frames / s, higher is better)",
            flow, gorder, "rate")
-    _table("Structure-function error vs von Karman theory (lower is better)",
-           acc, lambda c: (0 if c == "pyturb" else 1), "pct")
+    _table("Structure-function error vs von Karman theory (lower is better; "
+           "mean +/- bootstrap std over the ensemble, equal size for every "
+           "library)", acc, lambda c: (0 if c.startswith("pyturb") else 1),
+           "pct_pm")
 
     print("\n### Feature matrix\n")
     print("| Feature | pyturb | aotools | soapy | HCIPy |")
@@ -315,9 +347,13 @@ def main():
 
     if args.json:
         setup = {"diameter": DIAMETER, "r0": R0, "L0": L0, "wavelength": WAVELENGTH}
+        acc_json = {
+            n: {lib: {"mean_pct": mean, "std_pct": std} for lib, (mean, std) in res.items()}
+            for n, res in acc.items()
+        }
         with open(args.json, "w") as fh:
             json.dump({"libs": libs, "gpu": _have_gpu, "setup": setup,
-                       "generation": gen, "flow": flow, "accuracy": acc,
+                       "generation": gen, "flow": flow, "accuracy": acc_json,
                        "features": FEATURES}, fh, indent=2)
         print(f"\nwrote {args.json}")
 

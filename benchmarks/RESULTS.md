@@ -71,14 +71,31 @@ This axis is **not apples-to-apples**, and that is the interesting part:
 
 ## 3. Structure-function accuracy — fractional-RMS error vs von Kármán (lower is better)
 
-Ensemble of 150 screens at 256², error over separations `r ∈ [4·dx, D/4]`:
+Methodology: every library is scored on the same ensemble size (no exceptions
+for slower libraries), and each point estimate is reported with a
+bootstrap-estimated standard deviation (200 resamples of the same ensemble,
+so no extra screen generation is needed). pyturb is scored both at its
+default subharmonic depth (8 levels) and at aotools' hard-coded depth (3
+levels), so one row is directly configuration-matched. Methodology detail and
+a standalone reproduction of the numbers below:
+[`trade_study_review/06_accuracy_claim_statistics/`](../trade_study_review/06_accuracy_claim_statistics/README.md).
 
-| pyturb | HCIPy | aotools | soapy |
-|---:|---:|---:|---:|
-| **2.1 %** | 3.7 % | 4.9 % | 4.9 % |
+Ensemble of 120 screens at 256² (equal for every library), error over
+separations `r ∈ [4·dx, D/4]`, mean ± bootstrap std (200 resamples, seed 0):
 
-pyturb's integrated-per-cell subharmonic correction (rather than centre-sampled
-PSD × area) reproduces the low-frequency structure function most faithfully.
+| pyturb | pyturb (sh=3, aotools depth) | HCIPy | aotools | soapy |
+|---:|---:|---:|---:|---:|
+| 1.2 % (±1.2%) | 0.9 % (±1.1%) | 0.8 % (±1.3%) | 3.1 % (±1.9%) | 1.5 % (±1.4%) |
+
+At this (practical, benchmark-scale) ensemble size the scores of pyturb,
+HCIPy and soapy sit within each other's uncertainty — there is no reliable
+ranking among them here; the order moves between runs. aotools trends higher
+on this metric but still overlaps within ~1 std of the others. Separately, on
+much larger ensembles (hundreds of screens) pyturb's *systematic* bias is the
+smallest of the three tested (~±1% vs up to −4.5% for aotools and up to +3.6%
+for HCIPy at the largest separations), from the integrated-per-cell
+subharmonic correction (rather than centre-sampled PSD × area) — a real but
+modest (~1-3%) systematic effect that needs a large ensemble to resolve.
 
 ## 4. Feature matrix
 
@@ -110,5 +127,8 @@ PSD × area) reproduces the low-frequency structure function most faithfully.
    sub-pixel, any-direction, GPU generality. For the unbounded-duration case
    pyturb now ships its own ring-buffer extruder (`engine="extrude"`): a
    non-periodic 9-layer 512² atmosphere at ~120 fps on GPU.
-4. **Best statistical accuracy** of the four.
+4. **Accuracy is comparable, not a rout** — pyturb, HCIPy and soapy score
+   within each other's noise at practical ensemble sizes; pyturb's genuine
+   edge is a smaller (~1%) *systematic* bias, visible only on much larger
+   ensembles than a quick benchmark runs (see §3).
 5. **Broadest feature set** — GPU, profiles, off-axis, boiling, OPD-native.
