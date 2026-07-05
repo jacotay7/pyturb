@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -69,9 +71,48 @@ def test_frozen_flow_shifts_screen_by_wind():
     assert np.allclose(shifted, np.roll(base, -5, axis=0), atol=1e-6)
 
 
+def test_time_to_wrap_matches_screen_period_over_wind_speed():
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0)
+    atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, seed=0)
+    assert atm.time_to_wrap == pytest.approx(8.0 / 10.0)
+
+    # extrude is non-periodic: no wrap, ever.
+    atm_ext = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, seed=0,
+                                engine="extrude")
+    assert atm_ext.time_to_wrap == float("inf")
+
+
+def test_spectral_engine_warns_once_when_a_layer_wraps():
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0)
+    atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, seed=0)
+    wrap_t = atm.time_to_wrap
+
+    with pytest.warns(pyturb.PeriodicWrapWarning):
+        atm.opd(wrap_t * 1.5)
+
+    # Warns only once per instance, even if further calls keep wrapping.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", pyturb.PeriodicWrapWarning)
+        atm.opd(wrap_t * 3.0)  # would raise (as an error) if warned again
+
+    # reset() re-arms the guard for a fresh run.
+    atm.reset()
+    with pytest.warns(pyturb.PeriodicWrapWarning):
+        atm.opd(wrap_t * 1.5)
+
+
+def test_spectral_engine_does_not_warn_within_one_period():
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0)
+    atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, seed=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", pyturb.PeriodicWrapWarning)
+        atm.opd(atm.time_to_wrap * 0.5)  # would raise if (incorrectly) warned
+
+
 def test_directions_on_axis_matches_and_offset_decorrelates():
     atm = pyturb.Atmosphere.from_profile("paranal-median", r0=0.15, diameter=8.0,
-                                         n=128, dtype="float64", seed=3)
+                                         n=128, dtype="float64", seed=3,
+                                         field_of_view=30.0)
     out = atm.opd(0.0, directions=[(0.0, 0.0), (30.0, 0.0)])
     assert out.shape == (2, 128, 128)
     on_axis = pyturb.to_numpy(atm.opd(0.0))

@@ -86,6 +86,33 @@ def test_memory_stays_bounded():
     assert np.isfinite(np.array(layer.screen)).all()
 
 
+def test_large_single_advance_matches_many_small_steps():
+    """A jump far bigger than the ring buffer must not crash, and must give
+    exactly the same screen as reaching the same travel via small steps
+    (extrusion is a deterministic recurrence; only the compaction bookkeeping
+    should differ)."""
+    n = 128
+    big = pyturb.InfinitePhaseScreen(n=n, pixel_scale=0.05, r0=0.15, L0=25, seed=0)
+    jumped = np.array(big.advance(300))  # far more than one screen width
+
+    small = pyturb.InfinitePhaseScreen(n=n, pixel_scale=0.05, r0=0.15, L0=25, seed=0)
+    for _ in range(300):
+        stepped = np.array(small.advance(1.0))
+
+    np.testing.assert_array_equal(jumped, stepped)
+    assert np.isfinite(jumped).all()
+
+
+def test_large_advance_triggers_multiple_compactions_without_crash():
+    """A jump many multiples of the buffer capacity must still work (forces
+    _compact() to run repeatedly mid-jump, not just once)."""
+    layer = pyturb.InfinitePhaseScreen(n=32, pixel_scale=0.05, r0=0.1, seed=2)
+    cap = layer._buf.shape[0]
+    screen = np.array(layer.advance(50 * cap))
+    assert np.isfinite(screen).all()
+    assert layer._buf.shape[0] == cap  # buffer never reallocated
+
+
 def test_subpixel_preserves_variance():
     """Sub-pixel stepping keeps the screen variance, self-consistently.
 

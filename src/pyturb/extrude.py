@@ -101,6 +101,7 @@ class _ExtrudeLayer:
         a_matrix,
         b_unit,
         magnification=1.0,
+        fov_margin_pix=0.0,
     ):
         self.n = int(n)
         self.W = int(width)
@@ -134,14 +135,23 @@ class _ExtrudeLayer:
         self._perp = xp.asarray(perp + self.W / 2.0, dtype=np.float64)
         self._along_min = float(along.min())
         self._along_max = float(along.max())
+        # Off-axis directions shift the along-wind footprint by up to
+        # +/- fov_margin_pix (see offsets_for_direction / field_of_view);
+        # the ring buffer must be extruded and sized to cover that reach too,
+        # not just the on-axis pupil, or sample() silently clamps to the last
+        # extruded row for any off-axis request.
+        self._fov_margin = float(fov_margin_pix)
 
         # Ring buffer of extruded rows. Virtual row ``base + i`` lives at
-        # ``_buf[i]``; the readout window spans a fixed ~1.41 n rows, so a
-        # constant capacity plus a small lookahead suffices for any run length.
-        span = int(np.ceil(self._along_max)) - int(np.floor(self._along_min)) + 3
+        # ``_buf[i]``; the readout window spans a fixed ~1.41 n rows plus the
+        # off-axis margin, so a constant capacity plus a small lookahead
+        # suffices for any run length.
+        extent_max = self._along_max + self._fov_margin
+        extent_min = self._along_min - self._fov_margin
+        span = int(np.ceil(extent_max)) - int(np.floor(extent_min)) + 3
         self._capacity = span + self.n + self.m + 32
         self._buf = xp.empty((self._capacity, self.W), dtype=self.dtype)
-        self._base = int(np.floor(self._along_min)) - 2
+        self._base = int(np.floor(extent_min)) - 2
         # Seed with a von Kármán screen (subharmonics included), sliced to the
         # rows the buffer starts with.
         gen = PhaseScreen(
@@ -169,15 +179,22 @@ class _ExtrudeLayer:
         self._fill += 1
 
     def _compact(self):
-        lowest = int(np.floor(self._along_min + self._travel)) - 1
-        keep_from = max(1, lowest - self._base)
+        # ``self._travel`` is the eventual target set by set_travel() before
+        # extrusion catches up; for a jump bigger than the buffer it can be
+        # far beyond what has actually been extruded, so the bound derived
+        # from it must be capped at what extrusion still needs to keep going
+        # (the last ``m`` stencil rows), or this computes a negative-size copy.
+        target_bound = int(np.floor(self._along_min - self._fov_margin + self._travel)) - 1
+        stencil_bound = self._base + self._fill - self.m
+        keep_from = min(target_bound, stencil_bound) - self._base
+        keep_from = max(1, keep_from)
         keep = self._fill - keep_from
         self._buf[:keep] = self._buf[keep_from : self._fill].copy()
         self._base += keep_from
         self._fill = keep
 
     def _ensure(self):
-        top = int(np.ceil(self._along_max + self._travel)) + 2
+        top = int(np.ceil(self._along_max + self._fov_margin + self._travel)) + 2
         while self._base + self._fill - 1 < top:
             self._extrude_one()
 
@@ -309,6 +326,7 @@ class ExtrudedAtmosphere:
                     a_matrix=a_matrix,
                     b_unit=b_unit,
                     magnification=magnification,
+                    fov_margin_pix=field_of_view_pix,
                 )
             )
 

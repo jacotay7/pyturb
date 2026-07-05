@@ -18,7 +18,8 @@ import numpy as np, hcipy, pyturb
 pupil_grid = hcipy.make_pupil_grid(512, 8.0)
 aperture = hcipy.make_circular_aperture(8.0)(pupil_grid)
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
-                                     diameter=8.0, n=512, seed=1)
+                                     diameter=8.0, n=512, seed=1,
+                                     engine="extrude")
 
 wavelength = 1.65e-6
 for t, opd in atm.frames(dt=1e-3, steps=1000):

@@ -6,6 +6,10 @@ import pytest
 import pyturb
 from pyturb import profiles as P
 
+# np.trapezoid requires NumPy >= 2.0; fall back to np.trapz on the
+# numpy>=1.22 floor declared in pyproject.toml.
+_trapezoid = getattr(np, "trapezoid", np.trapz)
+
 
 # ---------------------------------------------------------------------------
 # save / load
@@ -86,8 +90,8 @@ def test_equivalent_layers_conserve_theta0_and_tau0():
     wind = pyturb.bufton_wind(h)
 
     def moment(values):
-        return (np.trapezoid(cn2 * values ** (5 / 3), h)
-                / np.trapezoid(cn2, h)) ** (3 / 5)
+        return (_trapezoid(cn2 * values ** (5 / 3), h)
+                / _trapezoid(cn2, h)) ** (3 / 5)
 
     hbar_true, vbar_true = moment(h), moment(wind)
 
@@ -102,8 +106,8 @@ def test_equivalent_layers_conserve_theta0_and_tau0():
 def test_centroid_method_does_not_conserve_5_3_moment():
     h = np.linspace(0.0, 20000.0, 4000)
     cn2 = pyturb.hufnagel_valley(h)
-    hbar_true = (np.trapezoid(cn2 * h ** (5 / 3), h)
-                 / np.trapezoid(cn2, h)) ** (3 / 5)
+    hbar_true = (_trapezoid(cn2 * h ** (5 / 3), h)
+                 / _trapezoid(cn2, h)) ** (3 / 5)
     layers = pyturb.discretize_cn2(h, cn2, n_layers=4, method="centroid")
     # Centroid heights are lower than the 5/3-moment heights, so h_bar is off.
     assert abs(P.mean_turbulence_height(layers) / hbar_true - 1) > 0.05

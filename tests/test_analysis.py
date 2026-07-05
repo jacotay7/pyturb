@@ -79,8 +79,15 @@ def test_fit_power_law_recovers_synthetic_slope():
     assert amp == pytest.approx(3.0, rel=1e-6)
 
 
+@pytest.mark.filterwarnings("ignore::pyturb.PeriodicWrapWarning")
 def test_temporal_psd_frozen_flow_slope():
-    """A single pupil point under frozen flow shows the ~ -8/3 power law."""
+    """A single pupil point under frozen flow shows the ~ -8/3 power law.
+
+    2048 ms of 10 m/s wind on a 4 m screen wraps the periodic spectral engine
+    ~5 times; harmless here since the fit only uses 5-60 Hz, well away from
+    the wrap-induced line at v/D ~ 2.5 Hz, but real enough to trigger
+    PeriodicWrapWarning -- suppressed here as intentional.
+    """
     layers = [pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0, L0=100.0)]
     atm = pyturb.Atmosphere(layers, r0=0.15, n=64, diameter=4.0, seed=3,
                             subharmonics=6)

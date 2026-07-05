@@ -248,9 +248,17 @@ class InfinitePhaseScreen:
         """Drop consumed rows below the window to make room, keeping one spare.
 
         The pupil never looks below ``floor(_travel) - 1``, so everything below
-        that is free to recycle. Amortised O(1) rows per step.
+        that is free to recycle -- *once it has actually been extruded*.
+        ``self._travel`` is the caller's eventual target, already committed by
+        ``_advance_to`` before extrusion catches up (see there for why); for a
+        jump larger than the buffer, that target can be far beyond anything
+        extruded so far, so the naive bound must be capped at what extrusion
+        still needs to keep going (the last ``stencil_rows`` rows) or this
+        computes a negative-size copy. Amortised O(1) rows per step.
         """
-        keep_from = int(np.floor(self._travel)) - 1 - self._base
+        target_bound = int(np.floor(self._travel)) - 1
+        stencil_bound = self._base + self._fill - self.stencil_rows
+        keep_from = min(target_bound, stencil_bound) - self._base
         keep_from = max(1, keep_from)  # always free at least one row
         keep = self._fill - keep_from
         self._buf[:keep] = self._buf[keep_from : self._fill].copy()

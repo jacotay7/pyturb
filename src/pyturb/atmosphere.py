@@ -20,6 +20,7 @@ wavelength instead.
 
 from __future__ import annotations
 
+import warnings
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -37,9 +38,23 @@ from .utils import (
     seeing_from_r0,
 )
 
-__all__ = ["Atmosphere"]
+__all__ = ["Atmosphere", "PeriodicWrapWarning"]
 
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
+
+
+class PeriodicWrapWarning(UserWarning):
+    """The default ``engine="spectral"`` screen has wrapped (repeated).
+
+    The spectral engine is periodic with period ``n_screen * pixel_scale``
+    metres of wind travel per layer. Once a layer's cumulative travel passes
+    that period, its "new" turbulence is the same realisation seen before,
+    biasing any temporal statistic computed over the run (PSDs, long
+    integrations, closed-loop error budgets). Silence with
+    ``warnings.filterwarnings("ignore", category=pyturb.PeriodicWrapWarning)``
+    if this is intentional (e.g. deliberately studying the periodic case), or
+    switch to ``engine="extrude"`` for genuinely non-periodic frozen flow.
+    """
 
 
 class _LayerState:
@@ -235,6 +250,10 @@ class Atmosphere:
         self.margin_pix = margin_pix
         self.n_screen = self.n + 2 * margin_pix
         self._crop = slice(margin_pix, margin_pix + self.n)
+        # The spectral engine's screen is periodic with this many metres of
+        # wind travel; used to warn once a run's cumulative travel wraps it.
+        self._screen_period_m = self.n_screen * self.pixel_scale
+        self._wrap_warned = False
 
         # Per-layer boiling time constants (s); inf/None means frozen flow.
         if tau_boil is None:
@@ -395,6 +414,46 @@ class Atmosphere:
         """Greenwood frequency [Hz] at the reference wavelength."""
         return _profiles.greenwood_frequency(self.layers, self.r0_los)
 
+    @property
+    def time_to_wrap(self) -> float:
+        """Seconds of on-axis wind travel before the fastest layer wraps.
+
+        Only meaningful for ``engine="spectral"``, which is periodic with
+        period ``n_screen * pixel_scale`` metres of travel per layer; a run
+        (via :meth:`frames` or :meth:`opd`) whose duration exceeds this
+        re-samples the same screen realisation instead of independent
+        turbulence for at least one layer. Returns ``inf`` for
+        ``engine="extrude"`` (non-periodic) or if every layer has zero wind.
+        """
+        if self.engine != "spectral":
+            return float("inf")
+        speeds = np.array([layer.wind_speed for layer in self.layers])
+        with np.errstate(divide="ignore"):
+            periods = self._screen_period_m / speeds
+        finite = periods[np.isfinite(periods)]
+        return float(finite.min()) if finite.size else float("inf")
+
+    def _check_wrap(self, disp_x, disp_y):
+        """Warn once (per instance) the first time a spectral layer wraps."""
+        disp = np.hypot(np.asarray(disp_x), np.asarray(disp_y))
+        wrapped = disp > self._screen_period_m
+        if not np.any(wrapped):
+            return
+        self._wrap_warned = True
+        idx = int(np.argmax(wrapped))
+        layer = self.layers[idx]
+        warnings.warn(
+            f"engine='spectral' layer {idx} (altitude={layer.altitude:.0f} m, "
+            f"wind_speed={layer.wind_speed:.1f} m/s) has wrapped: its "
+            f"cumulative travel ({disp[idx]:.2f} m) exceeds the screen's "
+            f"period ({self._screen_period_m:.2f} m). Its 'new' turbulence "
+            "is a repeat of previous turbulence, biasing temporal statistics "
+            "over this run. Use engine='extrude' for non-periodic frozen "
+            "flow, or keep run duration below `atm.time_to_wrap` seconds.",
+            PeriodicWrapWarning,
+            stacklevel=3,
+        )
+
     def _los_layers(self):
         # Layers with altitudes projected to the line of sight (for theta0).
         return [
@@ -433,9 +492,13 @@ class Atmosphere:
             by ``wind_vector * t``.
         directions : sequence of (thx, thy), optional
             Off-axis directions [arcsec] from the on-axis line of sight. Each
-            layer's footprint is shifted by ``altitude_los * tan(theta)`` for
-            anisoplanatism / tomography studies. If given, the result has a
-            leading axis of length ``len(directions)``.
+            component of each direction (not just the radius) must lie within
+            the ``field_of_view`` declared at construction, or the screens are
+            not guaranteed to be oversized enough and the request raises
+            ``ValueError`` instead of silently sampling stale/wrapped data.
+            Each layer's footprint is shifted by ``altitude_los * tan(theta)``
+            for anisoplanatism / tomography studies. If given, the result has
+            a leading axis of length ``len(directions)``.
         wavelength : float, optional
             If given, return phase [rad] at this wavelength; otherwise OPD [m].
         """
@@ -446,6 +509,13 @@ class Atmosphere:
         xp = self.xp
         out = []
         for thx, thy in directions:
+            if abs(thx) > self.field_of_view or abs(thy) > self.field_of_view:
+                raise ValueError(
+                    f"direction ({thx}, {thy}) arcsec exceeds the declared "
+                    f"field_of_view={self.field_of_view} arcsec; construct "
+                    "the Atmosphere with a field_of_view covering every "
+                    "direction you plan to request."
+                )
             ox = np.tan(thx * _ARCSEC_TO_RAD)
             oy = np.tan(thy * _ARCSEC_TO_RAD)
             out.append(self._phase(float(t), ox, oy))
@@ -473,8 +543,12 @@ class Atmosphere:
         cdtype = self._cdtype
         ns = self.n_screen
         # Per-layer displacement [m] along each axis (host-side, L is small).
-        sx = xp.asarray(self._vx * t + self._alt * ox, dtype=self._spectra.real.dtype)
-        sy = xp.asarray(self._vy * t + self._alt * oy, dtype=self._spectra.real.dtype)
+        disp_x = self._vx * t + self._alt * ox
+        disp_y = self._vy * t + self._alt * oy
+        if not self._wrap_warned:
+            self._check_wrap(disp_x, disp_y)
+        sx = xp.asarray(disp_x, dtype=self._spectra.real.dtype)
+        sy = xp.asarray(disp_y, dtype=self._spectra.real.dtype)
         f = self._grid_f
         # Separable shift-theorem phasors, shape (L, n_screen) each.
         phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
@@ -585,6 +659,7 @@ class Atmosphere:
         seeds (wind travel is monotonic, so the run restarts identically).
         """
         self._t = 0.0
+        self._wrap_warned = False
         if self.engine == "extrude":
             self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
         return self

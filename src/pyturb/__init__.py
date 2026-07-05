@@ -21,7 +21,7 @@ from importlib.metadata import version as _pkg_version
 
 from . import analysis
 from .analysis import zernike_basis, zernike_decompose
-from .atmosphere import Atmosphere
+from .atmosphere import Atmosphere, PeriodicWrapWarning
 from .backend import get_array_module, get_fft_workers, set_fft_workers, to_numpy
 from .benchmark import benchmark
 from .flow import FourierFlowScreen
@@ -58,6 +58,7 @@ except PackageNotFoundError:  # not installed (e.g. running from a source tree)
 
 __all__ = [
     "Atmosphere",
+    "PeriodicWrapWarning",
     "Layer",
     "PhaseScreen",
     "InfinitePhaseScreen",

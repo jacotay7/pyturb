@@ -4,6 +4,10 @@ import pytest
 import pyturb
 from pyturb import profiles
 
+# np.trapezoid requires NumPy >= 2.0; fall back to np.trapz on the
+# numpy>=1.22 floor declared in pyproject.toml.
+_trapezoid = getattr(np, "trapezoid", np.trapz)
+
 
 def test_named_profiles_load_and_are_nonempty():
     for name in pyturb.list_profiles():
@@ -30,7 +34,7 @@ def test_hufnagel_valley_57_gives_reasonable_r0():
     h = np.geomspace(1.0, 25000.0, 20000)
     cn2 = pyturb.hufnagel_valley(h)
     k = 2 * np.pi / 500e-9
-    integral = np.trapezoid(cn2, h)
+    integral = _trapezoid(cn2, h)
     r0 = (0.423 * k**2 * integral) ** (-3.0 / 5.0)
     assert 0.03 < r0 < 0.08
 
@@ -44,8 +48,8 @@ def test_discretize_conserves_total_turbulence():
     assert abs(fracs.sum() - 1.0) < 1e-9
     # Discretised centroid of h^{5/3} should track the continuous profile.
     h_bar_disc = profiles.mean_turbulence_height(layers)
-    weight = cn2 / np.trapezoid(cn2, h)
-    h_bar_cont = np.trapezoid(weight * h ** (5.0 / 3.0), h) ** (3.0 / 5.0)
+    weight = cn2 / _trapezoid(cn2, h)
+    h_bar_cont = _trapezoid(weight * h ** (5.0 / 3.0), h) ** (3.0 / 5.0)
     assert abs(h_bar_disc - h_bar_cont) / h_bar_cont < 0.25
 
 

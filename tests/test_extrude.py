@@ -98,6 +98,14 @@ def test_offaxis_decorrelates_with_angle():
     var_large = np.var(large - on)
     assert var_large > var_small > 0.0
 
+    # Growing variance alone doesn't rule out fabricated data: a screen
+    # clamped to duplicate its last extruded row also "decorrelates" from
+    # on-axis. Rule that out directly by checking neither off-axis readout
+    # contains adjacent bitwise-identical rows (the clamping signature).
+    for screen in (small, large):
+        dup = np.sum(np.all(np.diff(screen, axis=0) == 0.0, axis=1))
+        assert dup == 0
+
 
 def test_memory_bounded_over_long_run():
     """The per-layer ring buffer must not grow with the number of frames."""
@@ -108,3 +116,22 @@ def test_memory_bounded_over_long_run():
         eng.integrate()
     assert eng.layers[0]._buf.shape[0] == cap
     assert np.isfinite(np.array(eng.integrate())).all()
+
+
+def test_large_single_time_jump_matches_many_small_steps():
+    """set_time() by a huge single jump (more travel than the ring buffer
+    holds) must not crash, and must exactly match reaching the same time via
+    small steps -- extrusion is a deterministic recurrence; only the
+    compaction bookkeeping should differ."""
+    speed = 32.0  # m/s, e.g. a jet-stream layer
+    big = _engine(0.0, speed=speed, seed=5)
+    big.set_time(1.0)  # 1 s * 32 m/s / DX px/m -- far more than one screen width
+    jumped = np.array(big.integrate())
+
+    small = _engine(0.0, speed=speed, seed=5)
+    for k in range(1, 101):
+        small.set_time(k * 1.0 / 100.0)
+    stepped = np.array(small.integrate())
+
+    np.testing.assert_array_equal(jumped, stepped)
+    assert np.isfinite(jumped).all()

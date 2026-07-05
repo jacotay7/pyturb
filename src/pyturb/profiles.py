@@ -27,6 +27,10 @@ from typing import List
 
 import numpy as np
 
+# np.trapezoid was added in NumPy 2.0; np.trapz still works there but is
+# deprecated. Fall back for the NumPy 1.22-1.x floor declared in pyproject.
+_trapezoid = getattr(np, "trapezoid", np.trapz)
+
 __all__ = [
     "Layer",
     "get_profile",
@@ -272,17 +276,17 @@ def discretize_cn2(heights, cn2, n_layers=10, wind="bufton", L0=25.0,
             wind_grid = wind_arr  # wind on the input grid -> can moment-average
 
     def cn2_integral(c_bin, h_bin):
-        return np.trapezoid(c_bin, h_bin) if h_bin.size > 1 else c_bin[0]
+        return _trapezoid(c_bin, h_bin) if h_bin.size > 1 else c_bin[0]
 
     def moment(values, c_bin, h_bin):
         """5/3-moment representative value, integrated consistently with the
         bin weight: ``(int c v^{5/3} dh / int c dh)^{3/5}``."""
-        num = (np.trapezoid(c_bin * values ** (5.0 / 3.0), h_bin)
+        num = (_trapezoid(c_bin * values ** (5.0 / 3.0), h_bin)
                if h_bin.size > 1 else c_bin[0] * values[0] ** (5.0 / 3.0))
         return (num / cn2_integral(c_bin, h_bin)) ** (3.0 / 5.0)
 
     def cn2_average(values, c_bin, h_bin):
-        num = (np.trapezoid(c_bin * values, h_bin)
+        num = (_trapezoid(c_bin * values, h_bin)
                if h_bin.size > 1 else c_bin[0] * values[0])
         return num / cn2_integral(c_bin, h_bin)
 
