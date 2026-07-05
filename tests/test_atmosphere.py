@@ -172,9 +172,13 @@ def test_off_axis_is_a_pure_shift_without_wrap():
 
 
 def test_boiling_decorrelates_as_expected_and_is_stationary():
-    # Ensemble-averaged temporal autocorrelation of a boiling layer must follow
-    # exp(-t/tau); a single realisation is dominated by a few low-frequency
-    # modes and is far too noisy to test.
+    # Ensemble-averaged temporal autocorrelation of a boiling layer must decay
+    # no slower than exp(-t/tau_boil) (the outer-scale rate; finer structure
+    # boils faster per Kolmogorov eddy-turnover scaling, pulling the whole-
+    # pupil average below the single-rate curve -- see
+    # test_boiling_is_scale_dependent_not_uniform for the scale-resolved
+    # check). A single realisation is dominated by a few low-frequency modes
+    # and is far too noisy to test, hence the ensemble average.
     tau, dt = 0.05, 0.005
     lags = [1, 2, 5]
     num = {k: 0.0 for k in lags}
@@ -196,9 +200,43 @@ def test_boiling_decorrelates_as_expected_and_is_stationary():
             denk[k] += np.dot(fk, fk)
     for k in lags:
         corr = num[k] / np.sqrt(den0 * denk[k])
-        assert abs(corr - np.exp(-k * dt / tau)) < 0.05
+        upper = np.exp(-k * dt / tau)
+        assert corr < upper + 0.02          # never slower than the outer-scale rate
+        assert corr > 0.5 * upper           # but shouldn't collapse either
     # Boiling preserves the spatial variance (stationary RMS) in the ensemble.
     assert abs(np.mean(rms_last) / np.mean(rms_first) - 1.0) < 0.1
+
+
+def test_boiling_is_scale_dependent_not_uniform():
+    """Fine spatial structure must boil faster than coarse structure
+    (Kolmogorov eddy-turnover scaling, tau(f) ~ f^{-2/3}), not the single
+    global rate a uniform AR(1) would give every mode."""
+    n, diam, tau_boil, dt, steps = 96, 8.0, 0.10, 5e-3, 250
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=0.0)  # no wind: isolate boiling
+    atm = pyturb.Atmosphere([layer], r0=0.15, diameter=diam, n=n, seed=0,
+                            tau_boil=tau_boil, dtype="float64", subharmonics=0)
+    frames = np.stack([np.array(o) for _, o in atm.frames(dt=dt, steps=steps)])
+
+    F = np.fft.fft2(frames, axes=(1, 2))
+    f = np.fft.fftfreq(n, diam / n)
+    fr = np.hypot(f[:, None], f[None, :])
+    edges = np.geomspace(0.15, 6.0, 5)
+
+    def band_tau(lo, hi):
+        x = F[:, (fr >= lo) & (fr < hi)]
+        x = x - x.mean(0)
+        lags = np.arange(1, 8)
+        ac = np.clip([
+            np.real(np.vdot(x[:-k].ravel(), x[k:].ravel()))
+            / np.real(np.vdot(x.ravel(), x.ravel())) for k in lags
+        ], 1e-3, 1)
+        return -1.0 / np.polyfit(lags * dt, np.log(ac), 1)[0]
+
+    taus = [band_tau(lo, hi) for lo, hi in zip(edges[:-1], edges[1:])]
+    # Strictly shorter tau at higher spatial frequency, over a wide range --
+    # a uniform AR(1) (the old model) would give a flat profile here.
+    assert all(a > b for a, b in zip(taus, taus[1:]))
+    assert max(taus) / min(taus) > 3.0
 
 
 def test_frozen_flow_default_is_not_boiling():

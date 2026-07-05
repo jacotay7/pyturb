@@ -107,12 +107,16 @@ class Atmosphere:
         use ``directions`` for anisoplanatism/tomography. Default 0 (screens
         exactly the pupil; fastest). Larger values cost a larger per-frame FFT.
     tau_boil : float or sequence, optional
-        Boiling (temporal decorrelation) time constant [s], scalar or one per
-        layer. ``None`` (default) is pure frozen flow. When set, each layer's
-        modes relax via an AR(1) process so the screen decorrelates with
-        autocorrelation ``exp(-dt/tau_boil)`` while keeping its spatial
-        statistics; active only while stepping with :meth:`frames`. Requires
-        ``engine="spectral"``.
+        Boiling (temporal decorrelation) time constant [s] of each layer's
+        *outer-scale* structure, scalar or one per layer. ``None`` (default)
+        is pure frozen flow. When set, every mode relaxes via an AR(1) process
+        toward fresh noise with retention ``exp(-dt/tau(f))`` while keeping
+        its spatial statistics; finer spatial structure boils faster than
+        ``tau_boil`` per Kolmogorov eddy-turnover scaling,
+        ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for ``f >= f_ref = 1/L0``
+        (the grid fundamental frequency for Kolmogorov ``L0=inf``), clamped to
+        ``tau_boil`` below ``f_ref``. Active only while stepping with
+        :meth:`frames`. Requires ``engine="spectral"``.
     engine : {"spectral", "extrude"}, optional
         Frozen-flow engine for :meth:`frames`/:meth:`opd`. ``"spectral"``
         (default) is the fastest: an exact sub-pixel shift-theorem translation,
@@ -366,6 +370,46 @@ class Atmosphere:
                 [state.generator._sh_bases[level][0] for state in self._layers]
             )  # (L,3,3)
             self._sh_batched.append((coeffs, amps, basis, template._sh_freqs[level]))
+        self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
+
+    def _build_boil_tau_maps(self):
+        """Per-mode boiling time constants (Kolmogorov eddy-turnover scaling).
+
+        Eddy lifetime scales with eddy size, ``tau(l) ~ epsilon^{-1/3} l^{2/3}``
+        (Kolmogorov 1941), i.e. ``tau(f) ~ f^{-2/3}``: fine structure
+        decorrelates faster than large-scale structure. ``tau_boil`` is taken
+        to set the decorrelation time of the outer-scale structure (frequency
+        ``f_ref = 1/L0``, or the grid fundamental ``1/(n_screen*pixel_scale)``
+        for Kolmogorov ``L0=inf``, which has no outer scale); every other mode
+        gets ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for ``f >= f_ref``,
+        clamped to ``tau_boil`` below it (the inertial-range scaling has
+        nothing to say about structure larger than the outer scale).
+
+        References
+        ----------
+        Kolmogorov (1941); eddy turnover time scaling as used e.g. in
+        Poyneer, van Dam & Veran (2009), JOSA A 26, 833 and Guesalaga et al.
+        (2014), MNRAS 441, 1925 to characterise non-frozen-flow decorrelation.
+        """
+        xp = self.xp
+        rdtype = self._spectra.real.dtype
+        L0s = np.array([s.generator.L0 for s in self._layers], dtype=np.float64)
+        df = 1.0 / (self.n_screen * self.pixel_scale)
+        f_ref = np.where(np.isfinite(L0s), 1.0 / np.where(L0s > 0, L0s, np.inf), df)
+        tau_boil_dev = xp.asarray(self.tau_boil, dtype=rdtype)  # (L,)
+        f_ref_dev = xp.asarray(f_ref, dtype=rdtype)  # (L,)
+
+        f = self._grid_f
+        fr = xp.hypot(f[:, None], f[None, :]).astype(rdtype)  # (ns, ns)
+        ratio = xp.clip(fr[None, :, :] / f_ref_dev[:, None, None], 1.0, None)
+        main_tau = tau_boil_dev[:, None, None] * ratio ** (-2.0 / 3.0)
+
+        sh_tau = []
+        for _coeffs, _amps, _basis, fp in self._sh_batched:
+            fr_sh = xp.hypot(fp[:, None], fp[None, :]).astype(rdtype)  # (3, 3)
+            ratio_sh = xp.clip(fr_sh[None, :, :] / f_ref_dev[:, None, None], 1.0, None)
+            sh_tau.append(tau_boil_dev[:, None, None] * ratio_sh ** (-2.0 / 3.0))
+        return main_tau, sh_tau
 
     # ------------------------------------------------------------------
     # constructors
@@ -576,10 +620,13 @@ class Atmosphere:
         """Advance boiling by ``dt`` seconds: one AR(1) update per mode.
 
         Each Fourier mode relaxes toward a fresh draw of its stationary
-        distribution with retention ``alpha = exp(-dt / tau_boil)``, so the
-        screen's temporal autocorrelation decays as ``exp(-dt / tau_boil)``
-        while its spatial PSD (and hence r0) is preserved. Layers with infinite
-        ``tau_boil`` are untouched (pure frozen flow).
+        distribution with retention ``alpha = exp(-dt / tau(f))``, so the
+        mode's temporal autocorrelation decays as ``exp(-dt / tau(f))`` while
+        its spatial PSD (and hence r0) is preserved. ``tau(f)`` is scale
+        dependent (see :meth:`_build_boil_tau_maps`): fine spatial structure
+        boils faster than coarse structure, per Kolmogorov eddy-turnover
+        scaling. Layers with infinite ``tau_boil`` are untouched (pure frozen
+        flow).
         """
         xp = self.xp
         with np.errstate(divide="ignore"):
@@ -588,20 +635,22 @@ class Atmosphere:
             )
         if np.all(alpha >= 1.0):  # every layer frozen — nothing to do
             return
-        a = xp.asarray(alpha, dtype=self._spectra.real.dtype)[:, None, None]
-        b = xp.sqrt(1.0 - a * a)
         L = self._spectra.shape[0]
+        a = xp.exp(-dt / self._boil_main_tau)
+        b = xp.sqrt(xp.clip(1.0 - a * a, 0.0, None))
         noise = self._boil_rng.standard_normal(
             (2, L, self.n_screen, self.n_screen), dtype=self._spectra.real.dtype
         )
         fresh = (noise[0] + 1j * noise[1]) * self._amplitudes
         self._spectra = a * self._spectra + b * fresh.astype(self._cdtype)
         new_sh = []
-        for coeffs, amps, basis, fp in self._sh_batched:
+        for (coeffs, amps, basis, fp), tau_sh in zip(self._sh_batched, self._boil_sh_tau):
+            a_sh = xp.exp(-dt / tau_sh)
+            b_sh = xp.sqrt(xp.clip(1.0 - a_sh * a_sh, 0.0, None))
             noise = self._boil_rng.standard_normal((2, L, 3, 3),
                                                    dtype=self._spectra.real.dtype)
             fresh = (noise[0] + 1j * noise[1]) * amps
-            coeffs = a * coeffs + b * fresh.astype(self._cdtype)
+            coeffs = a_sh * coeffs + b_sh * fresh.astype(self._cdtype)
             new_sh.append((coeffs, amps, basis, fp))
         self._sh_batched = new_sh
 
