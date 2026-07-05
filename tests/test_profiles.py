@@ -4,9 +4,9 @@ import pytest
 import pyturb
 from pyturb import profiles
 
-# np.trapezoid requires NumPy >= 2.0; fall back to np.trapz on the
-# numpy>=1.22 floor declared in pyproject.toml.
-_trapezoid = getattr(np, "trapezoid", np.trapz)
+# np.trapezoid (NumPy >= 2.0) replaces np.trapz, later removed entirely.
+# hasattr, not getattr's default, so np.trapz is never accessed when absent.
+_trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
 
 def test_named_profiles_load_and_are_nonempty():

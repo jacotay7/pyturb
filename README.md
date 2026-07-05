@@ -206,6 +206,19 @@ the right tool, not a winner. A detailed, honest, method-by-method write-up
 | Unbounded (non-periodic) screens | ✅ | ✅ | ✅ | ✅ |
 | Scintillation (Fresnel) | non-goal | — | — | ✅ |
 
+This table is scoped to the three Python atmosphere/AO-toolbox libraries
+above; it is not a claim that pyturb is the only GPU-native atmosphere
+simulator in existence. **COMPASS** (CUDA C++, gitlab.obspm.fr/cosmic-rtc/compass)
+is a GPU-native, non-periodic, end-to-end AO simulator that has been the ESO
+community's ELT-scale workhorse for over a decade — a different category of
+tool (a full compiled simulator with a Python front-end, vs. pyturb's
+importable CuPy/NumPy library), but the honest comparison for "fastest
+non-periodic GPU atmosphere": COMPASS's hand-written CUDA extrusion kernels
+substantially outperform pyturb's CuPy-based `engine="extrude"` for the same
+job on the same GPU. pyturb's niche is being a lightweight, importable Python
+library with a three-line API, not the fastest GPU atmosphere in any
+context.
+
 Measured head-to-head on an RTX 5090 (8 m pupil, 512²):
 
 - **Monte-Carlo generation** — pyturb produces **14,000 independent 512²

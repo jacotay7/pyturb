@@ -28,9 +28,11 @@ from typing import List, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
 
-# np.trapezoid was added in NumPy 2.0; np.trapz still works there but is
-# deprecated. Fall back for the NumPy 1.22-1.x floor declared in pyproject.
-_trapezoid = getattr(np, "trapezoid", np.trapz)
+# np.trapezoid was added in NumPy 2.0; np.trapz (the pre-2.0 name) was
+# removed in a later NumPy release. Use whichever this NumPy has -- checked
+# with hasattr (not getattr's default, which would eagerly evaluate np.trapz
+# and raise on a NumPy that has already removed it).
+_trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
 __all__ = [
     "Layer",

@@ -1,8 +1,17 @@
 # pyturb vs aotools, soapy & HCIPy
 
-An honest, method-by-method comparison of `pyturb` with the three most widely
-used open-source atmospheric phase-screen tools, what we learned from reading
-their source, and where each one is genuinely stronger.
+An honest, method-by-method comparison of `pyturb` with three widely used
+open-source **Python** atmospheric phase-screen tools, what we learned from
+reading their source, and where each one is genuinely stronger. This is not
+a survey of the whole field: **COMPASS** (CUDA C++,
+gitlab.obspm.fr/cosmic-rtc/compass) is a GPU-native, non-periodic,
+end-to-end AO simulator that has been the ESO community's ELT-scale
+workhorse for over a decade, and is a different category of tool (a
+compiled simulator with a Python front-end) than the three importable
+Python/NumPy/CuPy libraries compared here. On the specific axis of "fastest
+non-periodic GPU atmosphere," COMPASS's hand-written CUDA extrusion kernels
+substantially outperform pyturb's CuPy-based `engine="extrude"` for the same
+job on the same GPU — see the note in "Where pyturb is already ahead" below.
 
 The raw benchmark numbers (RTX 5090) live in
 [`benchmarks/RESULTS.md`](https://github.com/jacotay7/pyturb/blob/main/benchmarks/RESULTS.md); reproduce them with
@@ -28,11 +37,14 @@ work and *why* the numbers come out the way they do.
 | Tomographic reconstructors | — | **yes** | **yes** | modal |
 | FITS screen I/O | **yes** (`pyturb.save`) | — | **yes** | — |
 
-Every library here is good; they were built for different jobs. pyturb's niche
-is being the *fastest, GPU-native, statistically-careful atmosphere generator*
-with a three-line API — not a full AO system simulator (soapy), a
-reconstruction toolbox (aotools), or a diffraction propagation framework
-(HCIPy).
+Every library here is good; they were built for different jobs. Among these
+three, pyturb's niche is being a *GPU-capable, statistically-careful
+atmosphere generator* with a three-line API — not a full AO system simulator
+(soapy), a reconstruction toolbox (aotools), or a diffraction propagation
+framework (HCIPy). It is not the fastest GPU atmosphere generator in
+absolute terms: COMPASS's CUDA-native extrusion beats pyturb's non-periodic
+engine by roughly an order of magnitude on the same GPU (see above and
+"Where pyturb is already ahead" below).
 
 ## The four methods, honestly
 
@@ -191,15 +203,20 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
 ## Where pyturb is already ahead
 
 The feature set that motivated building pyturb rather than extending an existing
-tool:
+tool (relative to aotools/soapy/HCIPy; see the COMPASS note above and below
+for where a compiled, GPU-native end-to-end simulator still wins):
 
-- **GPU-native (CuPy).** None of the three has a GPU backend. `device="gpu"` is
-  one keyword and everything else is identical.
+- **GPU-capable (CuPy).** None of the three has a GPU backend. `device="gpu"` is
+  one keyword and everything else is identical. (COMPASS, a different category
+  of tool, has had a GPU-native atmosphere for over a decade — see below.)
 - **Batched Monte-Carlo.** Two screens per FFT and the whole ensemble in one
-  call — the source of the ~1000× generation win.
+  call — the source of the ~1000× generation win over these three CPU-only
+  libraries.
 - **Spectral frozen flow.** Exact sub-pixel, arbitrary-direction translation at
-  one FFT/frame, batched across all layers — the fastest multi-layer GPU path
-  and the reason a 9-layer 512² atmosphere runs at loop rate.
+  one FFT/frame, batched across all layers — the fastest multi-layer *periodic*
+  GPU path among these three, and the reason a 9-layer 512² atmosphere runs at
+  loop rate. Not the fastest *non-periodic* GPU path in absolute terms: see
+  COMPASS below.
 - **Boiling.** Per-layer temporal decorrelation (spectral AR(1)); none of the
   others model non-frozen turbulence.
 - **Low systematic bias.** The integrated-per-cell subharmonic correction
