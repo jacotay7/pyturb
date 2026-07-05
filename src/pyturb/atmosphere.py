@@ -27,9 +27,10 @@ import numpy as np
 
 from . import profiles as _profiles
 from .backend import get_array_module
-from .extrude import ExtrudedAtmosphere
+from .extrude import ExtrudedAtmosphere, _catmull_rom_weights
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
+from .infinite import _lanczos_weights
 from .profiles import Layer
 from .utils import (
     air_refractivity,
@@ -165,8 +166,11 @@ class Atmosphere:
         set, each layer's footprint is magnified by ``(1 - h/lgs_altitude)`` —
         the **cone effect** (focal anisoplanatism) that a finite-range beacon
         senses. ``None`` (default) is a natural-guide-star / science source at
-        infinity. Requires ``engine="extrude"`` (the cone needs per-layer
-        resampling, which the batched spectral engine cannot do).
+        infinity. Works on **both** engines: the extruder samples its ring
+        buffer on a magnified grid, and the spectral engine zoom-resamples each
+        layer's screen about the pupil centre by the same factor (so on spectral
+        the cone composes with ``tau_boil`` boiling). Must be greater than every
+        layer altitude (a beacon at or below a layer is a degenerate cone).
     dispersion : {None, "edlen", "ciddor"}, optional
         Chromatic model for the OPD. ``None`` (default) treats the turbulence
         OPD as perfectly achromatic (phase at ``wavelength`` is just
@@ -206,14 +210,17 @@ class Atmosphere:
       and Kolmogorov ``L0=inf`` all require ``engine="spectral"``: they need
       either discrete Fourier modes to apply a per-mode operation to, or a
       closed-form covariance that only exists for the standard von Karman
-      case. None of these three can be combined with ``lgs_altitude`` or with
-      genuinely non-periodic (``engine="extrude"``) evolution.
-    - ``lgs_altitude`` (the LGS cone effect) requires ``engine="extrude"``:
-      the cone shrinks each layer's footprint by a per-layer factor, which
-      needs the extruder's per-layer resampling; the batched spectral engine
-      cannot do it. It therefore cannot combine with ``tau_boil`` or
-      non-Kolmogorov statistics, and runs at the extruder's throughput, not
-      the spectral engine's (see ``benchmarks/RESULTS.md``).
+      case. None of these three can be combined with genuinely non-periodic
+      (``engine="extrude"``) evolution.
+    - ``lgs_altitude`` (the LGS cone effect) works on **both** engines. On the
+      extruder the cone shrinks each layer's footprint via the ring-buffer
+      sampling grid; on the spectral engine each layer's screen is
+      zoom-resampled about the pupil centre by the same factor. So on spectral
+      the cone **does** combine with ``tau_boil`` boiling (and non-Kolmogorov
+      statistics); on the extruder it combines with non-periodic evolution but
+      not with boiling. The spectral cone falls back to a per-layer transform
+      (each layer zooms differently), so it runs below the on-axis spectral
+      throughput.
     - ``directions`` (off-axis/tomography) works with both engines, but every
       requested direction must lie within the declared ``field_of_view`` (a
       ``ValueError`` is raised otherwise, in both engines) -- construct the
@@ -300,11 +307,8 @@ class Atmosphere:
                 "retention coefficient to (see tau_boil's docstring for the "
                 "scale-dependent model) -- only a ring buffer of rows."
             )
-        if lgs_altitude is not None:
-            if engine != "extrude":
-                raise ValueError("lgs_altitude (cone effect) requires engine='extrude'")
-            if lgs_altitude <= 0:
-                raise ValueError("lgs_altitude must be positive [m]")
+        if lgs_altitude is not None and lgs_altitude <= 0:
+            raise ValueError("lgs_altitude must be positive [m]")
         if dispersion not in (None, "edlen", "ciddor"):
             raise ValueError("dispersion must be None, 'edlen', or 'ciddor'")
         if not 0.0 <= wet_fraction <= 1.0:
@@ -438,6 +442,25 @@ class Atmosphere:
             ext_alt.append(altitude_los)
             ext_seeds.append(int(ext_seed.generate_state(1)[0]))
 
+        # LGS cone effect in the spectral engine: each layer's screen is
+        # zoom-sampled about the pupil centre by its magnification
+        # ``1 - h/H_LGS`` at readout (the extruder handles its own cone
+        # internally, so ``_lgs_mag`` stays None there). Sampling the *same*
+        # realisation at magnified coordinates — not a differently-scaled draw
+        # — is what makes it the focal-anisoplanatism (cone vs cylinder) error.
+        self._lgs_mag: Optional[np.ndarray] = None
+        if lgs_altitude is not None and self.engine == "spectral":
+            lgs_los = float(lgs_altitude) * self.airmass
+            mag = 1.0 - np.array([s.altitude_los for s in self._layers]) / lgs_los
+            if np.any(mag <= 0.0):
+                raise ValueError(
+                    f"lgs_altitude ({lgs_altitude:.0f} m) must exceed every "
+                    "layer altitude (projected to the line of sight): a layer "
+                    "at or above the beacon gives a degenerate (<= 0) cone "
+                    "magnification."
+                )
+            self._lgs_mag = mag
+
         self._t = 0.0
         if self.engine == "spectral":
             self._build_batched()
@@ -494,6 +517,42 @@ class Atmosphere:
             )  # (L,3,3)
             self._sh_batched.append((coeffs, amps, basis, template._sh_freqs[level]))
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
+        if self._lgs_mag is not None:
+            self._build_lgs_zoom()
+
+    def _build_lgs_zoom(self):
+        """Precompute the per-layer LGS cone zoom taps (magnification is fixed).
+
+        Each layer's ``(n_screen, n_screen)`` screen is sampled at the central
+        pupil grid scaled about the screen centre by that layer's cone
+        magnification ``mag = 1 - h/H_LGS`` (isotropic, so rows and columns
+        share one set of taps). The taps — clipped buffer indices and the
+        interpolation weights (honouring ``interp``) — depend only on the fixed
+        magnification, so they are built once and reused every frame.
+        """
+        xp = self.xp
+        centre = (self.n_screen - 1) / 2.0
+        base = np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0
+        rdtype = self._spectra.real.dtype
+        self._zoom_taps: List[List[Tuple[Any, Any]]] = []
+        for mag in self._lgs_mag:
+            pos = centre + base * float(mag)
+            p0 = np.floor(pos).astype(np.int64)
+            fr = pos - p0
+            if self.interp == "linear":
+                offsets: Tuple[int, ...] = (0, 1)
+                weights: Tuple[Any, ...] = (1.0 - fr, fr)
+            elif self.interp == "lanczos":
+                offsets, weights = _lanczos_weights(fr, np)
+            else:  # cubic
+                offsets = (-1, 0, 1, 2)
+                weights = _catmull_rom_weights(fr)
+            taps = [
+                (xp.asarray(np.clip(p0 + off, 0, self.n_screen - 1)),
+                 xp.asarray(w, dtype=rdtype))
+                for off, w in zip(offsets, weights)
+            ]
+            self._zoom_taps.append(taps)
 
     def _build_boil_tau_maps(self):
         """Per-mode boiling time constants (Kolmogorov eddy-turnover scaling).
@@ -742,6 +801,8 @@ class Atmosphere:
         to summing the per-layer screens, but one FFT and no ``(L, n, n)``
         intermediate.
         """
+        if self._lgs_mag is not None:
+            return self._integrate_lgs(t, ox, oy)
         xp = self.xp
         cdtype = self._cdtype
         ns = self.n_screen
@@ -774,6 +835,59 @@ class Atmosphere:
             total = total + low
         # Crop the central pupil region out of the (oversized) screen.
         total = total[self._crop, self._crop]
+        return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
+
+    def _integrate_lgs(self, t: float, ox: float, oy: float) -> Any:
+        """Spectral frame with the LGS cone: per-layer inverse FFT then zoom.
+
+        Each layer's screen (frozen-flow shifted and, if boiling, boiled) is
+        inverse-FFT'd, its subharmonic low-frequency part added, then sampled at
+        the pupil grid scaled about the screen centre by the layer's cone
+        magnification, and the layers summed. The layer axis cannot be collapsed
+        before the transform (each layer zooms differently), so this is the
+        slower per-layer path — used only when ``lgs_altitude`` is set.
+        """
+        xp = self.xp
+        cdtype = self._cdtype
+        ns = self.n_screen
+        disp_x = self._vx * t + self._alt * ox
+        disp_y = self._vy * t + self._alt * oy
+        if not self._wrap_warned:
+            self._check_wrap(disp_x, disp_y)
+        sx = xp.asarray(disp_x, dtype=self._spectra.real.dtype)
+        sy = xp.asarray(disp_y, dtype=self._spectra.real.dtype)
+        f = self._grid_f
+        phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
+        phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
+        spectra = self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
+        screens = (self._fft.ifft2(spectra, axes=(-2, -1)) * (ns * ns)).real  # (L,ns,ns)
+
+        if self._sh_batched:
+            low = None
+            for coeffs, _amps, basis, fp in self._sh_batched:
+                px = xp.exp((2j * np.pi) * sx[:, None] * fp[None, :]).astype(cdtype)
+                py = xp.exp((2j * np.pi) * sy[:, None] * fp[None, :]).astype(cdtype)
+                shifted = coeffs * px[:, :, None] * py[:, None, :]  # (L,3,3)
+                contribution = xp.matmul(basis.T, xp.matmul(shifted, basis))  # (L,ns,ns)
+                low = contribution.real if low is None else low + contribution.real
+            low = low - low.mean(axis=(-2, -1), keepdims=True)
+            screens = screens + low
+
+        # Zoom-sample each layer's screen about the centre by its cone
+        # magnification (precomputed taps) and sum the layers into the pupil.
+        total = None
+        for layer_idx, taps in enumerate(self._zoom_taps):
+            field = screens[layer_idx]
+            out = None
+            for idx_r, weight_r in taps:
+                band = field[idx_r]  # (n, ns)
+                row_term = None
+                for idx_c, weight_c in taps:
+                    term = weight_c[None, :] * band[:, idx_c]  # (n, n)
+                    row_term = term if row_term is None else row_term + term
+                contrib = weight_r[:, None] * row_term
+                out = contrib if out is None else out + contrib
+            total = out if total is None else total + out
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
     def _boil_step(self, dt: float) -> None:
@@ -938,6 +1052,8 @@ class Atmosphere:
             "engine": self.engine,
             "dispersion": self.dispersion,
             "wet_fraction": self.wet_fraction,
+            "lgs_altitude": (0.0 if self.lgs_altitude is None
+                             else float(self.lgs_altitude)),
         }
 
     def __repr__(self) -> str:

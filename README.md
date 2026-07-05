@@ -159,8 +159,10 @@ the path by the dry-air refractivity ratio (`pyturb.air_refractivity`).
 
 More knobs, all off by default:
 
-- **LGS cone effect** — `Atmosphere(engine="extrude", lgs_altitude=90e3)`
-  magnifies each layer by `(1 − h/H_LGS)` for a finite-range beacon.
+- **LGS cone effect** — `Atmosphere(lgs_altitude=90e3)` magnifies each layer by
+  `(1 − h/H_LGS)` for a finite-range beacon, on either engine (the extruder
+  samples a magnified grid; the spectral engine zoom-resamples each layer, so
+  there it composes with `tau_boil` boiling).
 - **Non-Kolmogorov turbulence** — `power_law=…, inner_scale=…` for a general
   PSD slope (`D(r) ~ r^{power_law−2}`) and a modified-von-Kármán inner scale.
   Available on `PhaseScreen` directly and on `Atmosphere` (`sample()` and

@@ -43,7 +43,11 @@ benchmarked, GPU-native AO atmosphere.
   with a `wet_fraction` water-vapour term for the mid-IR/interferometric
   "wet–dry" problem; `pyturb.air_refractivity` and
   `pyturb.water_vapour_refractivity`.
-- **LGS cone effect**: `Atmosphere(engine="extrude", lgs_altitude=...)`.
+- **LGS cone effect**: `Atmosphere(lgs_altitude=...)` on **both** engines — the
+  extruder samples its ring buffer on a magnified grid, the spectral engine
+  zoom-resamples each layer's screen about the pupil centre by the same factor.
+  On the spectral engine the cone now **composes with `tau_boil` boiling**,
+  closing the previous cone/boiling mutual exclusivity.
 - **Non-Kolmogorov spectra**: `PhaseScreen(power_law=..., inner_scale=...)`.
 - **Threaded CPU FFT**: `pyturb.set_fft_workers()`.
 - **GPU test path**: GPU tests marked `@pytest.mark.gpu`, run with

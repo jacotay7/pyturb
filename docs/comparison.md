@@ -198,8 +198,10 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
    binning; pyturb can lean on `scipy.fft(workers=)` and, if needed, similar
    kernels to close the single-thread CPU gap.
 10. **LGS cone geometry.** soapy's line-of-sight handles finite-altitude guide
-    stars (cone effect); pyturb has deferred this (M5) and can reference soapy's
-    per-layer magnification approach when it lands.
+    stars (cone effect); pyturb has **adopted** this via `lgs_altitude`, which
+    magnifies each layer by `(1 − h/H_LGS)` on either engine — sampled from the
+    extruder's ring buffer or by zoom-resampling each spectral screen, the
+    latter composing with boiling.
 
 ## Where pyturb is already ahead
 

@@ -478,10 +478,13 @@ def test_extrude_and_spectral_match_theory(device, engine):
     assert np.all(ratio > 0.8) and np.all(ratio < 1.2), (engine, device)
 
 
-def test_lgs_cone_effect_grows_as_beacon_lowers():
-    """Focal anisoplanatism (NGS-vs-LGS difference) increases at lower H_LGS."""
+@pytest.mark.parametrize("engine", ["extrude", "spectral"])
+def test_lgs_cone_effect_grows_as_beacon_lowers(engine):
+    """Focal anisoplanatism (NGS-vs-LGS difference) increases at lower H_LGS,
+    on both engines (the spectral engine samples the cone by zoom-resampling
+    each layer's screen about the pupil centre)."""
     from pyturb.analysis import differential_variance
-    kw = dict(seeing=0.8, n=64, engine="extrude", seed=1)
+    kw = dict(seeing=0.8, n=64, engine=engine, seed=1)
     ngs_atm = pyturb.Atmosphere.from_profile("paranal-median", **kw)
     ngs = pyturb.to_numpy(ngs_atm.opd(0.0, wavelength=500e-9))
     var = []
@@ -492,10 +495,64 @@ def test_lgs_cone_effect_grows_as_beacon_lowers():
     assert 0 < var[0] < var[1] < var[2]
 
 
-def test_lgs_requires_extruder_and_positive_altitude():
+def test_spectral_lgs_reduces_to_ngs_for_distant_beacon():
+    """As the beacon recedes (mag -> 1) the spectral cone must collapse onto the
+    plain NGS screen — proof it is the cone geometry, not an independent draw."""
+    from pyturb.analysis import differential_variance
+    kw = dict(seeing=0.8, n=64, engine="spectral", seed=4)
+    def opd(**extra):
+        atm = pyturb.Atmosphere.from_profile("paranal-median", **kw, **extra)
+        return pyturb.to_numpy(atm.opd(0.0))
+
+    ngs = opd()
+    far = opd(lgs_altitude=5e9)
+    near = opd(lgs_altitude=90e3)
+    assert differential_variance(ngs, far) < 1e-3 * differential_variance(ngs, near)
+
+
+def test_lgs_works_on_both_engines_and_combines_with_boiling():
+    """lgs_altitude now runs on either engine; on spectral it composes with
+    boiling (previously mutually exclusive), and both together evolve."""
+    # spectral + LGS + boiling: the previously-forbidden combination.
+    atm = pyturb.Atmosphere.from_profile(
+        "paranal-median", seeing=0.8, n=48, seed=2,
+        lgs_altitude=90e3, tau_boil=0.02)          # default engine = spectral
+    assert atm.engine == "spectral" and atm.lgs_altitude == 90e3
+    frames = [pyturb.to_numpy(o) for _, o in atm.frames(dt=1e-3, steps=5)]
+    assert all(np.isfinite(f).all() for f in frames)
+    # It is actually evolving (frozen flow + boiling), not static.
+    assert np.corrcoef(frames[0].ravel(), frames[-1].ravel())[0, 1] < 0.999
+
+
+@pytest.mark.gpu
+def test_gpu_spectral_lgs_cone_effect():
+    """The spectral LGS zoom-resample runs on the GPU and shows the cone effect
+    (differential variance larger for a nearer beacon)."""
+    from pyturb.analysis import differential_variance
+    kw = dict(seeing=0.8, n=64, engine="spectral", seed=1, device="gpu")
+
+    def opd(**extra):
+        atm = pyturb.Atmosphere.from_profile("paranal-median", **kw, **extra)
+        return pyturb.to_numpy(atm.opd(0.0))
+
+    ngs = opd()
+    v_far = differential_variance(ngs, opd(lgs_altitude=200e3))
+    v_near = differential_variance(ngs, opd(lgs_altitude=30e3))
+    assert 0 < v_far < v_near
+
+
+def test_lgs_validation():
+    # Negative beacon altitude is rejected on either engine.
+    for engine in ("spectral", "extrude"):
+        with pytest.raises(ValueError):
+            pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                           engine=engine, lgs_altitude=-1.0)
+    # A beacon at/below a layer gives a degenerate cone (spectral path).
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=32,
+                                       lgs_altitude=5000.0)  # below the 9/18 km layers
+    # tau_boil still requires the spectral engine.
     with pytest.raises(ValueError):
         pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
-                                       lgs_altitude=90e3)  # spectral engine
-    with pytest.raises(ValueError):
-        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
-                                       engine="extrude", lgs_altitude=-1.0)
+                                       engine="extrude", lgs_altitude=90e3,
+                                       tau_boil=0.02)
