@@ -24,30 +24,6 @@ written (`.github/workflows/release.yml`, `docs.yml`).
 - [ ] Add an **animated GIF** of a wind-blown multi-layer screen to the README
       hero (disproportionate adoption value; needs a recorded asset).
 
-## Performance — extruder engine
-
-The spectral engine already hits target loop rates; the extruder is correct but
-not yet fused for the GPU.
-
-- **Fractal 2ⁿ stencil — investigated, declined (see below).** The premise
-      ("smaller covariance setup and memory") does not hold for pyturb: pyturb
-      already uses the minimal 2-row stencil, so an aotools-style fractal 2ⁿ
-      stencil has the *same* covariance size (~2·width points) but needs a
-      ~4·width-deep ring buffer (much *more* memory). Its only real draw would be
-      enabling non-periodic **Kolmogorov (L0=inf)** extrusion via Fried's
-      reference-point/structure-function recurrence — but a validated prototype
-      showed that produces a **large-scale-anisotropic** screen (along-wind
-      structure function ~+16 %, cross-wind ~−37 % at large separations;
-      along/cross ratio ~1.8 vs von Karman's ~1.05). That anisotropy is
-      intrinsic to extruding an unbounded outer scale (the finite-L0 restriction
-      is fundamental, not incidental), so shipping it would mean a physically
-      wrong model. Guarded by `test_extruded_screen_is_isotropic_per_axis`,
-      which checks each axis separately (the azimuthal average had hidden this).
-- [ ] **Tighten the per-layer along-wind buffer margin.** Every `_ExtrudeLayer`
-      currently reserves the same `field_of_view` margin sized for the
-      worst-case (highest/slowest) layer; lower layers could use a tighter,
-      geometry-derived margin. Memory/perf-only, not a correctness issue.
-
 ## Physics & profiles
 
 - [ ] **Time-varying atmosphere parameters** — gusting/wind-direction drift

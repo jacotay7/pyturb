@@ -465,8 +465,15 @@ class Atmosphere:
         if self.engine == "spectral":
             self._build_batched()
         else:
-            # Off-axis footprints out to field_of_view need the buffer wider by
-            # that perpendicular travel; margin_pix already encodes it.
+            # Each layer's own off-axis reach scales with its own altitude
+            # (only the highest layer needs the full field_of_view margin);
+            # ExtrudedAtmosphere sizes its shared ring buffer to what layers
+            # actually need rather than a blanket highest-altitude-for-everyone
+            # margin (self.margin_pix, used above for the spectral crop).
+            ext_fov_margin_pix = [
+                alt * np.tan(self.field_of_view * _ARCSEC_TO_RAD) / self.pixel_scale
+                for alt in ext_alt
+            ]
             self._ext_kwargs = dict(
                 n=self.n,
                 pixel_scale=self.pixel_scale,
@@ -474,7 +481,7 @@ class Atmosphere:
                 layer_L0=ext_L0,
                 layer_wind=ext_wind,
                 layer_altitude_los=ext_alt,
-                field_of_view_pix=float(self.margin_pix),
+                field_of_view_pix=ext_fov_margin_pix,
                 interp=self.interp,
                 lgs_altitude_los=(None if lgs_altitude is None
                                   else float(lgs_altitude) * self.airmass),

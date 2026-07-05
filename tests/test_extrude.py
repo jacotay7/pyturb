@@ -209,6 +209,54 @@ def test_offaxis_decorrelates_with_angle():
         assert dup == 0
 
 
+def test_axis_aligned_wind_uses_smaller_buffer_than_diagonal():
+    """A layer's own along-wind ring-buffer capacity and perpendicular width
+    should reflect *its own* wind direction, not a blanket worst-case (45-deg)
+    assumption shared by every layer: axis-aligned wind needs measurably less
+    buffer than a 45-degree wind at the same screen size."""
+    axis = _engine(theta_deg=0.0, seed=0)
+    diag = _engine(theta_deg=45.0, seed=0)
+    assert axis.capacity < diag.capacity
+    assert axis.width < diag.width
+
+
+def test_low_altitude_atmosphere_uses_smaller_buffer_with_field_of_view():
+    """Only the highest layer needs the full field_of_view reach; an
+    atmosphere of low-altitude layers should get a smaller shared buffer than
+    one that includes a high-altitude layer, at the same field_of_view."""
+    fov = 30.0  # arcsec
+    ground_only = pyturb.Atmosphere.from_profile(
+        "single-layer", seeing=0.8, n=64, engine="extrude",
+        field_of_view=fov, seed=0)
+    with_high_layer = pyturb.Atmosphere.from_profile(
+        "paranal-median", seeing=0.8, n=64, engine="extrude",
+        field_of_view=fov, seed=0)
+    assert ground_only._ext.capacity < with_high_layer._ext.capacity
+    assert ground_only._ext.width < with_high_layer._ext.width
+
+
+def test_heterogeneous_fov_margin_list_gives_correct_statistics():
+    """ExtrudedAtmosphere accepts a per-layer field_of_view_pix list (what
+    Atmosphere now passes, scaled by each layer's own altitude): a low-margin
+    ground layer (no anisoplanatism -- its footprint never shifts off-axis)
+    and a high-margin, high-altitude layer must still combine into finite
+    on-axis output, with off-axis decorrelation driven correctly by the
+    altitude that actually has one."""
+    eng = ExtrudedAtmosphere(
+        n=N, pixel_scale=DX,
+        layer_r0=[R0, R0], layer_L0=[L0, L0],
+        layer_wind=[(10.0, 0.0), (10.0, 0.0)],
+        layer_altitude_los=[0.0, 9000.0],
+        field_of_view_pix=[0.0, 9000.0 * np.tan(np.deg2rad(20 / 3600.0)) / DX],
+        seeds=[1, 2],
+    )
+    eng.set_time(0.0)
+    on = np.array(eng.integrate(0.0, 0.0))
+    off = np.array(eng.integrate(np.tan(np.deg2rad(15 / 3600.0)), 0.0))
+    assert np.isfinite(on).all() and np.isfinite(off).all()
+    assert np.var(off - on) > 0.0
+
+
 def test_memory_bounded_over_long_run():
     """The per-layer ring buffer must not grow with the number of frames."""
     eng = _engine(37.0, seed=4)

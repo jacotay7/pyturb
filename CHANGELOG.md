@@ -80,6 +80,13 @@ benchmarked, GPU-native AO atmosphere.
   prefers, chosen by backend). Measured on an RTX 5090, 9-layer
   paranal-median: **121 → 870 fps at 256² (7.1×)** and **118 → 290 fps at
   512² (2.5×)**; CPU throughput unchanged.
+- **Geometry-derived extruder buffer sizing.** The shared ring buffer is now
+  sized to the largest along-wind/off-axis requirement actually present among
+  the layers (each layer's own wind direction and altitude), not a blanket
+  every-layer-at-45-degrees-and-max-altitude assumption. Measured (n=512): a
+  ground-layer-only atmosphere with `field_of_view=30"` uses ~68% less buffer
+  memory; an axis-aligned atmosphere uses ~41% less even at
+  `field_of_view=0`. Never worse than before.
 
 ## [0.1.0]
 

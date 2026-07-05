@@ -67,6 +67,34 @@ def _catmull_rom_weights(t: Any) -> Tuple[Any, Any, Any, Any]:
     )
 
 
+def _along_extent_and_span(
+    n: int, wind_vx: float, wind_vy: float, magnification: float, fov_margin_pix: float
+) -> Tuple[float, int]:
+    """This layer's own along-wind half-extent and the buffer span it needs.
+
+    The along-wind extent of a rotated ``n x n`` pupil grid is
+    ``(n-1)/2 * (|cos theta| + |sin theta|)``, ranging from ``(n-1)/2`` for
+    axis-aligned wind up to ``(n-1)/2 * sqrt(2)`` at a 45-degree wind — so a
+    layer whose wind is closer to axis-aligned, or whose LGS-cone
+    ``magnification`` shrinks its footprint, needs less along-wind buffer than
+    the worst-case 45-degree, unmagnified layer. Mirrors the geometry
+    :class:`_ExtrudeLayer` computes for itself (``along_min``/``along_max``),
+    so a caller sizing a shared buffer from this gets exactly what that layer
+    will actually use.
+    """
+    speed = float(np.hypot(wind_vx, wind_vy))
+    c = wind_vx / speed if speed > 0 else 1.0
+    s = wind_vy / speed if speed > 0 else 0.0
+    half = (n - 1) / 2.0 * float(magnification)
+    along_extent = half * (abs(c) + abs(s))
+    span = (
+        int(np.ceil(along_extent + fov_margin_pix))
+        - int(np.floor(-along_extent - fov_margin_pix))
+        + 3
+    )
+    return along_extent, span
+
+
 def build_extrusion(
     width: int,
     stencil_rows: int,
@@ -267,6 +295,15 @@ class ExtrudedAtmosphere:
     is a single fused bicubic gather over all layers, summed into one
     reference-wavelength phase screen. The public :class:`Atmosphere` wraps this
     and converts to OPD.
+
+    ``capacity``/``width`` are shared by every layer's slab (needed for the
+    fused gather), but are sized to the largest requirement **actually
+    present** among the layers — each layer's own wind direction (axis-aligned
+    wind needs ~29% less along-wind buffer than a 45-degree wind), LGS
+    ``magnification``, and (per-layer) ``field_of_view_pix`` all shrink what
+    that layer needs, so a run where no layer sits at both the worst altitude
+    and the worst direction uses less buffer than the old blanket
+    every-layer-at-45-degrees assumption.
     """
 
     def __init__(
@@ -277,7 +314,7 @@ class ExtrudedAtmosphere:
         layer_L0: Sequence[float],
         layer_wind: Sequence[Tuple[float, float]],
         layer_altitude_los: Sequence[float],
-        field_of_view_pix: float = 0.0,
+        field_of_view_pix: Union[float, Sequence[float]] = 0.0,
         stencil_rows: int = 2,
         interp: str = "cubic",
         lgs_altitude_los: Optional[float] = None,
@@ -294,26 +331,50 @@ class ExtrudedAtmosphere:
         self.interp = interp
         self.m = int(stencil_rows)
 
-        # One uniform buffer width covers the rotated pupil (diagonal ~n*sqrt2)
-        # plus the off-axis footprint travel, for every layer/direction.
-        width = int(np.ceil(self.n * np.sqrt(2.0) + 2.0 * field_of_view_pix)) + 4
-        self.width = width
+        layer_wind = list(layer_wind)
+        layer_altitude_los = list(layer_altitude_los)
+        n_layers = len(layer_r0)
+        # A scalar broadcasts to every layer (the pre-per-layer behaviour,
+        # still used directly by tests); a sequence gives each layer its own
+        # off-axis reach (what Atmosphere passes, scaled by that layer's own
+        # altitude).
+        if np.ndim(field_of_view_pix) == 0:
+            fov_list = [float(field_of_view_pix)] * n_layers
+        else:
+            fov_list = [float(f) for f in field_of_view_pix]
 
-        # One uniform ring-buffer capacity, sized for the worst case (a 45-deg
-        # wind, no LGS cone shrink) so every layer's slab is big enough. This
-        # makes the buffer a single contiguous (L, cap, W) array whose slabs
-        # can be gathered in one kernel at readout.
-        capacity = self._uniform_capacity(self.n, field_of_view_pix, self.m)
+        # LGS cone: a layer at altitude h seen from a guide star at range
+        # H_LGS has its footprint magnified by (1 - h/H_LGS). Computed once,
+        # up front, since it feeds both the array-sizing pass below and each
+        # layer's construction.
+        if lgs_altitude_los is not None:
+            magnifications = [
+                max(0.0, 1.0 - float(alt) / float(lgs_altitude_los))
+                for alt in layer_altitude_los
+            ]
+        else:
+            magnifications = [1.0] * n_layers
+
+        # Size the shared (L, cap, W) buffer to the largest per-layer need
+        # actually present (see class docstring), not a blanket worst case.
+        along_extents, spans = [], []
+        for (vx, vy), mag, fov_i in zip(layer_wind, magnifications, fov_list):
+            extent, span = _along_extent_and_span(self.n, vx, vy, mag, fov_i)
+            along_extents.append(extent)
+            spans.append(span)
+        width = int(np.ceil(2.0 * max(along_extents) + 2.0 * max(fov_list))) + 4
+        self.width = width
+        capacity = max(spans) + self.n + self.m + 32
         self.capacity = capacity
 
         # Share A across layers with identical L0; B rescales per layer.
         self._ab_cache: dict = {}
         self.layers: List[_ExtrudeLayer] = []
-        n_layers = len(layer_r0)
         self._buf = xp.empty((n_layers, capacity, width), dtype=self.dtype)
         seeds = list(seeds) if seeds is not None else [None] * n_layers
-        for i, (r0, L0, (vx, vy), alt, seed) in enumerate(
-            zip(layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds)
+        for i, (r0, L0, (vx, vy), alt, seed, mag, fov_i) in enumerate(
+            zip(layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds,
+                magnifications, fov_list)
         ):
             key = round(float(L0), 9)
             if key not in self._ab_cache:
@@ -322,12 +383,6 @@ class ExtrudedAtmosphere:
                 )
             a_matrix, b_unit = self._ab_cache[key]
             rng = xp.random.default_rng(seed)
-            # LGS cone: a layer at altitude h seen from a guide star at range
-            # H_LGS has its footprint magnified by (1 - h/H_LGS).
-            if lgs_altitude_los is not None:
-                magnification = max(0.0, 1.0 - float(alt) / float(lgs_altitude_los))
-            else:
-                magnification = 1.0
             self.layers.append(
                 _ExtrudeLayer(
                     n=self.n,
@@ -346,8 +401,8 @@ class ExtrudedAtmosphere:
                     a_matrix=a_matrix,
                     b_unit=b_unit,
                     buf=self._buf[i],
-                    magnification=magnification,
-                    fov_margin_pix=field_of_view_pix,
+                    magnification=mag,
+                    fov_margin_pix=fov_i,
                 )
             )
 
@@ -360,23 +415,6 @@ class ExtrudedAtmosphere:
             layer._along = None
             layer._perp = None
         self._layer_index = xp.arange(n_layers)[:, None, None]
-
-    @staticmethod
-    def _uniform_capacity(n: int, fov_margin_pix: float, stencil_rows: int) -> int:
-        """Ring-buffer row capacity that fits every wind direction at this ``n``.
-
-        The along-wind extent of the rotated pupil is largest at a 45-deg wind
-        (``(n-1)/2 * sqrt2``); add the off-axis reach and the readout lookahead.
-        Independent of per-layer direction/LGS magnification (both only shrink
-        the extent), so all slabs share one capacity.
-        """
-        worst_along = (n - 1) / 2.0 * np.sqrt(2.0)
-        span = (
-            int(np.ceil(worst_along + fov_margin_pix))
-            - int(np.floor(-worst_along - fov_margin_pix))
-            + 3
-        )
-        return span + n + int(stencil_rows) + 32
 
     def set_time(self, t: float) -> None:
         """Advance every layer to simulation time ``t`` seconds."""
