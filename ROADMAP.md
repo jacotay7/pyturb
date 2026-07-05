@@ -49,11 +49,18 @@ not yet fused for the GPU.
       currently reserves the same `field_of_view` margin sized for the
       worst-case (highest/slowest) layer; lower layers could use a tighter,
       geometry-derived margin. Memory/perf-only, not a correctness issue.
-- [ ] **Profile the CPU path for a real bottleneck.** `set_fft_workers(-1)`
-      only buys ~1.25× on the spectral engine's CPU throughput (~25 → ~31 fps
-      for a 9-layer 512² job, vs. aotools' ~420 fps integer-pixel loop on the
-      same job) — the per-frame cost isn't FFT-bound, but nothing has profiled
-      where it actually goes.
+- [x] **Profile the CPU path for a real bottleneck.** Profiling the 9-layer
+      512² spectral frame showed the cost was an `(L, n, n)` inverse FFT (one
+      transform *per layer*) plus the per-layer `.sum(axis=0)` reductions, not
+      the per-frame elementwise work. Since the inverse FFT and the subharmonic
+      outer product are linear and every layer shares one FFT grid / basis,
+      `_integrate` now collapses the layer axis **before** the transform (sum
+      the shifted spectra to one `(n, n)` array, inverse-FFT once; sum each
+      level's `3x3` subharmonic coefficients before the shared basis product).
+      Mathematically identical (`test_spectral_integrate_equals_sum_of_layer_translates`,
+      matches a per-layer reference to 1e-13). Measured on an RTX 5090, 9-layer
+      paranal-median: **CPU 25 → 87 fps at 512² (3.4×)**, 133 → 459 fps at 256²;
+      **GPU 865 → 1232 fps (1.4×)**. Reproduce with `benchmarks/bench_frames.py`.
 
 ## Extrude-engine fidelity and feature-combination gaps
 
@@ -61,16 +68,19 @@ Two related follow-ups on `engine="extrude"` that surfaced together: it has a
 disclosed sub-pixel artifact, and it can't combine with several other features
 because they're implemented against different internal representations.
 
-- [ ] **Reduce the sub-pixel interpolation artifact.** The extruder shows a
-      ~5-15% structure-function deficit at 1-2 px separations and ~7.5%
-      pk-pk flicker in finest-scale power as a function of sub-pixel wind
-      travel phase (bounded and regression-tested via
-      `test_finescale_readout_flicker_is_bounded`, but not reduced). A
-      supersampled internal buffer decimated down before readout, or a
-      longer-support interpolation kernel with flatter high-frequency
-      response, are the two candidate fixes — either needs validation that it
-      doesn't trade this artifact for degraded long-range covariance from a
-      shorter effective stencil in physical units.
+- [x] **Reduce the sub-pixel interpolation artifact.** Added `interp="lanczos"`
+      (6-tap Lanczos-3), the longer-support-kernel fix: a much flatter
+      sub-Nyquist response than the default Catmull-Rom cubic. On the extruder
+      it cuts the half-pixel travel-phase flicker from ~10% to ~3.5% and roughly
+      halves the finest-scale structure-function deficit, while still matching
+      the von Kármán structure function at few-pixel separations
+      (`test_lanczos_reduces_finescale_flicker_vs_cubic`,
+      `test_lanczos_matches_von_karman_structure_function`). Because it is
+      readout-only (the extrusion stencil is unchanged) there is no long-range
+      covariance trade-off. Also available on `InfinitePhaseScreen`. The
+      **exact-Nyquist (1 px) mode is still lost** — no interpolator can shift a
+      critically sampled signal there; the supersampled-buffer approach remains
+      open as the only way to recover it, at higher cost.
 - [ ] **LGS cone × boiling × engine mutual exclusivity.** `tau_boil` requires
       `engine="spectral"` (per-mode retention needs discrete Fourier modes);
       `lgs_altitude` requires `engine="extrude"` (per-layer resampling doesn't
@@ -83,15 +93,22 @@ because they're implemented against different internal representations.
 
 ## Physics & profiles
 
-- [ ] **Tomography-optimal profile compression** — `optimal_grouping` and GCTM
-      (Saxenhuber 2017) as additional `discretize_cn2(method=...)` options
-      beyond the current `"equivalent"`/`"centroid"`, for MCAO/tomography work.
-- [ ] **Dry/wet chromatic split** — extend `dispersion="edlen"` (dry air) with a
-      water-vapour term so the chromatic OPD is correct in the mid-IR and for
-      interferometry (the "wet–dry" problem), where wet turbulence dominates.
-- [ ] **More site profiles** — Cerro Pachón (Gemini/GMT) and Armazones (ELT);
-      each is a few lines of cited layer numbers, following `keck` /
-      `las-campanas`.
+- [x] **Tomography-optimal profile compression** — `discretize_cn2(
+      method="optimal_grouping")` now chooses bin edges by an exact
+      dynamic-programming partition that minimises the Cn²-weighted within-group
+      variance of `h^{5/3}` (Saxenhuber 2017 "optimal grouping"), landing one
+      output layer on each turbulence spike where fixed log-spaced binning lumps
+      them together (`test_optimal_grouping_resolves_bimodal_profile`). GCTM is
+      still open as a further `method=` option.
+- [x] **Dry/wet chromatic split** — `dispersion="ciddor"` with a `wet_fraction`
+      weight blends the dry-air (Edlén) and water-vapour (Ciddor 1996)
+      dispersion ratios, so the chromatic OPD is right in the mid-IR / for
+      interferometry where wet turbulence dominates; `wet_fraction=0` reduces to
+      `"edlen"`. New `pyturb.water_vapour_refractivity`. Remaining: a
+      temperature/humidity-driven default `wet_fraction` from a site model.
+- [x] **More site profiles** — added `cerro-pachon` (Gemini South) and
+      `armazones` (ELT), representative/illustrative in the manner of
+      `paranal-median` (labelled as such; not a specific cited table).
 - [ ] **Time-varying atmosphere parameters** — gusting/wind-direction drift
       over a run, time-variable Cn² profiles, and per-layer (rather than
       global) `inner_scale`/`power_law`. All are currently static-per-run;
@@ -107,11 +124,12 @@ because they're implemented against different internal representations.
       demand and weekly. Statistics tests are parameterised over `device` via a
       fixture, so the same body checks NumPy and CuPy. (Remaining: register a
       GPU runner; the workflow is a no-op until one is online.)
-- [ ] **Complete type hints** on all public signatures (the `py.typed` marker
-      already ships). Currently 76% of public-function parameters and 75% of
-      public-function return types are annotated (up from 14%/30%); remaining
-      gaps are private implementation classes with no `__all__` entry
-      (`_ExtrudeLayer`, `_LayerState`, `_ThreadedScipyFFT`) and local closures.
+- [x] **Complete type hints** on all public signatures (the `py.typed` marker
+      already ships). All 85 public callables now carry full parameter and
+      return annotations (audited by an `inspect`-based sweep over every
+      module's `__all__`); the previously-unannotated private classes
+      (`_ExtrudeLayer`, `_LayerState`, `_ThreadedScipyFFT`, `ExtrudedAtmosphere`)
+      are annotated too. Remaining gaps are only local closures.
 - [ ] **Audit broad statistical test tolerances repo-wide.** Several existing
       tests use wide sanity-check bands (e.g. `ratio > 0.8 and ratio < 1.2`);
       at least one (`test_gpu_extrude_and_spectral_match_theory`) was checked

@@ -55,6 +55,27 @@ def _spd_solve(spd, rhs):
         return np.linalg.lstsq(spd, rhs, rcond=None)[0]
 
 
+def _lanczos_weights(t, xp, a=3):
+    """Normalised Lanczos-``a`` weights for the ``2a`` taps at fraction ``t``.
+
+    A windowed-sinc interpolation kernel with a much flatter sub-Nyquist
+    response than the 4-tap Catmull-Rom cubic: it holds near-unit gain out to
+    ~1/3 the sampling frequency, cutting the sub-pixel readout's finest-scale
+    structure-function deficit and its travel-phase flicker (at the cost of
+    ``2a`` taps per axis). It cannot restore the exact-Nyquist mode — no
+    interpolator can shift a critically sampled signal there — so the 1-px
+    artifact is reduced, not removed. ``t`` is the sub-pixel fraction in
+    ``[0, 1)``; ``xp`` is the array module (``numpy``/``cupy``).
+    """
+    offsets = tuple(range(-a + 1, a + 1))
+    raw = [xp.sinc(t - d) * xp.sinc((t - d) / a) for d in offsets]
+    total = raw[0]
+    for r in raw[1:]:
+        total = total + r
+    weights = tuple(r / total for r in raw)
+    return offsets, weights
+
+
 def phase_covariance(r: ArrayLike, r0: float, L0: float) -> np.ndarray:
     """Von Kármán phase covariance :math:`C_\\phi(r)` in rad^2.
 
@@ -114,9 +135,12 @@ class InfinitePhaseScreen:
     stencil_rows : int, optional
         Number of edge rows the new row is conditioned on. Default 2
         (per Assémat & Wilson; more rows cost setup time for marginal gain).
-    interp : {"cubic", "linear"}, optional
+    interp : {"cubic", "linear", "lanczos"}, optional
         Sub-pixel interpolation kernel used by :meth:`advance`. ``"cubic"``
-        (Catmull-Rom, default) preserves high-frequency power better; both are
+        (Catmull-Rom, default) preserves high-frequency power better than
+        ``"linear"``; ``"lanczos"`` (6-tap Lanczos-3) is flatter still just
+        below Nyquist, cutting the finest-scale structure-function deficit and
+        the travel-phase flicker further at the cost of more taps. All three are
         exact at integer offsets. Unused by :meth:`step`.
     seed, device, dtype
         As for :class:`pyturb.PhaseScreen`.
@@ -149,8 +173,8 @@ class InfinitePhaseScreen:
             )
         if not 1 <= stencil_rows < n:
             raise ValueError("stencil_rows must be in [1, n)")
-        if interp not in ("cubic", "linear"):
-            raise ValueError("interp must be 'cubic' or 'linear'")
+        if interp not in ("cubic", "linear", "lanczos"):
+            raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
 
         self.n = int(n)
         self.pixel_scale = float(pixel_scale)
@@ -285,11 +309,17 @@ class InfinitePhaseScreen:
         def rows(offset):
             return self._buf[xp.clip(i0 + offset, 0, self._fill - 1)]
 
-        p0 = rows(0)
-        p1 = rows(1)
         if self.interp == "linear":
-            screen = (1.0 - t) * p0 + t * p1
+            screen = (1.0 - t) * rows(0) + t * rows(1)
+        elif self.interp == "lanczos":
+            offsets, weights = _lanczos_weights(t, xp)
+            screen = None
+            for off, w in zip(offsets, weights):
+                term = w * rows(off)
+                screen = term if screen is None else screen + term
         else:  # Catmull-Rom cubic
+            p0 = rows(0)
+            p1 = rows(1)
             pm1 = rows(-1)
             p2 = rows(2)
             t2 = t * t

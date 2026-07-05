@@ -20,9 +20,13 @@ Catmull-Rom kernel has zero gain at the Nyquist frequency for a half-pixel
 shift). This puts a 5-15% deviation into the finest-scale (1-2 px) structure
 function that oscillates with the sub-pixel phase of the wind travel — a
 spurious line at ``wind_speed / pixel_scale`` Hz and harmonics. It does not
-affect statistics at separations of a few pixels and up. The spectral engine
-has no such artifact (exact at any offset) but is periodic; prefer it when
-fine-scale (near-Nyquist) fidelity matters more than non-periodicity.
+affect statistics at separations of a few pixels and up. ``interp="lanczos"``
+(6-tap Lanczos-3) has a flatter sub-Nyquist response and roughly halves the
+finest-scale deficit and cuts the travel-phase flicker ~3x versus the default
+cubic; the exact-Nyquist mode is still lost (no interpolator can shift a
+critically sampled signal there). The spectral engine has no such artifact
+(exact at any offset) but is periodic; prefer it when fine-scale (near-Nyquist)
+fidelity matters more than non-periodicity.
 
 Two facts keep the setup cheap across a multi-layer atmosphere:
 
@@ -46,7 +50,7 @@ import numpy as np
 
 from .backend import get_array_module
 from .fourier import PhaseScreen
-from .infinite import _spd_solve, phase_covariance
+from .infinite import _lanczos_weights, _spd_solve, phase_covariance
 
 __all__ = ["ExtrudedAtmosphere"]
 
@@ -394,6 +398,23 @@ class ExtrudedAtmosphere:
             return self._integrate_looped(thx, thy)
         return self._integrate_batched(thx, thy)
 
+    def _taps(self, fr: Any, fc: Any, xp: Any):
+        """(row taps, col taps) as ``(offset, weight)`` pairs for the interp kernel.
+
+        ``"linear"`` 2-tap, ``"cubic"`` 4-tap Catmull-Rom, or ``"lanczos"`` 6-tap
+        Lanczos-3 (flatter sub-Nyquist response, fewer finest-scale artifacts).
+        """
+        if self.interp == "linear":
+            return ((0, 1.0 - fr), (1, fr)), ((0, 1.0 - fc), (1, fc))
+        if self.interp == "lanczos":
+            off_r, w_r = _lanczos_weights(fr, xp)
+            off_c, w_c = _lanczos_weights(fc, xp)
+            return tuple(zip(off_r, w_r)), tuple(zip(off_c, w_c))
+        return (
+            tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fr))),
+            tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc))),
+        )
+
     def _readout_shifts(self, thx: float, thy: float):
         """Per-layer (along-shift, perp-shift, fill) readout scalars, host-side.
 
@@ -424,12 +445,7 @@ class ExtrudedAtmosphere:
         fr = row - r0
         fc = col - c0
 
-        if self.interp == "linear":
-            taps_r = ((0, 1.0 - fr), (1, fr))
-            taps_c = ((0, 1.0 - fc), (1, fc))
-        else:
-            taps_r = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fr)))
-            taps_c = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc)))
+        taps_r, taps_c = self._taps(fr, fc, xp)
 
         buf = self._buf
         li = self._layer_index
@@ -467,12 +483,7 @@ class ExtrudedAtmosphere:
             c0 = xp.floor(col).astype(xp.int64)
             fr = row - r0
             fc = col - c0
-            if self.interp == "linear":
-                taps_r = ((0, 1.0 - fr), (1, fr))
-                taps_c = ((0, 1.0 - fc), (1, fc))
-            else:
-                taps_r = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fr)))
-                taps_c = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc)))
+            taps_r, taps_c = self._taps(fr, fc, xp)
             fmax = int(fill[i]) - 1
             out = None
             for dr, weight_r in taps_r:

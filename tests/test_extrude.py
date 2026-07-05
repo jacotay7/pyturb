@@ -95,6 +95,47 @@ def test_finescale_readout_flicker_is_bounded():
     assert 0.03 < rise < 0.20
 
 
+def test_lanczos_reduces_finescale_flicker_vs_cubic():
+    """interp='lanczos' has a flatter sub-Nyquist response than the default
+    cubic, so the finest-scale travel-phase flicker (integer vs half-pixel
+    travel) is markedly smaller — the disclosed artifact, reduced."""
+    def d1px(screen):
+        return 0.5 * (np.mean(np.diff(screen, axis=0) ** 2)
+                      + np.mean(np.diff(screen, axis=1) ** 2))
+
+    def flicker(interp):
+        rises = []
+        for seed in range(6):
+            eng = _engine(0.0, seed=seed, interp=interp)
+            eng.set_time(0.0)
+            at_int = d1px(np.array(eng.integrate()))
+            eng.set_time(0.5 * DX / 10.0)
+            at_half = d1px(np.array(eng.integrate()))
+            rises.append(at_half / at_int - 1.0)
+        return np.mean(rises)
+
+    cubic = flicker("cubic")
+    lanczos = flicker("lanczos")
+    assert lanczos < 0.6 * cubic          # a clear reduction, not marginal
+    assert abs(lanczos) < 0.06            # small in absolute terms
+
+
+def test_lanczos_matches_von_karman_structure_function():
+    """The Lanczos readout must not distort the ensemble statistics: it still
+    follows the von Karman structure function at separations of a few pixels."""
+    acc = None
+    for k in range(60):
+        eng = _engine(0.0, seed=k, interp="lanczos")
+        eng.set_time(0.31 * DX / 10.0)     # a generic sub-pixel travel phase
+        r, d = pyturb.structure_function(np.array(eng.integrate()), DX)
+        acc = d if acc is None else acc + d
+    d = acc / 60
+    theory = 2.0 * (phase_covariance(0.0, R0, L0) - phase_covariance(r, R0, L0))
+    mid = (r >= 3 * DX) & (r <= 8.0 / 4)
+    ratio = d[mid] / theory[mid]
+    assert np.all(ratio > 0.9) and np.all(ratio < 1.1)
+
+
 def test_subpixel_advance_is_continuous():
     """A tiny sub-pixel step changes the screen only slightly (no jumps)."""
     eng = _engine(0.0, seed=2)
@@ -142,15 +183,17 @@ def test_memory_bounded_over_long_run():
 
 
 @pytest.mark.gpu
-def test_gpu_batched_readout_matches_looped():
-    """The fused-gather GPU readout equals the per-layer loop it replaces.
+@pytest.mark.parametrize("interp", ["cubic", "linear", "lanczos"])
+def test_gpu_batched_readout_matches_looped(interp):
+    """The fused-gather GPU readout equals the per-layer loop it replaces, for
+    every interpolation kernel.
 
     Both paths are exercised on the same GPU buffers (on- and off-axis) so a
     regression in the batched gather can't hide behind independent RNG streams;
     they must agree to float64 round-off (only the layer-sum order differs)."""
     atm = pyturb.Atmosphere.from_profile(
         "paranal-median", seeing=0.8, n=48, engine="extrude", device="gpu",
-        dtype="float64", seed=0, field_of_view=20)
+        dtype="float64", seed=0, field_of_view=20, interp=interp)
     ext = atm._ext
     ext.set_time(0.05)
     for thx, thy in [(0.0, 0.0), (np.tan(np.deg2rad(12 / 3600.0)), 0.0)]:

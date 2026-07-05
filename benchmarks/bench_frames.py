@@ -2,9 +2,12 @@
 
 Run:  python benchmarks/bench_frames.py
       python benchmarks/bench_frames.py --profile paranal-median --n 256 512 1024
+      python benchmarks/bench_frames.py --engine extrude   # non-periodic engine
 
 Prints frames/s for closed-loop evolution and screens/s for Monte-Carlo
-sampling. GPU rows are skipped automatically if CuPy is unavailable.
+sampling. GPU rows are skipped automatically if CuPy is unavailable. Use
+``--engine extrude`` to time the non-periodic extruder (whose GPU readout is a
+single fused gather over all layers).
 """
 
 from __future__ import annotations
@@ -22,9 +25,9 @@ def _sync(device):
         cupy.cuda.runtime.deviceSynchronize()
 
 
-def bench_frames(profile, device, n, steps, warmup=5):
+def bench_frames(profile, device, n, steps, engine="spectral", warmup=5):
     atm = pyturb.Atmosphere.from_profile(profile, seeing=0.8, diameter=8.0, n=n,
-                                         device=device)
+                                         device=device, engine=engine)
     for _ in atm.frames(dt=1e-3, steps=warmup):
         pass
     _sync(device)
@@ -54,6 +57,8 @@ def main():
     p.add_argument("--profile", default="paranal-median")
     p.add_argument("--n", type=int, nargs="+", default=[256, 512, 1024])
     p.add_argument("--steps", type=int, default=200)
+    p.add_argument("--engine", default="spectral",
+                   choices=["spectral", "extrude"])
     args = p.parse_args()
 
     devices = ["cpu"]
@@ -63,7 +68,7 @@ def main():
     except ImportError:
         print("(CuPy not installed — GPU rows skipped)")
 
-    print(f"profile={args.profile!r}  layers="
+    print(f"profile={args.profile!r}  engine={args.engine!r}  layers="
           f"{len(pyturb.get_profile(args.profile))}\n")
     header = f"{'n':>6} {'device':>7} {'frames/s':>10} {'screens/s':>10}"
     print(header)
@@ -71,7 +76,7 @@ def main():
     for n in args.n:
         for device in devices:
             steps = args.steps if device == "gpu" else max(20, args.steps // 10)
-            fps = bench_frames(args.profile, device, n, steps)
+            fps = bench_frames(args.profile, device, n, steps, engine=args.engine)
             sps = bench_sample(args.profile, device, n, count=max(16, steps // 4))
             print(f"{n:>6} {device:>7} {fps:>10.0f} {sps:>10.1f}")
 

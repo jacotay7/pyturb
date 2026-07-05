@@ -153,8 +153,13 @@ class Atmosphere:
         phase; ``"spectral"`` has no such artifact. Prefer ``"spectral"`` when
         fine-scale (near-Nyquist) fidelity matters more than non-periodicity.
         :meth:`sample` (Monte-Carlo) is unaffected by this choice.
-    interp : {"cubic", "linear"}, optional
-        Sub-pixel interpolation kernel for ``engine="extrude"``. Default cubic.
+    interp : {"cubic", "linear", "lanczos"}, optional
+        Sub-pixel interpolation kernel for ``engine="extrude"``. ``"cubic"``
+        (Catmull-Rom, default) is a good speed/quality balance; ``"lanczos"``
+        (6-tap Lanczos-3) has a flatter sub-Nyquist response that reduces the
+        extruder's finest-scale structure-function deficit and its travel-phase
+        flicker (see the ``engine`` note), at the cost of more taps per readout;
+        ``"linear"`` is fastest and lowest fidelity.
     lgs_altitude : float, optional
         Altitude [m] of a laser guide star (e.g. ``90e3`` for sodium). When
         set, each layer's footprint is magnified by ``(1 - h/lgs_altitude)`` —
@@ -263,6 +268,8 @@ class Atmosphere:
             raise ValueError("field_of_view must be >= 0 arcsec")
         if engine not in ("spectral", "extrude"):
             raise ValueError("engine must be 'spectral' or 'extrude'")
+        if interp not in ("cubic", "linear", "lanczos"):
+            raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
         if power_law <= 2.0:
             raise ValueError("power_law must be > 2 (Kolmogorov is 11/3)")
         if inner_scale < 0:
@@ -726,8 +733,14 @@ class Atmosphere:
     def _integrate(self, t: float, ox: float, oy: float) -> Any:
         """Sum all layers at time ``t`` with per-layer angular offset slopes.
 
-        Batched over layers: one ``(L, n, n)`` inverse FFT plus one matmul per
-        subharmonic level, then a sum over the layer axis.
+        The inverse FFT and the subharmonic outer product are both linear, and
+        every layer shares one FFT grid / subharmonic basis, so the layer axis
+        is collapsed **before** the transform: the shifted spectra are summed to
+        a single ``(n, n)`` array and inverse-FFT'd once (not once per layer),
+        and each subharmonic level's per-layer ``3x3`` coefficients are summed
+        before the single shared basis outer product. Mathematically identical
+        to summing the per-layer screens, but one FFT and no ``(L, n, n)``
+        intermediate.
         """
         xp = self.xp
         cdtype = self._cdtype
@@ -743,19 +756,20 @@ class Atmosphere:
         # Separable shift-theorem phasors, shape (L, n_screen) each.
         phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
         phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
-        spectra = self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
-        field = self._fft.ifft2(spectra, axes=(-2, -1)) * (ns * ns)
-        total = field.real.sum(axis=0)
+        spectrum = (
+            self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
+        ).sum(axis=0)
+        field = self._fft.ifft2(spectrum, axes=(-2, -1)) * (ns * ns)
+        total = field.real
 
         if self._sh_batched:
             low = None
             for coeffs, _amps, basis, fp in self._sh_batched:
                 px = xp.exp((2j * np.pi) * sx[:, None] * fp[None, :]).astype(cdtype)
                 py = xp.exp((2j * np.pi) * sy[:, None] * fp[None, :]).astype(cdtype)
-                shifted = coeffs * px[:, :, None] * py[:, None, :]  # (L,3,3)
-                contribution = xp.matmul(basis.T, xp.matmul(shifted, basis))  # (L,ns,ns)
-                summed = contribution.real.sum(axis=0)
-                low = summed if low is None else low + summed
+                shifted = (coeffs * px[:, :, None] * py[:, None, :]).sum(axis=0)  # (3,3)
+                contribution = basis.T @ (shifted @ basis)  # (ns, ns)
+                low = contribution.real if low is None else low + contribution.real
             low -= low.mean()
             total = total + low
         # Crop the central pupil region out of the (oversized) screen.

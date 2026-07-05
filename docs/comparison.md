@@ -174,13 +174,14 @@ Reading these codebases sharpened pyturb's roadmap. Concrete take-aways:
 
 4. **Interpolated extrusion for sub-pixel any-direction unbounded flow.**
    `InfiniteAtmosphericLayer` pairs the extruder with bilinear interpolation and
-   a real `evolve_until(t)` clock — the design pyturb's non-periodic engine
-   should match so it is not limited to integer pixels.
+   a real `evolve_until(t)` clock. pyturb's non-periodic engine already samples
+   sub-pixel in any direction; `Atmosphere.evolve(dt)` now gives the matching
+   in-seconds clock so callers step in time, not integer pixels.
 5. **More named site atmospheres** — **adopted.** Added `"keck"`,
    `"las-campanas"` and `"mauna-kea"` from HCIPy's cited tables (Guyon 2005 /
    Tokovinin et al. 2005 for Mauna Kea; see `pyturb.profiles` for the other
-   citations), alongside a representative Paranal profile, HV5/7 and the toy
-   profiles. (Cerro Pachón / Armazones are easy future adds.)
+   citations), alongside representative `"paranal-median"`, `"cerro-pachon"`
+   (Gemini South) and `"armazones"` (ELT) profiles, HV5/7 and the toy profiles.
 6. **Clean Monte-Carlo reset.** `reset(make_independent_realization=True)` is a
    tidy way to draw independent realisations from a configured layer.
 7. **Scintillation is explicitly *not* our job.** HCIPy's `MultiLayerAtmosphere`

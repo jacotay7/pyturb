@@ -30,13 +30,6 @@ caught real bugs before.
 
 ## What "done" means here, beyond green tests
 
-This codebase has been through an adversarial review that found real,
-shipped bugs *behind* a 91%+ line-coverage test suite (silent data
-corruption, crashes on documented inputs, a physically wrong model) — see
-`trade_study_review/` for the full audit and how each was fixed. The lesson:
-**passing tests and high coverage are necessary, not sufficient.** For any
-nontrivial change:
-
 - **Exercise the actual behavior, not just the code path.** A test that
   calls a function and checks it doesn't throw is not a correctness test.
   Assert on values, statistics, or invariants that would actually catch the

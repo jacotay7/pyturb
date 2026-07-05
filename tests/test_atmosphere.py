@@ -282,6 +282,22 @@ def test_fourier_flow_translation_exact_integer_pixels():
     assert np.allclose(shifted, np.roll(base, -7, axis=0), atol=1e-9)
 
 
+def test_spectral_integrate_equals_sum_of_layer_translates(device):
+    """The batched spectral frame collapses the layer axis before the (linear)
+    inverse FFT and subharmonic outer product; it must still equal summing each
+    layer's FourierFlowScreen translate exactly (up to float round-off)."""
+    atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=96,
+                                         device=device, dtype="float64", seed=3)
+    t = 0.017
+    batched = pyturb.to_numpy(atm._phase(t, 0.0, 0.0))
+    ref = None
+    for st in atm._layers:
+        s = st.flow.translate(st.vx * t, st.vy * t)
+        ref = s if ref is None else ref + s
+    ref = pyturb.to_numpy(ref[atm._crop, atm._crop])
+    np.testing.assert_allclose(batched, ref, rtol=1e-10, atol=1e-11)
+
+
 # ---------------------------------------------------------------------------
 # extrusion engine (engine="extrude"): non-periodic, arbitrary-direction
 # ---------------------------------------------------------------------------

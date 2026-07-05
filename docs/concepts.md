@@ -51,7 +51,9 @@ pyturb's native output is **optical path difference in metres**, which is
 achromatic (a path length). Phase at a wavelength is `φ = 2π·OPD/λ`. This
 decouples the atmosphere from the sensing/science band; pass `wavelength=` to
 get phase. (For the small ~1–2% chromatic term from air dispersion, see
-`dispersion="edlen"`.)
+`dispersion="edlen"` for dry air, or `dispersion="ciddor"` with a
+`wet_fraction` to add the water-vapour term that matters in the mid-IR and for
+interferometry — the "wet–dry" problem.)
 
 ## Frozen flow (Taylor hypothesis)
 

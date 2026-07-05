@@ -51,6 +51,31 @@ def test_advance_integer_matches_step():
     assert a.travel == pytest.approx(1.0)
 
 
+def test_lanczos_interp_exact_at_integer_and_preserves_variance():
+    """The 6-tap Lanczos readout is (to round-off) exact at integer offsets and
+    keeps the screen finite with near-unchanged variance at a sub-pixel step."""
+    a = pyturb.InfinitePhaseScreen(n=32, pixel_scale=0.05, r0=0.1, seed=3,
+                                   interp="lanczos", dtype="float64")
+    b = pyturb.InfinitePhaseScreen(n=32, pixel_scale=0.05, r0=0.1, seed=3,
+                                   interp="lanczos", dtype="float64")
+    a.advance(0.5)
+    a.advance(0.5)
+    np.testing.assert_allclose(np.array(a.screen), np.array(b.step(1)),
+                               rtol=0, atol=1e-9)
+
+    layer = pyturb.InfinitePhaseScreen(n=48, pixel_scale=0.05, r0=0.15, L0=25,
+                                       seed=1, interp="lanczos", dtype="float64")
+    v0 = np.var(np.array(layer.screen))
+    layer.advance(0.37)
+    assert np.isfinite(np.array(layer.screen)).all()
+    assert 0.8 < np.var(np.array(layer.screen)) / v0 < 1.2
+
+
+def test_invalid_interp_rejected():
+    with pytest.raises(ValueError):
+        pyturb.InfinitePhaseScreen(n=16, pixel_scale=0.05, r0=0.1, interp="nope")
+
+
 def test_subpixel_frame_tracks_the_shift():
     """A half-pixel (linear) advance is exactly the midpoint of its neighbours.
 

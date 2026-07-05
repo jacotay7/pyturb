@@ -64,6 +64,8 @@ Generated from the source docstrings.
 
 ::: pyturb.air_refractivity
 
+::: pyturb.water_vapour_refractivity
+
 ::: pyturb.structure_function
 
 ::: pyturb.set_fft_workers
