@@ -782,7 +782,9 @@ class Atmosphere:
             if self.engine == "spectral":
                 self._boil_step(float(dt))  # no-op unless tau_boil is finite
 
-    def sample(self, count: Optional[int] = None, wavelength: Optional[float] = None) -> Any:
+    def sample(
+        self, count: Optional[int] = None, wavelength: Optional[float] = None
+    ) -> Any:
         """Draw statistically independent integrated OPDs.
 
         Each call produces fresh, uncorrelated realisations of the summed

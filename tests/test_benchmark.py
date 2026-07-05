@@ -22,5 +22,5 @@ def test_benchmark_extrude_engine(capsys):
 
 
 def test_benchmark_rejects_unknown_device():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         pyturb.benchmark(n=32, seconds=0.05, device="not-a-real-device")

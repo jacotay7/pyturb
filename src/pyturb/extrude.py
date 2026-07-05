@@ -196,7 +196,9 @@ class _ExtrudeLayer:
         # far beyond what has actually been extruded, so the bound derived
         # from it must be capped at what extrusion still needs to keep going
         # (the last ``m`` stencil rows), or this computes a negative-size copy.
-        target_bound = int(np.floor(self._along_min - self._fov_margin + self._travel)) - 1
+        target_bound = int(
+            np.floor(self._along_min - self._fov_margin + self._travel)
+        ) - 1
         stencil_bound = self._base + self._fill - self.m
         keep_from = min(target_bound, stencil_bound) - self._base
         keep_from = max(1, keep_from)

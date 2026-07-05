@@ -348,7 +348,8 @@ def main():
     if args.json:
         setup = {"diameter": DIAMETER, "r0": R0, "L0": L0, "wavelength": WAVELENGTH}
         acc_json = {
-            n: {lib: {"mean_pct": mean, "std_pct": std} for lib, (mean, std) in res.items()}
+            n: {lib: {"mean_pct": mean, "std_pct": std}
+                for lib, (mean, std) in res.items()}
             for n, res in acc.items()
         }
         with open(args.json, "w") as fh:
