@@ -28,7 +28,7 @@ import numpy as np
 
 from .backend import get_array_module
 from .fourier import PhaseScreen
-from .infinite import phase_covariance
+from .infinite import _spd_solve, phase_covariance
 
 __all__ = ["ExtrudedAtmosphere"]
 
@@ -65,7 +65,7 @@ def build_extrusion(width, stencil_rows, pixel_scale, L0, xp, dtype):
     c_xz = cov(new_row, stencil)
     c_xx = cov(new_row, new_row)
 
-    a_matrix = np.linalg.lstsq(c_zz, c_xz.T, rcond=None)[0].T
+    a_matrix = _spd_solve(c_zz, c_xz.T).T
     residual = c_xx - a_matrix @ c_xz.T
     residual = (residual + residual.T) / 2.0
     eigenvalues, eigenvectors = np.linalg.eigh(residual)

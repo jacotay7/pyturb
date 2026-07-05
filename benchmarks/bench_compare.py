@@ -193,7 +193,8 @@ def bench_accuracy(n, count):
             _, dd = pyturb.structure_function(s, dx)
             acc += dd
         acc /= m
-        return 100.0 * float(np.sqrt(np.mean(((acc[mid] - target[mid]) / target[mid]) ** 2)))
+        rel = (acc[mid] - target[mid]) / target[mid]
+        return 100.0 * float(np.sqrt(np.mean(rel ** 2)))
 
     out = {}
     g = pyturb.PhaseScreen(n, dx, R0, L0, seed=1)
@@ -313,9 +314,9 @@ def main():
           "Fairness notes: ("))
 
     if args.json:
+        setup = {"diameter": DIAMETER, "r0": R0, "L0": L0, "wavelength": WAVELENGTH}
         with open(args.json, "w") as fh:
-            json.dump({"libs": libs, "gpu": _have_gpu, "setup":
-                       {"diameter": DIAMETER, "r0": R0, "L0": L0, "wavelength": WAVELENGTH},
+            json.dump({"libs": libs, "gpu": _have_gpu, "setup": setup,
                        "generation": gen, "flow": flow, "accuracy": acc,
                        "features": FEATURES}, fh, indent=2)
         print(f"\nwrote {args.json}")

@@ -1,5 +1,10 @@
 # pyturb
 
+[![CI](https://github.com/jacotay7/pyturb/actions/workflows/ci.yml/badge.svg)](https://github.com/jacotay7/pyturb/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pyturb.svg)](https://pypi.org/project/pyturb/)
+[![Python](https://img.shields.io/pypi/pyversions/pyturb.svg)](https://pypi.org/project/pyturb/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Fast, GPU-optional atmospheric turbulence for adaptive optics.**
 
 `pyturb` generates the optical path differences (OPD) that an adaptive-optics
@@ -211,6 +216,13 @@ moment-conserving profile compression. See
 Run the comparison yourself: `python benchmarks/bench_compare.py --json out.json`.
 
 ## Fidelity
+
+pyturb's turbulence is checked against analytic theory, not just asserted —
+`python validation/validate.py` regenerates this gallery (structure function,
+Zernike spectrum vs Noll, temporal PSD, angular decorrelation, extruder
+stationarity), each with a PASS/FAIL tolerance:
+
+![validation gallery](docs/images/validation.png)
 
 Plain FFT screens famously under-represent low spatial frequencies
 (tip/tilt), because a periodic grid has no power below `1/(n * pixel_scale)`.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyturb"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fast, GPU-optional atmospheric phase screens for adaptive optics."
 readme = "README.md"
 license = "MIT"
@@ -39,8 +39,10 @@ Issues = "https://github.com/jacotay7/pyturb/issues"
 [project.optional-dependencies]
 cuda11 = ["cupy-cuda11x"]
 cuda12 = ["cupy-cuda12x"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "pytest-cov"]
 fits = ["astropy>=5"]
+plot = ["matplotlib>=3.5"]
+docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]
 # Third-party libraries used only by benchmarks/bench_compare.py for the
 # head-to-head comparison; not needed to use pyturb.
 compare = ["aotools", "soapy", "hcipy"]
@@ -50,3 +52,18 @@ packages = ["src/pyturb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py39"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, flake8-bugbear.
+select = ["E", "F", "I", "B"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/*" = ["E402"]
+"validation/*" = ["E402"]
+# The immediately-consumed timing lambdas intentionally close over loop vars.
+"benchmarks/*" = ["E402", "B023"]

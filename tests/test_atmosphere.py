@@ -318,8 +318,8 @@ def test_lgs_cone_effect_grows_as_beacon_lowers():
     """Focal anisoplanatism (NGS-vs-LGS difference) increases at lower H_LGS."""
     from pyturb.analysis import differential_variance
     kw = dict(seeing=0.8, n=64, engine="extrude", seed=1)
-    ngs = pyturb.to_numpy(
-        pyturb.Atmosphere.from_profile("paranal-median", **kw).opd(0.0, wavelength=500e-9))
+    ngs_atm = pyturb.Atmosphere.from_profile("paranal-median", **kw)
+    ngs = pyturb.to_numpy(ngs_atm.opd(0.0, wavelength=500e-9))
     var = []
     for H in (200e3, 90e3, 30e3):
         lgs = pyturb.Atmosphere.from_profile("paranal-median", lgs_altitude=H, **kw)

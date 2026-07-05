@@ -16,12 +16,16 @@ are returned in radians; :class:`Atmosphere` returns OPD in metres (achromatic)
 unless a ``wavelength`` is given.
 """
 
-from .atmosphere import Atmosphere
-from .backend import get_array_module, get_fft_workers, set_fft_workers, to_numpy
-from .flow import FourierFlowScreen
-from .fourier import PhaseScreen
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from . import analysis
 from .analysis import zernike_basis, zernike_decompose
+from .atmosphere import Atmosphere
+from .backend import get_array_module, get_fft_workers, set_fft_workers, to_numpy
+from .benchmark import benchmark
+from .flow import FourierFlowScreen
+from .fourier import PhaseScreen
 from .infinite import InfinitePhaseScreen, phase_covariance
 from .io import load, save
 from .profiles import (
@@ -47,7 +51,10 @@ from .utils import (
     structure_function,
 )
 
-__version__ = "0.1.0"
+try:  # single source of truth is the installed package metadata (pyproject.toml)
+    __version__ = _pkg_version("pyturb")
+except PackageNotFoundError:  # not installed (e.g. running from a source tree)
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "Atmosphere",
@@ -78,6 +85,7 @@ __all__ = [
     "analysis",
     "zernike_basis",
     "zernike_decompose",
+    "benchmark",
     "to_numpy",
     "get_array_module",
     "set_fft_workers",

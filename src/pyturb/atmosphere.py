@@ -382,7 +382,8 @@ class Atmosphere:
     @property
     def theta0(self) -> float:
         """Isoplanatic angle [arcsec] at the reference wavelength."""
-        return _profiles.isoplanatic_angle(self._los_layers(), self.r0_los) / _ARCSEC_TO_RAD
+        theta0 = _profiles.isoplanatic_angle(self._los_layers(), self.r0_los)
+        return theta0 / _ARCSEC_TO_RAD
 
     @property
     def tau0(self) -> float:

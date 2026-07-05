@@ -30,12 +30,26 @@ Reference: Assémat, Wilson & Gendron (2006), Optics Express 14, 988.
 from __future__ import annotations
 
 import numpy as np
+from scipy import linalg
 from scipy.special import gamma, kv
 
 from .backend import get_array_module
 from .fourier import PhaseScreen
 
 __all__ = ["InfinitePhaseScreen", "phase_covariance"]
+
+
+def _spd_solve(spd, rhs):
+    """Solve ``spd @ x = rhs`` for a symmetric-positive-definite ``spd``.
+
+    Uses a Cholesky factorisation (fast and stable), falling back to a
+    least-squares solve if ``spd`` is too ill-conditioned to factor — the
+    covariance matrices get poorly conditioned on very fine grids.
+    """
+    try:
+        return linalg.cho_solve(linalg.cho_factor(spd), rhs)
+    except np.linalg.LinAlgError:
+        return np.linalg.lstsq(spd, rhs, rcond=None)[0]
 
 
 def phase_covariance(r, r0, L0):
@@ -207,9 +221,8 @@ class InfinitePhaseScreen:
         c_xz = cov(new_row, stencil)
         c_xx = cov(new_row, new_row)
 
-        # C_zz is symmetric positive-definite but ill-conditioned for fine
-        # grids; solve via lstsq for robustness (one-time cost).
-        a_matrix = np.linalg.lstsq(c_zz, c_xz.T, rcond=None)[0].T
+        # A = C_xz C_zz^{-1}; solve C_zz X = C_xz^T via Cholesky (lstsq fallback).
+        a_matrix = _spd_solve(c_zz, c_xz.T).T
 
         residual = c_xx - a_matrix @ c_xz.T
         residual = (residual + residual.T) / 2.0

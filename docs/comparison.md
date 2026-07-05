@@ -5,7 +5,7 @@ used open-source atmospheric phase-screen tools, what we learned from reading
 their source, and where each one is genuinely stronger.
 
 The raw benchmark numbers (RTX 5090) live in
-[`../benchmarks/RESULTS.md`](../benchmarks/RESULTS.md); reproduce them with
+[`benchmarks/RESULTS.md`](https://github.com/jacotay7/pyturb/blob/main/benchmarks/RESULTS.md); reproduce them with
 `python benchmarks/bench_compare.py`. This document is about *how* the libraries
 work and *why* the numbers come out the way they do.
 
@@ -111,7 +111,7 @@ multiply.
 
 ## Benchmark summary
 
-Full tables in [`../benchmarks/RESULTS.md`](../benchmarks/RESULTS.md). Headlines
+Full tables in [`benchmarks/RESULTS.md`](https://github.com/jacotay7/pyturb/blob/main/benchmarks/RESULTS.md). Headlines
 on an RTX 5090, 8 m pupil, 512²:
 
 - **Generation:** pyturb **14,054 screens/s** (GPU, batched) vs 12–13/s for the
