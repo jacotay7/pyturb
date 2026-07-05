@@ -38,6 +38,41 @@ not yet fused for the GPU.
       HCIPy's `evolve_until(t)`, so callers step in seconds not pixels.
 - [ ] **Fractal 2ⁿ stencil** (aotools-style) as an option over the current dense
       stencil — smaller covariance setup and memory at large `n`.
+- [ ] **Tighten the per-layer along-wind buffer margin.** Every `_ExtrudeLayer`
+      currently reserves the same `field_of_view` margin sized for the
+      worst-case (highest/slowest) layer; lower layers could use a tighter,
+      geometry-derived margin. Memory/perf-only, not a correctness issue.
+- [ ] **Profile the CPU path for a real bottleneck.** `set_fft_workers(-1)`
+      only buys ~1.25× on the spectral engine's CPU throughput (~25 → ~31 fps
+      for a 9-layer 512² job, vs. aotools' ~420 fps integer-pixel loop on the
+      same job) — the per-frame cost isn't FFT-bound, but nothing has profiled
+      where it actually goes.
+
+## Extrude-engine fidelity and feature-combination gaps
+
+Two related follow-ups on `engine="extrude"` that surfaced together: it has a
+disclosed sub-pixel artifact, and it can't combine with several other features
+because they're implemented against different internal representations.
+
+- [ ] **Reduce the sub-pixel interpolation artifact.** The extruder shows a
+      ~5-15% structure-function deficit at 1-2 px separations and ~7.5%
+      pk-pk flicker in finest-scale power as a function of sub-pixel wind
+      travel phase (bounded and regression-tested via
+      `test_finescale_readout_flicker_is_bounded`, but not reduced). A
+      supersampled internal buffer decimated down before readout, or a
+      longer-support interpolation kernel with flatter high-frequency
+      response, are the two candidate fixes — either needs validation that it
+      doesn't trade this artifact for degraded long-range covariance from a
+      shorter effective stencil in physical units.
+- [ ] **LGS cone × boiling × engine mutual exclusivity.** `tau_boil` requires
+      `engine="spectral"` (per-mode retention needs discrete Fourier modes);
+      `lgs_altitude` requires `engine="extrude"` (per-layer resampling doesn't
+      batch across the FFT engine). Closing either direction — boiling inside
+      the ring-buffer formalism, or a chirp/scaled resampling of the LGS cone
+      inside the batched spectral engine — is new numerical machinery, not a
+      bug fix, but would remove a real combinatorial gap in the feature matrix
+      (see `Atmosphere`'s "Feature compatibility" docstring section for the
+      current state).
 
 ## Physics & profiles
 
@@ -50,6 +85,23 @@ not yet fused for the GPU.
 - [ ] **More site profiles** — Cerro Pachón (Gemini/GMT) and Armazones (ELT);
       each is a few lines of cited layer numbers, following `keck` /
       `las-campanas`.
+- [ ] **Find a citable source for `paranal-median`.** Its layer shape (ground-
+      dominated, jet-stream enhancement at 9-18 km) is physically plausible
+      and matches `mauna-kea`/`keck`/`las-campanas` in form, but no published
+      table was found that matches its exact numbers — it's currently
+      documented as illustrative, not site-survey data. Replace with a cited
+      table if one turns up (e.g. an ESO/Sarazin & Tokovinin-style source), the
+      same way `mauna-kea` was corrected against Guyon 2005.
+- [ ] **Real per-site wind-direction climatology.** Every named profile's
+      per-layer wind direction is currently a disclosed arithmetic-sequence
+      placeholder (no cited source tabulates it). Sourcing real values would
+      need the same MASS/SCIDAR/wind-profiler campaigns that produced the
+      Cn² tables.
+- [ ] **Time-varying atmosphere parameters** — gusting/wind-direction drift
+      over a run, time-variable Cn² profiles, and per-layer (rather than
+      global) `inner_scale`/`power_law`. All are currently static-per-run;
+      each is a genuine physics extension, not a bug, and would need its own
+      theory-referenced validation the way `tau_boil` did.
 
 ## Testing & typing
 
@@ -57,7 +109,21 @@ not yet fused for the GPU.
       path is continuously tested; the current matrix is CPU-only and skips GPU
       tests. Parameterise the statistics tests over `device`.
 - [ ] **Complete type hints** on all public signatures (the `py.typed` marker
-      already ships; annotations are currently partial).
+      already ships). Currently 76% of public-function parameters and 75% of
+      public-function return types are annotated (up from 14%/30%); remaining
+      gaps are private implementation classes with no `__all__` entry
+      (`_ExtrudeLayer`, `_LayerState`, `_ThreadedScipyFFT`) and local closures.
+- [ ] **Audit broad statistical test tolerances repo-wide.** Several existing
+      tests use wide sanity-check bands (e.g. `ratio > 0.8 and ratio < 1.2`);
+      at least one (`test_gpu_extrude_and_spectral_match_theory`) was checked
+      and found to deliberately exclude the fine-scale range where a known
+      artifact lives, rather than masking it — but the rest haven't been
+      audited one by one. Tightening needs a dedicated per-test statistical
+      study (what each tolerance actually needs to not flake), not a blanket
+      pass.
+- [ ] **Increase the accuracy benchmark's shared ensemble size** beyond the
+      current `count=120` default to narrow the bootstrap-uncertainty bands in
+      `benchmarks/RESULTS.md` §3 further.
 
 ## Non-goals — deliberately out of scope
 

@@ -32,8 +32,8 @@ pyturb's credibility rests on three habits — please keep them:
 ## Scope
 
 pyturb is *the atmosphere*, not a full AO system. Please keep out of scope:
-WFS/DM/controller simulation (use soapy), tomographic reconstructors and slope
-covariance (aotools), and Fresnel/scintillation propagation (HCIPy). We output
+WFS/DM/controller simulation, tomographic reconstructors and slope
+covariance, and Fresnel/scintillation propagation. We output
 phase/OPD and hand those effects to the tools that own them — see
 `docs/comparison.md`.
 

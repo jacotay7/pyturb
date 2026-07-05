@@ -20,8 +20,11 @@ you only have one interpreter available, at minimum grep your diff for
 anything that needs Python >=3.10 (`match` statements, `X | Y` type unions
 used at runtime, etc.) — the project floor is `>=3.9`, and code should not
 silently assume a newer numpy either (e.g. `np.trapezoid` requires NumPy
->= 2.0; the `numpy>=1.22` floor needs a `getattr(np, "trapezoid", np.trapz)`
-fallback, already used in `profiles.py`). If in doubt, spin up a throwaway
+>= 2.0 and `np.trapz` was removed in a later release; the `numpy>=1.22` floor
+needs a `np.trapezoid if hasattr(np, "trapezoid") else np.trapz` fallback,
+already used in `profiles.py` — note `hasattr`, not `getattr`'s default,
+since `getattr(np, "trapezoid", np.trapz)` still evaluates `np.trapz` eagerly
+and breaks on NumPy releases that no longer have it). If in doubt, spin up a throwaway
 `conda create -n py39check python=3.9` and run the suite there — this has
 caught real bugs before.
 
