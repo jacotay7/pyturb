@@ -9,9 +9,10 @@ end-to-end AO simulator that has been the ESO community's ELT-scale
 workhorse for over a decade, and is a different category of tool (a
 compiled simulator with a Python front-end) than the three importable
 Python/NumPy/CuPy libraries compared here. On the specific axis of "fastest
-non-periodic GPU atmosphere," COMPASS's hand-written CUDA extrusion kernels
-substantially outperform pyturb's CuPy-based `engine="extrude"` for the same
-job on the same GPU — see the note in "Where pyturb is already ahead" below.
+non-periodic GPU atmosphere," pyturb's `engine="extrude"` now does its per-frame
+readout in a hand-written fused CUDA kernel, but COMPASS's fully hand-written
+CUDA extrusion pipeline still outperforms it for the same job on the same GPU —
+see the note in "Where pyturb is already ahead" below.
 
 The raw benchmark numbers (RTX 5090) live in
 [`benchmarks/RESULTS.md`](https://github.com/jacotay7/pyturb/blob/main/benchmarks/RESULTS.md); reproduce them with
@@ -42,8 +43,9 @@ three, pyturb's niche is being a *GPU-capable, statistically-careful
 atmosphere generator* with a three-line API — not a full AO system simulator
 (soapy), a reconstruction toolbox (aotools), or a diffraction propagation
 framework (HCIPy). It is not the fastest GPU atmosphere generator in
-absolute terms: COMPASS's CUDA-native extrusion beats pyturb's non-periodic
-engine by roughly an order of magnitude on the same GPU (see above and
+absolute terms: COMPASS's fully CUDA-native extrusion pipeline still beats
+pyturb's non-periodic engine on the same GPU, even though pyturb's extruder
+readout is now itself a hand-written fused CUDA kernel (see above and
 "Where pyturb is already ahead" below).
 
 ## The four methods, honestly
@@ -119,28 +121,31 @@ multiply.
 
 - **Who:** `pyturb.FourierFlowScreen` (and `Atmosphere.frames`).
 - **Strength:** sub-pixel and any-direction *for free and exactly*; one
-  elementwise multiply + IFFT is ideal for the GPU, and **all layers batch into
-  a single `(L, n, n)` FFT** — the basis for ~800 fps of a 9-layer 512²
-  atmosphere.
+  elementwise multiply + IFFT is ideal for the GPU, all layers batch into a
+  single `(L, n, n)` FFT, and every subharmonic level is applied in one batched
+  matmul — the basis for ~3,100 fps of a 9-layer 512² atmosphere.
 - **Weakness:** periodic (period `n·pixel_scale`), like any FFT screen, so it is
   not the right tool for genuinely unbounded runs — that is what pyturb's own
   extruder (method 2, `engine="extrude"`) is for. Both engines share the
-  `Atmosphere` API; pick per run. Boiling costs real throughput: ~25-35% on
-  GPU and ~45-50% on CPU for a 9-layer 512² atmosphere (see `RESULTS.md` §2),
-  since each mode needs its own scale-dependent retention coefficient (finer
-  spatial structure decorrelates faster, per Kolmogorov eddy-turnover
-  scaling) rather than one scalar multiply per layer.
+  `Atmosphere` API; pick per run. Boiling costs ~30% throughput on GPU for a
+  9-layer 512² atmosphere (more on CPU, where the per-frame fresh-noise draw
+  dominates the single-threaded RNG; see `RESULTS.md` §2), since each mode needs
+  its own scale-dependent retention coefficient (finer spatial structure
+  decorrelates faster, per Kolmogorov eddy-turnover scaling) rather than one
+  scalar multiply per layer.
 
 ## Benchmark summary
 
 Full tables in [`benchmarks/RESULTS.md`](https://github.com/jacotay7/pyturb/blob/main/benchmarks/RESULTS.md). Headlines
 on an RTX 5090, 8 m pupil, 512²:
 
-- **Generation:** pyturb **14,054 screens/s** (GPU, batched) vs 12–13/s for the
-  aotools/soapy Python FFT loops — ~1000×. ~13× even on one CPU core.
-- **Frozen flow:** pyturb runs a full **9-layer atmosphere at ~800 fps** on GPU.
-  Single-layer integer-pixel CPU stepping in aotools/soapy is faster *per step*
-  (5,200–5,400/s) but does strictly less general work and has no GPU path.
+- **Generation:** pyturb **~31,000 screens/s** (GPU, batched) vs 12–13/s for the
+  aotools/soapy Python FFT loops — well over 1000×. ~30× even on one CPU core.
+- **Frozen flow:** pyturb runs a full **9-layer atmosphere at ~3,100 fps** on
+  GPU (the non-periodic extruder at ~1,700 fps, its readout a fused CUDA
+  kernel). Single-layer integer-pixel CPU stepping in aotools/soapy is faster
+  *per step* at small n (5,000–5,100/s) but does strictly less general work, has
+  no GPU path, and falls behind pyturb-GPU by n=1024.
 - **Accuracy:** pyturb ~**1%** systematic structure-function bias vs von
   Kármán on large ensembles — comparable to HCIPy/soapy and lower than
   aotools, but at benchmark-scale ensembles the metric's own Monte-Carlo

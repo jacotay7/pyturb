@@ -53,8 +53,10 @@ benchmarked, GPU-native AO atmosphere.
 - **GPU test path**: GPU tests marked `@pytest.mark.gpu`, run with
   `pytest --run-gpu` (a `device` fixture parameterises statistics tests over
   CPU/GPU); `.github/workflows/gpu.yml` runs them on a self-hosted GPU runner.
-- **`pyturb.benchmark()`** convenience; `benchmarks/bench_compare.py`
-  head-to-head vs aotools/soapy/HCIPy; `validation/validate.py` gallery.
+- **`pyturb.benchmark()`** convenience; `benchmarks/bench_suite.py`
+  (per-use-case throughput sweep across CPU/GPU) and
+  `benchmarks/bench_compare.py` head-to-head vs aotools/soapy/HCIPy;
+  `validation/validate.py` gallery.
 - Docs: `docs/comparison.md`, `docs/interop.md`, `docs/validation.md`; examples
   gallery (`examples/01`–`05`).
 - `py.typed` marker; version single-sourced from package metadata.
@@ -74,12 +76,32 @@ benchmarked, GPU-native AO atmosphere.
   each subharmonic level's `3x3` coefficients before the shared basis product).
   Identical output; measured on an RTX 5090, 9-layer paranal-median: **CPU
   25 → 87 fps at 512² (3.4×)**, **GPU 865 → 1232 fps (1.4×)**.
-- **Fused GPU extruder readout.** Every layer's ring buffer is now a slab of
-  one contiguous `(L, cap, W)` array and the GPU pupil readout is a single
-  batched bicubic gather over all layers (the CPU keeps the per-layer loop it
-  prefers, chosen by backend). Measured on an RTX 5090, 9-layer
-  paranal-median: **121 → 870 fps at 256² (7.1×)** and **118 → 290 fps at
-  512² (2.5×)**; CPU throughput unchanged.
+- **Batch all subharmonic levels into one matmul.** The low-frequency
+  subharmonic correction shares one `(3, n)` sinusoid basis across levels and
+  layers, so `Atmosphere._integrate`, `PhaseScreen.generate`,
+  `FourierFlowScreen.translate` and the boiling update now evaluate every level
+  in a couple of batched matmuls instead of a Python loop over levels (which was
+  launch-latency bound on the GPU — ~78% of a frame). Identical output.
+  Measured on an RTX 5090, 9-layer paranal-median frozen flow: **1,232 → 3,004
+  fps at 512² GPU**, **3,234 fps at 256²**; single-layer Monte-Carlo generation
+  **14,000 → 31,000 screens/s at 512²** (55,000 → 108,000 at 256²); CPU
+  spectral **~87 → ~130 fps at 512²** before the accel extra below.
+- **Fused GPU/CPU extruder readout kernel.** Every layer's ring buffer is a slab
+  of one contiguous `(L, cap, W)` array, and the per-frame rotated, sub-pixel,
+  per-layer-wind-shifted pupil gather runs in a single pass for the `"cubic"`
+  and `"lanczos"` interpolators: a hand-written CUDA kernel on the GPU and a
+  fused `prange` Numba kernel on the CPU (see the accel extra below), bit-exact
+  with the previous tap-broadcast gather. Measured on an RTX 5090, 9-layer
+  paranal-median: **121 → 4,484 fps at 256² GPU (37×)**, **118 → 1,730 fps at
+  512² (15×)**, **50 → 602 fps at 1024²**; the `"lanczos"` readout is now a
+  fused kernel too (~334 fps at 512² GPU, from ~120 fps).
+- **Optional Numba CPU acceleration (`pip install pyturb[accel]`).** The CPU
+  frozen-flow hot paths — the spectral engine's fused layer sum and the
+  extruder's fused bicubic/Lanczos readout — run through Numba when it is
+  importable, with a NumPy fallback otherwise (identical results to float
+  round-off). Measured on a 32-core CPU, 9-layer paranal-median: spectral
+  **~130 → 270 fps at 512²**, extruder **6 → 164 fps at 512² (27×)** and
+  **28 → 966 fps at 256² (34×)**.
 - **Geometry-derived extruder buffer sizing.** The shared ring buffer is now
   sized to the largest along-wind/off-axis requirement actually present among
   the layers (each layer's own wind direction and altitude), not a blanket

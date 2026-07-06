@@ -39,7 +39,11 @@ Issues = "https://github.com/jacotay7/pyturb/issues"
 [project.optional-dependencies]
 cuda11 = ["cupy-cuda11x"]
 cuda12 = ["cupy-cuda12x"]
-test = ["pytest>=7", "pytest-cov"]
+# Optional Numba JIT acceleration of the CPU frozen-flow hot paths (spectral
+# layer sum, extruder bicubic readout). pyturb runs without it (NumPy
+# fallback); with it the CPU frame rate is several times higher.
+accel = ["numba>=0.58"]
+test = ["pytest>=7", "pytest-cov", "numba>=0.58"]
 fits = ["astropy>=5"]
 plot = ["matplotlib>=3.5"]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]

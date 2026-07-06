@@ -220,6 +220,15 @@ class PhaseScreen:
             )
             self._sh_freqs.append(self.xp.asarray(f_p, dtype=self.dtype))
 
+        # Stack every level's amplitude/basis along a leading level axis so
+        # generate() evaluates all subharmonic levels in a few batched matmuls
+        # instead of a Python loop over levels (fewer, larger kernels).
+        self._n_sh = len(self._sh_bases)
+        if self._n_sh:
+            self._sh_amp_stack = self.xp.stack([a for a, _ in self._sh_bases])
+            self._sh_basis_stack = self.xp.stack([b for _, b in self._sh_bases])
+            self._sh_freqs_stack = self.xp.stack(self._sh_freqs)  # (P, 3)
+
     # ------------------------------------------------------------------
     # generation
     # ------------------------------------------------------------------
@@ -252,16 +261,22 @@ class PhaseScreen:
         field = self._fft.ifft2(spectrum, axes=(-2, -1)) * (n * n)
         screens = xp.concatenate((field.real, field.imag))[:count]
 
-        if self._sh_bases:
-            low = None
-            for amp_p, basis in self._sh_bases:
+        if self._n_sh:
+            # All subharmonic levels at once. Per level the contribution is
+            # sum_ij cn_ij e^(2i pi f_i x) e^(2i pi f_j y) = basis.T @ (cn @ basis);
+            # stacking the levels' shared 3x3 -> (3, n) bases turns the whole
+            # low-frequency sum into two batched matmuls collapsed to one
+            # (n, 3P) @ (count, 3P, n). Noise is still drawn level by level so
+            # the random stream (and hence reproducibility) is unchanged.
+            p_lvl, n3 = self._n_sh, self._n_sh * 3
+            cn = xp.empty((p_lvl, count, 3, 3), dtype=self._cdtype)
+            for p in range(p_lvl):
                 noise = self._rng.standard_normal((2, count, 3, 3), dtype=self.dtype)
-                cn = (noise[0] + 1j * noise[1]) * amp_p
-                # sum_ij cn_ij e^(2i pi f_i x) e^(2i pi f_j y), evaluated as
-                # two small matmuls: (n,3) @ ((s,3,3) @ (3,n)) -> (s,n,n).
-                contribution = basis.T @ (cn @ basis)
-                low = contribution if low is None else low + contribution
-            low = low.real
+                cn[p] = (noise[0] + 1j * noise[1]) * self._sh_amp_stack[p]
+            m = xp.matmul(cn, self._sh_basis_stack[:, None, :, :])  # (P, count, 3, n)
+            m = xp.ascontiguousarray(m.transpose(1, 0, 2, 3)).reshape(count, n3, n)
+            basis_flat = self._sh_basis_stack.reshape(n3, n)  # (3P, n)
+            low = xp.matmul(basis_flat.T, m).real  # (count, n, n)
             low -= low.mean(axis=(-2, -1), keepdims=True)
             screens = screens + low
 

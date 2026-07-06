@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from . import _accel
 from . import profiles as _profiles
 from .backend import get_array_module
 from .extrude import ExtrudedAtmosphere, _catmull_rom_weights
@@ -514,15 +515,28 @@ class Atmosphere:
         self._vy = np.array([s.vy for s in self._layers], dtype=np.float64)
         self._alt = np.array([s.altitude_los for s in self._layers], dtype=np.float64)
         # Subharmonic modes share basis/frequencies across layers (same grid);
-        # only the coefficients (and per-layer amplitude) differ, so stack those.
+        # only the coefficients (and per-layer amplitude) differ. All levels
+        # share the same 3x3 mode geometry, so every per-level array is stacked
+        # along a leading level axis P: the whole low-frequency contribution
+        # then evaluates as a handful of batched ops instead of a Python loop
+        # over levels (the loop was launch-latency bound on the GPU).
         template = self._layers[0].generator
-        self._sh_batched = []
-        for level, (_amp, basis) in enumerate(template._sh_bases):
-            coeffs = xp.stack([flow._sh_coeffs[level] for flow in flows])  # (L,3,3)
-            amps = xp.stack(
-                [state.generator._sh_bases[level][0] for state in self._layers]
-            )  # (L,3,3)
-            self._sh_batched.append((coeffs, amps, basis, template._sh_freqs[level]))
+        self._n_sh = len(template._sh_bases)
+        if self._n_sh:
+            self._sh_coeffs = xp.stack(
+                [xp.stack([flow._sh_coeffs[level] for flow in flows])
+                 for level in range(self._n_sh)]
+            )  # (P, L, 3, 3)
+            self._sh_amps = xp.stack(
+                [xp.stack([s.generator._sh_bases[level][0] for s in self._layers])
+                 for level in range(self._n_sh)]
+            )  # (P, L, 3, 3)
+            self._sh_basis = xp.stack(
+                [basis for _amp, basis in template._sh_bases]
+            )  # (P, 3, n_screen)
+            self._sh_freqs = xp.stack(
+                [template._sh_freqs[level] for level in range(self._n_sh)]
+            )  # (P, 3)
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
         if self._lgs_mag is not None:
             self._build_lgs_zoom()
@@ -593,11 +607,14 @@ class Atmosphere:
         ratio = xp.clip(fr[None, :, :] / f_ref_dev[:, None, None], 1.0, None)
         main_tau = tau_boil_dev[:, None, None] * ratio ** (-2.0 / 3.0)
 
-        sh_tau = []
-        for _coeffs, _amps, _basis, fp in self._sh_batched:
-            fr_sh = xp.hypot(fp[:, None], fp[None, :]).astype(rdtype)  # (3, 3)
-            ratio_sh = xp.clip(fr_sh[None, :, :] / f_ref_dev[:, None, None], 1.0, None)
-            sh_tau.append(tau_boil_dev[:, None, None] * ratio_sh ** (-2.0 / 3.0))
+        if not self._n_sh:
+            return main_tau, None
+        fp = self._sh_freqs  # (P, 3)
+        fr_sh = xp.hypot(fp[:, :, None], fp[:, None, :]).astype(rdtype)  # (P, 3, 3)
+        ratio_sh = xp.clip(
+            fr_sh[:, None, :, :] / f_ref_dev[None, :, None, None], 1.0, None
+        )  # (P, L, 3, 3)
+        sh_tau = tau_boil_dev[None, :, None, None] * ratio_sh ** (-2.0 / 3.0)
         return main_tau, sh_tau
 
     # ------------------------------------------------------------------
@@ -824,20 +841,30 @@ class Atmosphere:
         # Separable shift-theorem phasors, shape (L, n_screen) each.
         phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
         phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
-        spectrum = (
-            self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
-        ).sum(axis=0)
+        if xp is np and _accel.HAVE_NUMBA:
+            # Fused single-pass layer sum (reads the (L, n, n) stack once).
+            spectrum = np.empty((ns, ns), dtype=cdtype)
+            _accel.spectral_layer_sum(self._spectra, phasor_x, phasor_y, spectrum)
+        else:
+            spectrum = (
+                self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
+            ).sum(axis=0)
         field = self._fft.ifft2(spectrum, axes=(-2, -1)) * (ns * ns)
         total = field.real
 
-        if self._sh_batched:
-            low = None
-            for coeffs, _amps, basis, fp in self._sh_batched:
-                px = xp.exp((2j * np.pi) * sx[:, None] * fp[None, :]).astype(cdtype)
-                py = xp.exp((2j * np.pi) * sy[:, None] * fp[None, :]).astype(cdtype)
-                shifted = (coeffs * px[:, :, None] * py[:, None, :]).sum(axis=0)  # (3,3)
-                contribution = basis.T @ (shifted @ basis)  # (ns, ns)
-                low = contribution.real if low is None else low + contribution.real
+        if self._n_sh:
+            # All subharmonic levels at once: shift each level's per-layer 3x3
+            # coefficients, sum over layers, then evaluate the shared sinusoid
+            # bases as two batched matmuls collapsed to one (ns, 3P) @ (3P, ns).
+            fp = self._sh_freqs  # (P, 3)
+            px = xp.exp((2j * np.pi) * sx[None, :, None] * fp[:, None, :]).astype(cdtype)
+            py = xp.exp((2j * np.pi) * sy[None, :, None] * fp[:, None, :]).astype(cdtype)
+            shifted = (
+                self._sh_coeffs * px[:, :, :, None] * py[:, :, None, :]
+            ).sum(axis=1)  # (P, 3, 3)
+            m = xp.matmul(shifted, self._sh_basis).reshape(self._n_sh * 3, ns)
+            basis_flat = self._sh_basis.reshape(self._n_sh * 3, ns)
+            low = (basis_flat.T @ m).real  # (ns, ns)
             low -= low.mean()
             total = total + low
         # Crop the central pupil region out of the (oversized) screen.
@@ -869,14 +896,20 @@ class Atmosphere:
         spectra = self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
         screens = (self._fft.ifft2(spectra, axes=(-2, -1)) * (ns * ns)).real  # (L,ns,ns)
 
-        if self._sh_batched:
+        if self._n_sh:
+            # Batch the phasor/shift across levels (small), but keep the layer
+            # axis through the basis matmul: each layer's low-frequency screen
+            # is zoomed differently below, so it cannot be collapsed here.
+            fp = self._sh_freqs  # (P, 3)
+            pxs = xp.exp((2j * np.pi) * sx[None, :, None] * fp[:, None, :]).astype(cdtype)
+            pys = xp.exp((2j * np.pi) * sy[None, :, None] * fp[:, None, :]).astype(cdtype)
+            # (P, L, 3, 3): per level, per layer, shifted 3x3 coefficients.
+            shifted = self._sh_coeffs * pxs[:, :, :, None] * pys[:, :, None, :]
             low = None
-            for coeffs, _amps, basis, fp in self._sh_batched:
-                px = xp.exp((2j * np.pi) * sx[:, None] * fp[None, :]).astype(cdtype)
-                py = xp.exp((2j * np.pi) * sy[:, None] * fp[None, :]).astype(cdtype)
-                shifted = coeffs * px[:, :, None] * py[:, None, :]  # (L,3,3)
-                contribution = xp.matmul(basis.T, xp.matmul(shifted, basis))  # (L,ns,ns)
-                low = contribution.real if low is None else low + contribution.real
+            for p in range(self._n_sh):
+                basis = self._sh_basis[p]  # (3, ns)
+                contrib = xp.matmul(basis.T, xp.matmul(shifted[p], basis))  # (L,ns,ns)
+                low = contrib.real if low is None else low + contrib.real
             low = low - low.mean(axis=(-2, -1), keepdims=True)
             screens = screens + low
 
@@ -924,16 +957,14 @@ class Atmosphere:
         )
         fresh = (noise[0] + 1j * noise[1]) * self._amplitudes
         self._spectra = a * self._spectra + b * fresh.astype(self._cdtype)
-        new_sh = []
-        for (coeffs, amps, basis, fp), tau_sh in zip(self._sh_batched, self._boil_sh_tau):
-            a_sh = xp.exp(-dt / tau_sh)
+        if self._n_sh:
+            a_sh = xp.exp(-dt / self._boil_sh_tau)  # (P, L, 3, 3)
             b_sh = xp.sqrt(xp.clip(1.0 - a_sh * a_sh, 0.0, None))
-            noise = self._boil_rng.standard_normal((2, L, 3, 3),
-                                                   dtype=self._spectra.real.dtype)
-            fresh = (noise[0] + 1j * noise[1]) * amps
-            coeffs = a_sh * coeffs + b_sh * fresh.astype(self._cdtype)
-            new_sh.append((coeffs, amps, basis, fp))
-        self._sh_batched = new_sh
+            noise = self._boil_rng.standard_normal(
+                (2, self._n_sh, L, 3, 3), dtype=self._spectra.real.dtype
+            )
+            fresh = (noise[0] + 1j * noise[1]) * self._sh_amps
+            self._sh_coeffs = a_sh * self._sh_coeffs + b_sh * fresh.astype(self._cdtype)
 
     def frames(
         self, dt: float, steps: int, wavelength: Optional[float] = None

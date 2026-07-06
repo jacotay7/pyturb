@@ -46,7 +46,7 @@ GPU acceleration is one keyword away — everything else is identical:
 ```python
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, device="gpu")
 for t, opd in atm.frames(dt=1e-3, steps=2000):
-    ...                                  # cupy arrays, ~800 fps at 512^2
+    ...                                  # cupy arrays, ~3100 fps at 512^2
 host = pyturb.to_numpy(opd)              # copy back when you need it
 ```
 
@@ -60,12 +60,12 @@ unaffected):
 
 ```python
 # Default: spectral shift-theorem — exact sub-pixel, all layers in one FFT,
-# fastest (~800 fps at 512^2 on GPU), but the screen is periodic.
+# fastest (~3100 fps at 512^2 on GPU), but the screen is periodic.
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8)
 
 # Extruder — Assémat-Wilson row extrusion in a wind-aligned frame with rotated
 # sub-pixel sampling: unbounded and NON-periodic, the right choice for long
-# closed-loop runs. Any wind direction, any v*dt, ~120 fps at 512^2 on GPU.
+# closed-loop runs. Any wind direction, any v*dt, ~1700 fps at 512^2 on GPU.
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, engine="extrude")
 ```
 
@@ -76,11 +76,13 @@ exact at integer pixel travel, maximally smoothing at half-pixel travel — so
 its finest-scale power deviates from theory by 5-15% and oscillates with the
 sub-pixel phase of the wind travel (a spurious line at `v / pixel_scale` Hz
 and harmonics). The spectral engine has no such artifact (it is exact at any
-offset) but is periodic. Pick the extruder when a repeating screen would bias
-a long run and the fine-scale tail near the actuator/WFS-sampling Nyquist
-frequency is not what you're studying; pick the spectral engine when you want
-raw speed, fine-scale fidelity, and the period is longer than your
-simulation.
+offset) but is periodic. Both engines now do the per-frame readout in fused
+kernels, so the choice is mostly about physics, not speed: pick the extruder
+when a repeating screen would bias a long run and the fine-scale tail near the
+actuator/WFS-sampling Nyquist frequency is not what you're studying (or use
+`interp="lanczos"`, whose fused kernel roughly halves that finest-scale deficit
+for a modest cost); pick the spectral engine for fine-scale fidelity when the
+period is longer than your simulation.
 
 ### Lower-level building blocks
 
@@ -103,7 +105,12 @@ for _ in range(1000):
 pip install pyturb            # CPU (NumPy + SciPy)
 pip install pyturb[cuda12]    # + CuPy for CUDA 12.x
 pip install pyturb[cuda11]    # + CuPy for CUDA 11.x
+pip install pyturb[accel]     # + Numba, several-x faster CPU frozen flow
 ```
+
+The `accel` extra is optional: pyturb runs identically without it (a NumPy
+fallback), just slower on the CPU frozen-flow paths. The GPU path never needs
+it.
 
 ## What it simulates
 
@@ -177,14 +184,23 @@ see [`docs/interop.md`](docs/interop.md).
 
 ## Performance
 
-Frozen-flow evolution batches all layers through a single FFT per frame. On an
-RTX 5090, a 9-layer Paranal atmosphere (`benchmarks/bench_frames.py`):
+Frozen-flow evolution batches all layers through a single FFT per frame; the
+subharmonic low-frequency correction is evaluated for every level at once, and
+the extruder's sub-pixel pupil readout is a single fused CUDA kernel (a fused
+Numba pass on CPU). A full 9-layer Paranal atmosphere, closed-loop OPD frames/s
+on an RTX 5090 (GPU) and a 32-core CPU (`benchmarks/bench_suite.py`):
 
-| screen | GPU frames/s | GPU screens/s | CPU frames/s |
-|---|---|---|---|
-| 256² | ~840 | ~1350 | ~120 |
-| 512² | ~820 | ~1100 | ~26 |
-| 1024² | ~500 | ~350 | ~4 |
+| screen | GPU spectral | GPU extrude | GPU Monte-Carlo screens/s | CPU spectral | CPU extrude |
+|---|---|---|---|---|---|
+| 256² | ~3,200 | ~4,500 | ~11,600 | ~1,090 | ~970 |
+| 512² | ~3,100 | ~1,700 | ~3,200 | ~270 | ~180 |
+| 1024² | ~1,500 | ~600 | ~650 | ~62 | ~57 |
+
+Single-layer Monte-Carlo (`PhaseScreen.generate`) draws **~31,000 independent
+512² screens/s** on the GPU (~108,000 at 256²). CPU rates assume the optional
+`pyturb[accel]` (Numba) extra; without it the pure-NumPy CPU paths are slower.
+Run `python -c "import pyturb; pyturb.benchmark()"` to time your own machine, or
+`python benchmarks/bench_suite.py` for the full per-use-case sweep.
 
 ## How pyturb compares
 
@@ -214,27 +230,28 @@ simulator in existence. **COMPASS** (CUDA C++, gitlab.obspm.fr/cosmic-rtc/compas
 is a GPU-native, non-periodic, end-to-end AO simulator that has been the ESO
 community's ELT-scale workhorse for over a decade — a different category of
 tool (a full compiled simulator with a Python front-end, vs. pyturb's
-importable CuPy/NumPy library), but the honest comparison for "fastest
-non-periodic GPU atmosphere": COMPASS's hand-written CUDA extrusion kernels
-substantially outperform pyturb's CuPy-based `engine="extrude"` for the same
-job on the same GPU. pyturb's niche is being a lightweight, importable Python
-library with a three-line API, not the fastest GPU atmosphere in any
-context.
+importable CuPy/NumPy library). pyturb's extruder now does its per-frame pupil
+readout in a hand-written fused CUDA kernel (the bicubic/Lanczos gather over all
+layers in one launch), which narrows the gap, but COMPASS's fully hand-written
+CUDA extrusion pipeline still outperforms it for the same job on the same GPU.
+pyturb's niche is being a lightweight, importable Python library with a
+three-line API, not the fastest GPU atmosphere in any context.
 
 Measured head-to-head on an RTX 5090 (8 m pupil, 512²):
 
-- **Monte-Carlo generation** — pyturb produces **14,000 independent 512²
-  screens/s** on the GPU (55,000 at 256²) by drawing two screens per FFT and
-  batching the stack; that is **~1000× the pure-Python FFT loops** in
+- **Monte-Carlo generation** — pyturb produces **~31,000 independent 512²
+  screens/s** on the GPU (~108,000 at 256²) by drawing two screens per FFT,
+  evaluating every subharmonic level in one batched matmul, and batching the
+  stack; that is **well over 1000× the pure-Python FFT loops** in
   aotools/soapy (which were never built as batched Monte-Carlo generators),
-  and ~13× even on one CPU core.
-- **Frozen flow** — a full **9-layer 512² atmosphere at ~800 fps** on GPU via
+  and ~30× even on one CPU core.
+- **Frozen flow** — a full **9-layer 512² atmosphere at ~3,100 fps** on GPU via
   the spectral (periodic) shift-theorem engine — exact sub-pixel, any
-  direction, all layers in one FFT. This is the fastest configuration: on
-  CPU the same job runs at ~25-30 fps (~14× slower than the equivalent
-  aotools integer-pixel loop), the non-periodic `engine="extrude"` costs
-  ~7× throughput relative to the periodic engine on GPU, and enabling
-  `tau_boil` costs a further ~35-50%. Full numbers for every
+  direction, all layers in one FFT. On CPU the same job runs at ~270 fps (with
+  the optional Numba `accel` extra; the equivalent aotools integer-pixel loop
+  is ~420 fps), the non-periodic `engine="extrude"` costs ~1.8× throughput
+  relative to the periodic engine on GPU (~1,700 fps), and enabling `tau_boil`
+  costs ~30%. Full numbers for every
   engine/device/feature combination:
   [`benchmarks/RESULTS.md` §2b](benchmarks/RESULTS.md#2b-the-full-9-layer-closed-loop-every-configuration-512-same-machine).
 - **Accuracy** — pyturb's structure function tracks von Kármán theory to
@@ -251,8 +268,8 @@ extruder sampling at small `n`. aotools adds tomographic reconstructors, soapy a
 complete AO system, HCIPy Fresnel propagation and scintillation — all outside
 pyturb's scope. The one capability all three had that pyturb lacked — *truly
 unbounded, non-periodic* screens via the Assémat–Wilson extruder — is now
-implemented as `engine="extrude"` (any wind direction, sub-pixel, GPU; ~120 fps
-for a non-periodic 9-layer 512² atmosphere), as are FITS/npz I/O and
+implemented as `engine="extrude"` (any wind direction, sub-pixel, GPU; ~1,700
+fps for a non-periodic 9-layer 512² atmosphere), as are FITS/npz I/O and
 moment-conserving profile compression. See
 [`docs/comparison.md`](docs/comparison.md#what-we-learned--and-what-were-adopting).
 
@@ -284,12 +301,18 @@ the temporal statistics of extruded screens.
   Python loop.
 - Screens default to `float32`, the sweet spot for GPU throughput and ample
   precision for AO work; pass `dtype="float64"` if you want more.
+- On the GPU, a frozen-flow frame is a handful of kernels regardless of layer
+  count: the layer sum, the single inverse FFT, all subharmonic levels in one
+  batched matmul, and (for the extruder) one fused bicubic/Lanczos gather
+  kernel. On the CPU those same fused passes run through Numba when the optional
+  `pyturb[accel]` extra is installed (a NumPy fallback otherwise), and
+  `set_fft_workers(-1)` threads the FFT across cores.
 - `InfinitePhaseScreen` extrudes into a **ring buffer**, so a step costs two
   small matrix-vector products (not a whole-screen copy) and memory stays
   bounded no matter how long the run; the expensive covariance setup happens
   once in the constructor. Use `.step()` for whole-pixel wind travel or
   `.advance(pixels)` for exact **sub-pixel** motion (`v*dt/pixel_scale`),
-  interpolated with `interp="cubic"` (default) or `"linear"`.
+  interpolated with `interp="cubic"` (default), `"linear"`, or `"lanczos"`.
 
 ## References
 

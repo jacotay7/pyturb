@@ -88,6 +88,9 @@ class FourierFlowScreen:
             self._sh_coeffs.append(
                 ((noise[0] + 1j * noise[1]) * amp_p).astype(self._cdtype)
             )
+        # Stacked (P, 3, 3) view for the batched translate() readout.
+        if self._sh_coeffs:
+            self._sh_coeffs_stack = self.xp.stack(self._sh_coeffs)
         return self
 
     def translate(self, sx: float, sy: float) -> Any:
@@ -108,16 +111,18 @@ class FourierFlowScreen:
         screen = field.real
 
         if self._sh_coeffs:
-            low = None
-            for (_amp, basis), coeff, fp in zip(
-                self.template._sh_bases, self._sh_coeffs, self.template._sh_freqs
-            ):
-                px = xp.exp((2j * np.pi * sx) * fp).astype(self._cdtype)
-                py = xp.exp((2j * np.pi * sy) * fp).astype(self._cdtype)
-                shifted = coeff * px[:, None] * py[None, :]
-                contribution = basis.T @ (shifted @ basis)
-                low = contribution if low is None else low + contribution
-            low = low.real
+            # Every subharmonic level in one pass: shift each level's 3x3
+            # coefficients, then evaluate the shared (3, n) bases as two batched
+            # matmuls collapsed to one (n, 3P) @ (3P, n) (see PhaseScreen.generate).
+            tmpl = self.template
+            n_sh = tmpl._n_sh
+            fp = tmpl._sh_freqs_stack  # (P, 3)
+            px = xp.exp((2j * np.pi * sx) * fp).astype(self._cdtype)  # (P, 3)
+            py = xp.exp((2j * np.pi * sy) * fp).astype(self._cdtype)
+            shifted = self._sh_coeffs_stack * px[:, :, None] * py[:, None, :]  # (P,3,3)
+            m = xp.matmul(shifted, tmpl._sh_basis_stack).reshape(n_sh * 3, n)
+            basis_flat = tmpl._sh_basis_stack.reshape(n_sh * 3, n)
+            low = (basis_flat.T @ m).real
             low -= low.mean()
             screen = screen + low
 

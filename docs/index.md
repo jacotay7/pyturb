@@ -22,8 +22,8 @@ for t, opd in atm.frames(dt=1e-3, steps=2000):
 
 ## Why pyturb
 
-- **Fast.** ~14,000 independent 512² screens/s and a full 9-layer 512²
-  atmosphere at ~800 fps on a consumer GPU — see [Comparison](comparison.md).
+- **Fast.** ~31,000 independent 512² screens/s and a full 9-layer 512²
+  atmosphere at ~3,100 fps on a consumer GPU — see [Comparison](comparison.md).
 - **Correct.** The spatial statistics match von Kármán/Kolmogorov theory to a
   couple of percent, enforced by tests — see [Validation](validation.md).
 - **Complete.** Named site profiles, off-axis tomography, boiling, LGS cone,

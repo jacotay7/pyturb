@@ -36,10 +36,13 @@ Two facts keep the setup cheap across a multi-layer atmosphere:
   rescale of a single ``B_unit``.
 
 Every layer's ring buffer lives as a slab of one contiguous ``(L, cap, W)``
-array, so the per-frame pupil readout — the hot path — is a **single fused
-gather** over all layers at once instead of one bicubic gather per layer. On
-the GPU this removes the per-layer kernel-launch latency that otherwise
-dominates a multi-layer frame.
+array, so the per-frame pupil readout — the hot path — touches all layers at
+once. For the ``"cubic"`` and ``"lanczos"`` kernels it is a **single custom
+CUDA kernel** on the GPU (and a fused ``prange`` Numba pass on CPU, when the
+optional ``pyturb[accel]`` extra is installed) that does the whole rotated,
+sub-pixel, per-layer-wind-shifted gather and the layer sum in one pass, with
+the interpolation weights held in registers; ``"linear"`` uses a batched
+tap-broadcast gather. Either way there is no per-layer kernel-launch latency.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from . import _accel
 from .backend import get_array_module
 from .fourier import PhaseScreen
 from .infinite import _lanczos_weights, _spd_solve, phase_covariance
@@ -65,6 +69,142 @@ def _catmull_rom_weights(t: Any) -> Tuple[Any, Any, Any, Any]:
         0.5 * (t + 4.0 * t2 - 3.0 * t3),
         0.5 * (-t2 + t3),
     )
+
+
+# Fused GPU readout: one kernel does the whole multi-layer bicubic (Catmull-Rom)
+# gather -- rotated, sub-pixel, per-layer wind-shifted -- summed over layers into
+# the (n, n) pupil, in a single pass with the tap weights held in registers. This
+# replaces materialising 16 (L, n, n) index/gather temporaries per frame; it is
+# bit-identical to that path (both accumulate the four-tap products in double).
+_READOUT_SRC = r"""
+extern "C" __global__ void extrude_readout_{suf}(
+    const {T}* __restrict__ buf, const double* __restrict__ along,
+    const double* __restrict__ perp, const double* __restrict__ sa,
+    const double* __restrict__ sp, const long long* __restrict__ fillm1,
+    {T}* __restrict__ out, int L, int n, long long cap, int W)
+{{
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long npix = (long long)n * n;
+    if (idx >= npix) return;
+    double acc = 0.0;
+    for (int l = 0; l < L; ++l) {{
+        long long p2 = (long long)l * npix + idx;
+        double row = along[p2] + sa[l];
+        double col = perp[p2] + sp[l];
+        long long r0 = (long long)floor(row);
+        long long c0 = (long long)floor(col);
+        double fr = row - r0, fc = col - c0;
+        double fr2 = fr * fr, fr3 = fr2 * fr, fc2 = fc * fc, fc3 = fc2 * fc;
+        double wr[4], wc[4];
+        wr[0] = 0.5 * (-fr + 2.0 * fr2 - fr3);
+        wr[1] = 0.5 * (2.0 - 5.0 * fr2 + 3.0 * fr3);
+        wr[2] = 0.5 * (fr + 4.0 * fr2 - 3.0 * fr3);
+        wr[3] = 0.5 * (-fr2 + fr3);
+        wc[0] = 0.5 * (-fc + 2.0 * fc2 - fc3);
+        wc[1] = 0.5 * (2.0 - 5.0 * fc2 + 3.0 * fc3);
+        wc[2] = 0.5 * (fc + 4.0 * fc2 - 3.0 * fc3);
+        wc[3] = 0.5 * (-fc2 + fc3);
+        long long fmax = fillm1[l];
+        const {T}* bl = buf + (long long)l * cap * W;
+        double val = 0.0;
+        for (int a = 0; a < 4; ++a) {{
+            long long rr = r0 + (a - 1);
+            rr = rr < 0 ? 0 : (rr > fmax ? fmax : rr);
+            const {T}* brow = bl + rr * W;
+            double rs = 0.0;
+            for (int b = 0; b < 4; ++b) {{
+                long long cc = c0 + (b - 1);
+                cc = cc < 0 ? 0 : (cc > W - 1 ? W - 1 : cc);
+                rs += wc[b] * (double)brow[cc];
+            }}
+            val += wr[a] * rs;
+        }}
+        acc += val;
+    }}
+    out[idx] = ({T})acc;
+}}
+"""
+
+# Lanczos-3 variant: the flatter sub-Nyquist kernel used by the highest-fidelity
+# readout. 6 taps per axis (36 per layer) with windowed-sinc weights computed in
+# registers; otherwise identical structure to the cubic kernel above.
+_READOUT_LANCZOS_SRC = r"""
+__device__ __forceinline__ double _sincpi(double x) {{
+    if (x == 0.0) return 1.0;
+    double px = 3.14159265358979323846 * x;
+    return sin(px) / px;
+}}
+__device__ __forceinline__ void _lanczos6(double t, double* w) {{
+    double total = 0.0;
+    for (int k = 0; k < 6; ++k) {{
+        double x = t - (double)(k - 2);
+        double s = _sincpi(x) * _sincpi(x * (1.0 / 3.0));
+        w[k] = s;
+        total += s;
+    }}
+    double inv = 1.0 / total;
+    for (int k = 0; k < 6; ++k) w[k] *= inv;
+}}
+extern "C" __global__ void extrude_readout_lz_{suf}(
+    const {T}* __restrict__ buf, const double* __restrict__ along,
+    const double* __restrict__ perp, const double* __restrict__ sa,
+    const double* __restrict__ sp, const long long* __restrict__ fillm1,
+    {T}* __restrict__ out, int L, int n, long long cap, int W)
+{{
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long npix = (long long)n * n;
+    if (idx >= npix) return;
+    double acc = 0.0;
+    for (int l = 0; l < L; ++l) {{
+        long long p2 = (long long)l * npix + idx;
+        double row = along[p2] + sa[l];
+        double col = perp[p2] + sp[l];
+        long long r0 = (long long)floor(row);
+        long long c0 = (long long)floor(col);
+        double wr[6], wc[6];
+        _lanczos6(row - r0, wr);
+        _lanczos6(col - c0, wc);
+        long long fmax = fillm1[l];
+        const {T}* bl = buf + (long long)l * cap * W;
+        double val = 0.0;
+        for (int a = 0; a < 6; ++a) {{
+            long long rr = r0 + (a - 2);
+            rr = rr < 0 ? 0 : (rr > fmax ? fmax : rr);
+            const {T}* brow = bl + rr * W;
+            double rs = 0.0;
+            for (int b = 0; b < 6; ++b) {{
+                long long cc = c0 + (b - 2);
+                cc = cc < 0 ? 0 : (cc > W - 1 ? W - 1 : cc);
+                rs += wc[b] * (double)brow[cc];
+            }}
+            val += wr[a] * rs;
+        }}
+        acc += val;
+    }}
+    out[idx] = ({T})acc;
+}}
+"""
+
+_readout_kernels: dict = {}
+
+
+def _get_readout_kernel(dtype: Any, interp: str = "cubic"):
+    """Compile (once) and return the fused readout kernel for a dtype/interp."""
+    name = np.dtype(dtype).name
+    key = (name, interp)
+    ker = _readout_kernels.get(key)
+    if ker is None:
+        import cupy
+
+        ctype, suf = ("float", "f") if name == "float32" else ("double", "d")
+        src, fn = (
+            (_READOUT_LANCZOS_SRC, f"extrude_readout_lz_{suf}")
+            if interp == "lanczos"
+            else (_READOUT_SRC, f"extrude_readout_{suf}")
+        )
+        ker = cupy.RawKernel(src.format(T=ctype, suf=suf), fn)
+        _readout_kernels[key] = ker
+    return ker
 
 
 def _along_extent_and_span(
@@ -292,9 +432,9 @@ class ExtrudedAtmosphere:
     matrix across layers of equal ``L0``) whose ring buffers are slabs of a
     single contiguous ``(L, capacity, W)`` array. Extrusion is driven per layer
     (amortised, one small mat-vec per new row) but the per-frame pupil readout
-    is a single fused bicubic gather over all layers, summed into one
-    reference-wavelength phase screen. The public :class:`Atmosphere` wraps this
-    and converts to OPD.
+    is a single fused gather over all layers (a custom CUDA / Numba kernel for
+    the cubic and Lanczos interpolators), summed into one reference-wavelength
+    phase screen. The public :class:`Atmosphere` wraps this and converts to OPD.
 
     ``capacity``/``width`` are shared by every layer's slab (needed for the
     fused gather), but are sized to the largest requirement **actually
@@ -424,17 +564,38 @@ class ExtrudedAtmosphere:
     def integrate(self, thx: float = 0.0, thy: float = 0.0) -> Any:
         """Summed reference-wavelength phase ``(n, n)`` toward one direction.
 
-        On the GPU this is a single fused bicubic (or bilinear) gather over all
-        layers' ring buffers at once — one kernel launch instead of one per
-        layer — then summed over the layer axis. On the CPU the per-layer loop
-        keeps each gather a cache-friendly ``(n, n)`` and wins instead, so the
-        backend picks the readout: identical results, best throughput on each.
-        The gather indices are the rotated pupil grids offset by each layer's
-        wind travel and its (per-layer) off-axis footprint shift.
+        The rotated pupil grids, offset by each layer's wind travel and its
+        (per-layer) off-axis footprint shift, index every layer's ring buffer.
+        For ``interp="cubic"``/``"lanczos"`` the whole gather and layer sum run
+        in one pass: a custom CUDA kernel on the GPU, a fused ``prange`` Numba
+        kernel on the CPU (when ``pyturb[accel]`` is installed), or a batched
+        tap-broadcast gather as the NumPy fallback. ``interp="linear"`` uses the
+        tap-broadcast gather (looped per layer on CPU, batched on GPU). All paths
+        give identical results; the backend picks the fastest.
         """
         if self.xp is np:
+            if self.interp in ("cubic", "lanczos") and _accel.HAVE_NUMBA:
+                return self._integrate_cpu_fused(thx, thy)
             return self._integrate_looped(thx, thy)
         return self._integrate_batched(thx, thy)
+
+    def _integrate_cpu_fused(self, thx: float, thy: float) -> Any:
+        """Fused Numba readout on CPU (one parallel pass, no temps).
+
+        Catmull-Rom or Lanczos-3 per :attr:`interp`; both mirror the GPU kernels.
+        """
+        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        out = np.empty((self.n, self.n), dtype=self.dtype)
+        kernel = (
+            _accel.extrude_lanczos_readout
+            if self.interp == "lanczos"
+            else _accel.extrude_cubic_readout
+        )
+        kernel(
+            self._buf, self._along, self._perp,
+            shift_along, shift_perp, (fill - 1).astype(np.int64), out,
+        )
+        return out
 
     def _taps(self, fr: Any, fc: Any, xp: Any):
         """(row taps, col taps) as ``(offset, weight)`` pairs for the interp kernel.
@@ -471,8 +632,16 @@ class ExtrudedAtmosphere:
         return shift_along, shift_perp, fill
 
     def _integrate_batched(self, thx: float, thy: float) -> Any:
-        """GPU readout: one fused gather over the stacked ``(L, cap, W)`` buffer."""
+        """GPU readout: one fused gather over the stacked ``(L, cap, W)`` buffer.
+
+        For the default Catmull-Rom ``interp="cubic"`` this is a single custom
+        CUDA kernel doing the whole multi-layer bicubic gather and layer sum in
+        one pass; ``"linear"``/``"lanczos"`` fall back to the tap-broadcast
+        gather below.
+        """
         xp = self.xp
+        if self.interp in ("cubic", "lanczos"):
+            return self._integrate_fused_kernel(thx, thy)
         shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
         sa = xp.asarray(shift_along)[:, None, None]
         sp = xp.asarray(shift_perp)[:, None, None]
@@ -501,6 +670,25 @@ class ExtrudedAtmosphere:
             out = contrib if out is None else out + contrib
         total = out.sum(axis=0)  # sum over layers -> (n, n)
         return xp.ascontiguousarray(total.astype(self.dtype, copy=False))
+
+    def _integrate_fused_kernel(self, thx: float, thy: float) -> Any:
+        """Fused single-kernel readout (Catmull-Rom or Lanczos-3, see kernels)."""
+        xp = self.xp
+        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        L, n = len(self.layers), self.n
+        out = xp.empty((n, n), dtype=self.dtype)
+        ker = _get_readout_kernel(self.dtype, self.interp)
+        sa = xp.asarray(shift_along)
+        sp = xp.asarray(shift_perp)
+        fillm1 = xp.asarray(fill - 1)
+        threads = 256
+        blocks = (n * n + threads - 1) // threads
+        ker(
+            (blocks,), (threads,),
+            (self._buf, self._along, self._perp, sa, sp, fillm1, out,
+             np.int32(L), np.int32(n), np.int64(self.capacity), np.int32(self.width)),
+        )
+        return out
 
     def _integrate_looped(self, thx: float, thy: float) -> Any:
         """CPU readout: per-layer ``(n, n)`` gather, summed as we go.
