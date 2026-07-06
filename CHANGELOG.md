@@ -4,7 +4,7 @@ All notable changes to pyturb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to adhere
 to [Semantic Versioning](https://semver.org/).
 
-## [0.2.0] — unreleased
+## [0.2.0] 
 
 The "atmosphere" release: pyturb goes from a phase-screen library to a complete,
 benchmarked, GPU-native AO atmosphere.
