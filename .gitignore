@@ -221,3 +221,4 @@ __marimo__/
 # mkdocs strict build output (docs.yml)
 _site/
 trade_study_review/
+*.gif

@@ -364,10 +364,54 @@ def test_extrude_off_axis_variance_grows_with_angle():
     assert v25 > v10 > 0.0
 
 
-def test_extrude_rejects_boiling():
-    with pytest.raises(ValueError):
-        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
-                                       engine="extrude", tau_boil=0.1)
+def test_extrude_boiling_decorrelates_and_preserves_variance():
+    # engine="extrude" boiling: a no-wind layer's ensemble-averaged temporal
+    # autocorrelation must decay as exp(-t/tau_boil) -- the extruder blends its
+    # ring buffer toward a fresh independent screen (a single-timescale AR(1),
+    # uniform across spatial scales, unlike the spectral engine's per-mode
+    # rate) -- while the spatial variance (r0) is preserved.
+    tau, dt = 0.05, 0.005
+    lags = [1, 2, 5]
+    num = {k: 0.0 for k in lags}
+    den0 = 0.0
+    denk = {k: 0.0 for k in lags}
+    rms_first, rms_last = [], []
+    for m in range(40):
+        atm = pyturb.Atmosphere([pyturb.Layer(0.0, 1.0, 0.0, 0.0, L0=25.0)],
+                                r0=0.15, n=48, diameter=8.0, tau_boil=tau,
+                                engine="extrude", dtype="float64", seed=2000 + m)
+        frames = [pyturb.to_numpy(o) for _, o in atm.frames(dt=dt, steps=max(lags) + 1)]
+        f0 = (frames[0] - frames[0].mean()).ravel()
+        den0 += np.dot(f0, f0)
+        rms_first.append(frames[0].std())
+        rms_last.append(frames[-1].std())
+        for k in lags:
+            fk = (frames[k] - frames[k].mean()).ravel()
+            num[k] += np.dot(f0, fk)
+            denk[k] += np.dot(fk, fk)
+    for k in lags:
+        corr = num[k] / np.sqrt(den0 * denk[k])
+        expected = np.exp(-k * dt / tau)          # uniform AR(1) rate
+        assert abs(corr - expected) < 0.05
+    # Boiling preserves the spatial variance (stationary RMS) in the ensemble.
+    assert abs(np.mean(rms_last) / np.mean(rms_first) - 1.0) < 0.1
+
+
+def test_extrude_boiling_stays_nonperiodic_and_frozen_default():
+    # Boiling must not resurrect periodicity: with wind, a boiling extruded run
+    # stays finite and keeps evolving; and without tau_boil the extruder frame
+    # sequence is unchanged (pure frozen flow, deterministic in absolute time).
+    kw = dict(seeing=0.8, diameter=8.0, n=40, L0=25.0, engine="extrude",
+              dtype="float64", seed=7)
+    boiled = pyturb.Atmosphere.from_profile("two-layer", tau_boil=0.03, **kw)
+    fr = [pyturb.to_numpy(o) for _, o in boiled.frames(dt=2e-3, steps=6)]
+    assert all(np.isfinite(f).all() for f in fr)
+    assert np.corrcoef(fr[0].ravel(), fr[-1].ravel())[0, 1] < 0.999
+    # No tau_boil -> frames() is exactly frozen flow: opd(t) reproduces it.
+    frozen = pyturb.Atmosphere.from_profile("two-layer", **kw)
+    t, f = next(frozen.frames(dt=2e-3, steps=1))
+    ref = pyturb.Atmosphere.from_profile("two-layer", **kw).opd(0.0)
+    np.testing.assert_array_equal(pyturb.to_numpy(f), pyturb.to_numpy(ref))
 
 
 @pytest.mark.parametrize("engine", ["spectral", "extrude"])
@@ -395,11 +439,12 @@ def test_evolve_steps_in_seconds_and_matches_frames(engine):
         a.evolve(0.0)
 
 
-def test_evolve_boiling_advances_like_frames():
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_evolve_boiling_advances_like_frames(engine):
     """With tau_boil, evolve() applies one boiling step per dt just as frames()
-    does, so the two stay in lock-step."""
+    does, so the two stay in lock-step -- on both engines."""
     kw = dict(seeing=0.8, diameter=8.0, n=32, L0=25.0, dtype="float64",
-              seed=6, tau_boil=0.02)
+              seed=6, tau_boil=0.02, engine=engine)
     dt = 1e-3
     seq = [pyturb.to_numpy(o)
            for _, o in pyturb.Atmosphere.from_profile("two-layer", **kw).frames(dt, 4)]
@@ -551,8 +596,14 @@ def test_lgs_validation():
     with pytest.raises(ValueError):
         pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=32,
                                        lgs_altitude=5000.0)  # below the 9/18 km layers
-    # tau_boil still requires the spectral engine.
-    with pytest.raises(ValueError):
-        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
-                                       engine="extrude", lgs_altitude=90e3,
-                                       tau_boil=0.02)
+
+
+def test_extrude_lgs_and_boiling_compose():
+    """On the extruder the LGS cone (ring-buffer magnification) and boiling
+    (in-place AR(1) blend) are independent operations, so they compose."""
+    atm = pyturb.Atmosphere.from_profile(
+        "two-layer", seeing=0.8, n=40, seed=3, engine="extrude",
+        lgs_altitude=90e3, tau_boil=0.02, dtype="float64")
+    frames = [pyturb.to_numpy(o) for _, o in atm.frames(dt=1e-3, steps=5)]
+    assert all(np.isfinite(f).all() for f in frames)
+    assert np.corrcoef(frames[0].ravel(), frames[-1].ravel())[0, 1] < 0.999

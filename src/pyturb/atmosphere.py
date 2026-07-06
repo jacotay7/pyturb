@@ -301,13 +301,6 @@ class Atmosphere:
                     "covariance. inner_scale is available for sample() and "
                     "engine='spectral' frames()/opd()."
                 )
-        if engine == "extrude" and tau_boil is not None:
-            raise ValueError(
-                "boiling (tau_boil) requires engine='spectral': the "
-                "extruder has no discrete 'modes' to apply a per-mode "
-                "retention coefficient to (see tau_boil's docstring for the "
-                "scale-dependent model) -- only a ring buffer of rows."
-            )
         if lgs_altitude is not None and lgs_altitude <= 0:
             raise ValueError("lgs_altitude must be positive [m]")
         if dispersion not in (None, "edlen", "ciddor"):
@@ -404,10 +397,11 @@ class Atmosphere:
         )
         self._layers: List[_LayerState] = []
         ext_r0, ext_L0, ext_wind, ext_alt, ext_seeds = [], [], [], [], []
+        ext_boil_seeds = []
         for layer, child in zip(self.layers, seeds):
             # Per-layer line-of-sight r0: r0_i^{-5/3} = f_i * r0_los^{-5/3}.
             r0_i = self.r0_los * layer.cn2_fraction ** (-3.0 / 5.0)
-            gen_seed, flow_seed, ext_seed = child.spawn(3)
+            gen_seed, flow_seed, ext_seed, ext_boil_seed = child.spawn(4)
             generator = PhaseScreen(
                 n=self.n_screen,
                 pixel_scale=self.pixel_scale,
@@ -442,6 +436,7 @@ class Atmosphere:
             ext_wind.append((vx, vy))
             ext_alt.append(altitude_los)
             ext_seeds.append(int(ext_seed.generate_state(1)[0]))
+            ext_boil_seeds.append(int(ext_boil_seed.generate_state(1)[0]))
 
         # LGS cone effect in the spectral engine: each layer's screen is
         # zoom-sampled about the pupil centre by its magnification
@@ -489,6 +484,8 @@ class Atmosphere:
                 device=device,
                 dtype=dtype,
                 seeds=ext_seeds,
+                tau_boil=(None if tau_boil is None else list(self.tau_boil)),
+                boil_seeds=ext_boil_seeds,
             )
             self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
 
@@ -991,6 +988,8 @@ class Atmosphere:
             self._t += float(dt)
             if self.engine == "spectral":
                 self._boil_step(float(dt))  # no-op unless tau_boil is finite
+            else:
+                self._ext.boil_step(float(dt))  # no-op unless tau_boil is finite
 
     def evolve(self, dt: float, wavelength: Optional[float] = None) -> Any:
         """Advance the wind by ``dt`` seconds and return the new pupil OPD.
@@ -1023,6 +1022,8 @@ class Atmosphere:
         self._t += float(dt)
         if self.engine == "spectral":
             self._boil_step(float(dt))
+        else:
+            self._ext.boil_step(float(dt))
         return self._to_opd(self._phase(self._t, 0.0, 0.0), wavelength)
 
     def sample(
