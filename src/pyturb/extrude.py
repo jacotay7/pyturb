@@ -43,6 +43,16 @@ optional ``pyturb[accel]`` extra is installed) that does the whole rotated,
 sub-pixel, per-layer-wind-shifted gather and the layer sum in one pass, with
 the interpolation weights held in registers; ``"linear"`` uses a batched
 tap-broadcast gather. Either way there is no per-layer kernel-launch latency.
+
+Optional **boiling** (:meth:`ExtrudedAtmosphere.boil_step`) adds temporal
+decorrelation on top of frozen flow: each step the readout window of the ring
+buffer relaxes, ``buf = a*buf + sqrt(1-a^2)*fresh`` with ``a = exp(-dt/tau)``,
+toward a fresh screen extruded from the same recurrence (so the blend keeps the
+spatial covariance, hence ``r0``, exactly while decorrelating in time). This is
+a single-timescale AR(1) across all spatial scales — real space offers no
+per-mode handle like the spectral engine's — and re-extruding that fresh window
+each step makes a boiling frame markedly costlier than a frozen one, so it runs
+only when a finite ``tau_boil`` is set.
 """
 
 from __future__ import annotations
@@ -242,18 +252,20 @@ def build_extrusion(
     L0: float,
     xp: Any,
     dtype: Any,
+    with_seed: bool = False,
 ) -> Tuple[Any, Any, Any]:
     """Return ``(A, B_unit, S_unit)`` for extruding one ``width``-pixel row.
 
     Built at ``r0 = 1``; ``A`` is r0-independent, while both ``B`` (the row
     noise colouring) and ``S`` (the stencil-block seed factor) for a layer of
-    Fried parameter ``r0`` are ``* r0**(-5/6)``. ``S_unit`` is a square root of
-    the ``stencil_rows``-row joint covariance ``C_zz`` (``S_unit @ S_unit.T =
-    C_zz``): drawing ``S @ white`` seeds ``stencil_rows`` rows of a *fresh*
-    von Kármán screen, from which the same recurrence extrudes the rest — used
-    by boiling to synthesise the independent screen it relaxes toward. Done
-    once in float64 (needs scipy.special via :func:`phase_covariance`), then
-    moved to the device.
+    Fried parameter ``r0`` are ``* r0**(-5/6)``. When ``with_seed`` (boiling
+    only), ``S_unit`` is a square root of the ``stencil_rows``-row joint
+    covariance ``C_zz`` (``S_unit @ S_unit.T = C_zz``): drawing ``S @ white``
+    seeds ``stencil_rows`` rows of a *fresh* von Kármán screen, from which the
+    same recurrence extrudes the rest, giving the independent screen boiling
+    relaxes toward; otherwise ``S_unit`` is ``None`` (it is not cheap and frozen
+    flow never needs it). Done once in float64 (needs scipy.special via
+    :func:`phase_covariance`), then moved to the device.
     """
     m, n = int(stencil_rows), int(width)
     yz, xz = np.mgrid[0:m, 0:n]
@@ -273,17 +285,21 @@ def build_extrusion(
     residual = (residual + residual.T) / 2.0
     eigenvalues, eigenvectors = np.linalg.eigh(residual)
     b_unit = eigenvectors * np.sqrt(np.clip(eigenvalues, 0.0, None))
-    # Symmetric-eigendecomposition square root of C_zz (robust when the
-    # stencil-block covariance is near-singular on fine grids, where a plain
-    # Cholesky would fail); any factor with S S^T = C_zz seeds correctly.
-    c_zz = (c_zz + c_zz.T) / 2.0
-    w_seed, v_seed = np.linalg.eigh(c_zz)
-    s_unit = v_seed * np.sqrt(np.clip(w_seed, 0.0, None))
-    return (
-        xp.asarray(a_matrix, dtype=dtype),
-        xp.asarray(b_unit, dtype=dtype),
-        xp.asarray(s_unit, dtype=dtype),
-    )
+
+    s_unit = None
+    if with_seed:
+        c_zz = (c_zz + c_zz.T) / 2.0
+        try:
+            # Cholesky is the cheap factor with S S^T = C_zz; any such factor
+            # seeds correctly.
+            s_unit = np.linalg.cholesky(c_zz)
+        except np.linalg.LinAlgError:
+            # Symmetric-eigendecomposition square root, for grids where C_zz is
+            # too near-singular to factor by Cholesky.
+            w_seed, v_seed = np.linalg.eigh(c_zz)
+            s_unit = v_seed * np.sqrt(np.clip(w_seed, 0.0, None))
+        s_unit = xp.asarray(s_unit, dtype=dtype)
+    return xp.asarray(a_matrix, dtype=dtype), xp.asarray(b_unit, dtype=dtype), s_unit
 
 
 class _ExtrudeLayer:
@@ -321,7 +337,6 @@ class _ExtrudeLayer:
         fov_margin_pix: float = 0.0,
         tau_boil: float = float("inf"),
         s_unit: Any = None,
-        boil_rng: Any = None,
     ) -> None:
         self.n = int(n)
         self.W = int(width)
@@ -344,13 +359,14 @@ class _ExtrudeLayer:
         self._b = (b_unit * r0_scale).astype(self.dtype)
 
         # Boiling (temporal decorrelation) state. ``tau_boil`` is infinite for
-        # pure frozen flow; when finite, :meth:`boil` relaxes the ring buffer
-        # toward a fresh independent screen extruded from the same recurrence
-        # (``_s`` seeds it, ``_a``/``_b`` extend it), preserving spatial
-        # statistics exactly. See :meth:`ExtrudedAtmosphere.boil_step`.
+        # pure frozen flow; when finite, the parent relaxes this layer's ring
+        # buffer toward a fresh independent screen extruded from the same
+        # recurrence (``_s`` seeds it, ``_a``/``_b`` extend it), preserving
+        # spatial statistics exactly. The generation is batched across layers by
+        # :meth:`ExtrudedAtmosphere.boil_step`; this class only reports the
+        # window that needs boiling.
         self.tau_boil = float(tau_boil)
         self._s = None if s_unit is None else (s_unit * r0_scale).astype(self.dtype)
-        self._boil_rng = boil_rng
 
         # Pupil pixel coordinates (centred) projected into the wind frame. The
         # LGS cone effect shrinks the footprint by ``magnification =
@@ -454,60 +470,31 @@ class _ExtrudeLayer:
         return along, perp
 
     # -- boiling (temporal decorrelation) -----------------------------
-    def _fresh_window(self, height: int) -> Any:
-        """A fresh, independent ``(height, W)`` von Kármán window.
+    def boil_region(self, dt: float) -> Optional[Tuple[int, int, float, float]]:
+        """``(lo, hi, a, b)`` for this layer's AR(1) boil step, or ``None``.
 
-        Seeds the first ``m`` rows from ``_s`` (a square root of the
-        stencil-block covariance) and extrudes the rest with the layer's own
-        ``A``/``B`` recurrence — the same construction as the main screen, so
-        the result has identical spatial statistics but is drawn from an
-        independent noise stream. Non-periodic (it is extruded, not synthesised
-        by an FFT), so blending it in preserves the engine's non-periodicity.
-        """
-        xp = self.xp
-        W, m = self.W, self.m
-        out = xp.empty((height, W), dtype=self.dtype)
-        seed = self._s @ self._boil_rng.standard_normal(m * W, dtype=self.dtype)
-        seed = seed.reshape(m, W)
-        rows = min(m, height)
-        out[:rows] = seed[:rows]
-        for i in range(m, height):
-            z = out[i - m : i].ravel()
-            beta = self._boil_rng.standard_normal(W, dtype=self.dtype)
-            out[i] = self._a @ z + self._b @ beta
-        return out
-
-    def boil(self, dt: float) -> None:
-        """Advance boiling by ``dt`` seconds: one AR(1) step of the ring buffer.
-
-        The rows the pupil can still read (the readout window plus the extruded
-        lookahead) relax toward a fresh independent screen with retention
-        ``a = exp(-dt / tau_boil)``: ``buf = a*buf + sqrt(1-a^2)*fresh``. Because
-        the fresh screen shares the buffer's spatial covariance, the blend keeps
-        that covariance (hence ``r0``) exactly while decorrelating the buffer in
-        time; continued extrusion off the blended leading edge stays consistent.
-        A no-op for a frozen layer (``tau_boil`` infinite). Unlike the spectral
-        engine's per-mode boiling, this single-timescale blend decorrelates all
-        spatial scales at the same rate (real space has no per-mode handle).
+        Reports the buffer rows the pupil can still read at the current travel
+        (the readout window plus the extruded lookahead; rows below are spent)
+        and the AR(1) coefficients ``a = exp(-dt/tau_boil)``,
+        ``b = sqrt(1-a^2)``. The parent then blends ``buf[lo:hi] = a*buf +
+        b*fresh`` against a fresh independently extruded screen. Extrudes to
+        cover the current travel first, so the boiled region -- and hence the
+        boil-RNG draws -- depends only on how far the wind has blown, not on the
+        order of set_travel/boil calls; this keeps a frames() run and the
+        equivalent evolve() sequence bit-identical. Returns ``None`` for a
+        frozen layer (``tau_boil`` infinite) or an empty window.
         """
         if not np.isfinite(self.tau_boil):
-            return
-        # Extrude to cover the current travel first, so the boiled region (and
-        # thus the boil-RNG draws) depends only on how far the wind has blown,
-        # not on the order of set_travel/boil calls -- this is what keeps a
-        # frames() run and the equivalent evolve() sequence bit-identical.
+            return None
         self._ensure()
         a = float(np.exp(-dt / self.tau_boil))
         b = float(np.sqrt(max(0.0, 1.0 - a * a)))
-        # Lowest buffer row the pupil (and its interpolation taps) can reach at
-        # the current travel; rows below it are spent and need not boil.
         read_bottom = int(np.floor(self._along_min + self._travel)) - self._base - 3
         lo = max(0, read_bottom)
         hi = self._fill
         if hi <= lo:
-            return
-        fresh = self._fresh_window(hi - lo)
-        self._buf[lo:hi] = a * self._buf[lo:hi] + b * fresh
+            return None
+        return lo, hi, a, b
 
 
 class ExtrudedAtmosphere:
@@ -547,7 +534,7 @@ class ExtrudedAtmosphere:
         dtype: Union[str, np.dtype] = "float32",
         seeds: Optional[Sequence[Any]] = None,
         tau_boil: Optional[Sequence[float]] = None,
-        boil_seeds: Optional[Sequence[Any]] = None,
+        boil_seed: Optional[Any] = None,
     ) -> None:
         self.n = int(n)
         self.dx = float(pixel_scale)
@@ -595,13 +582,13 @@ class ExtrudedAtmosphere:
         self.capacity = capacity
 
         # Per-layer boiling time constants (s); inf/None means frozen flow.
-        # ``self.boiling`` gates the (extra) boil work in :meth:`boil_step`.
+        # ``self.boiling`` gates the (extra) boil work in :meth:`boil_step` and
+        # whether the seed factor S is built at all (it is not cheap).
         if tau_boil is None:
             tau_list = [float("inf")] * n_layers
         else:
             tau_list = [float(t) for t in tau_boil]
         self.boiling = any(np.isfinite(t) for t in tau_list)
-        boil_seeds = list(boil_seeds) if boil_seeds is not None else [None] * n_layers
 
         # Share A (and the seed factor S) across layers with identical L0;
         # B and S rescale per layer by r0**(-5/6).
@@ -609,14 +596,15 @@ class ExtrudedAtmosphere:
         self.layers: List[_ExtrudeLayer] = []
         self._buf = xp.empty((n_layers, capacity, width), dtype=self.dtype)
         seeds = list(seeds) if seeds is not None else [None] * n_layers
-        for i, (r0, L0, (vx, vy), alt, seed, mag, fov_i, tau, bseed) in enumerate(
+        for i, (r0, L0, (vx, vy), alt, seed, mag, fov_i, tau) in enumerate(
             zip(layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds,
-                magnifications, fov_list, tau_list, boil_seeds)
+                magnifications, fov_list, tau_list)
         ):
             key = round(float(L0), 9)
             if key not in self._ab_cache:
                 self._ab_cache[key] = build_extrusion(
-                    width, stencil_rows, self.dx, L0, xp, self.dtype
+                    width, stencil_rows, self.dx, L0, xp, self.dtype,
+                    with_seed=self.boiling,
                 )
             a_matrix, b_unit, s_unit = self._ab_cache[key]
             rng = xp.random.default_rng(seed)
@@ -642,7 +630,6 @@ class ExtrudedAtmosphere:
                     fov_margin_pix=fov_i,
                     tau_boil=tau,
                     s_unit=s_unit,
-                    boil_rng=xp.random.default_rng(bseed),
                 )
             )
 
@@ -656,22 +643,116 @@ class ExtrudedAtmosphere:
             layer._perp = None
         self._layer_index = xp.arange(n_layers)[:, None, None]
 
+        # One shared noise stream drives boiling. On the GPU the fresh-screen
+        # recurrence is batched across layers (one pair of matmuls per extruded
+        # row rather than a Python loop per layer), so the per-layer matrices
+        # are stacked once; on the CPU a per-layer tight loop is more cache
+        # friendly, so the stacks are skipped there.
+        self._boil_rng = None
+        if self.boiling:
+            self._boil_rng = xp.random.default_rng(boil_seed)
+            if xp is not np:
+                self._a_stack = xp.stack([lyr._a for lyr in self.layers])  # (L,W,mW)
+                self._b_stack = xp.stack([lyr._b for lyr in self.layers])  # (L,W,W)
+                self._s_stack = xp.stack([lyr._s for lyr in self.layers])  # (L,mW,mW)
+
     def set_time(self, t: float) -> None:
         """Advance every layer to simulation time ``t`` seconds."""
         for layer in self.layers:
             layer.set_travel(layer.speed * t / self.dx)
 
-    def boil_step(self, dt: float) -> None:
-        """Advance boiling on every layer by ``dt`` seconds (see :meth:`_ExtrudeLayer.boil`).
+    def _batched_fresh_window(self, height: int) -> Any:
+        """A fresh, independent ``(L, height, W)`` von Kármán window per layer.
 
-        A no-op unless at least one layer has a finite ``tau_boil``; the
-        :class:`Atmosphere` frame loop calls it once per step, mirroring the
-        spectral engine's per-frame AR(1) boil.
+        Seeds the first ``m`` rows of every layer from ``S`` (a square root of
+        the stencil-block covariance) and extrudes the rest with each layer's
+        own ``A``/``B`` recurrence -- the same construction as the main screen,
+        so the result matches its spatial statistics but is an independent draw.
+        The white noise is drawn up front in two calls, and the noise-colouring
+        term ``B @ beta`` -- which does not depend on the recurrence -- is done
+        for every row in one batched matmul, leaving only the sequential mean
+        term ``A @ z`` per row. So the per-step launch count is ``O(m + height)``
+        rather than ``O(L * height)``, the difference between usable and unusable
+        on the GPU. Non-periodic (extruded, not FFT-synthesised), so blending it
+        in preserves the engine's non-periodicity.
+        """
+        xp = self.xp
+        L, W, m = len(self.layers), self.width, self.m
+        out = xp.empty((L, height, W), dtype=self.dtype)
+        rng = self._boil_rng
+        seed = xp.matmul(
+            self._s_stack, rng.standard_normal((L, m * W, 1), dtype=self.dtype)
+        )  # (L, mW, 1)
+        rows = min(m, height)
+        out[:, :rows] = seed[:, : rows * W, 0].reshape(L, rows, W)
+        if height > m:
+            beta = rng.standard_normal((L, height - m, W), dtype=self.dtype)
+            # All rows' B @ beta at once (one batched matmul), then only A @ z
+            # is left to iterate.
+            bb = xp.matmul(self._b_stack, beta.swapaxes(1, 2)).swapaxes(1, 2)
+            for i in range(m, height):
+                z = out[:, i - m : i].reshape(L, m * W, 1)
+                out[:, i] = xp.matmul(self._a_stack, z)[:, :, 0] + bb[:, i - m]
+        return out
+
+    def _fresh_window_one(self, layer: "_ExtrudeLayer", height: int) -> Any:
+        """One layer's fresh ``(height, W)`` von Kármán window (CPU path).
+
+        The per-layer analogue of :meth:`_batched_fresh_window`: on NumPy a
+        tight per-layer loop of small contiguous mat-vecs is more cache friendly
+        than the batched three-dimensional matmul the GPU prefers.
+        """
+        xp = self.xp
+        W, m = self.width, self.m
+        rng = self._boil_rng
+        out = xp.empty((height, W), dtype=self.dtype)
+        seed = (layer._s @ rng.standard_normal(m * W, dtype=self.dtype)).reshape(m, W)
+        rows = min(m, height)
+        out[:rows] = seed[:rows]
+        for k in range(m, height):
+            out[k] = layer._a @ out[k - m : k].ravel() + layer._b @ rng.standard_normal(
+                W, dtype=self.dtype
+            )
+        return out
+
+    def boil_step(self, dt: float) -> None:
+        """Advance boiling by ``dt`` seconds: one AR(1) blend of the ring buffer.
+
+        Every boiling layer's readable window relaxes toward a fresh independent
+        screen, ``buf[lo:hi] = a*buf + sqrt(1-a^2)*fresh``, with
+        ``a = exp(-dt/tau_boil)`` (see :meth:`_ExtrudeLayer.boil_region`). The
+        fresh screens share each buffer's spatial covariance, so the blend
+        preserves that covariance (hence ``r0``) exactly while decorrelating in
+        time; continued extrusion off the blended leading edge stays consistent.
+        On the GPU all layers' fresh screens extrude together to one common
+        height (each layer taking the deepest rows it needs); on the CPU each is
+        built in its own loop. A no-op unless at least one layer has a finite
+        ``tau_boil``. Unlike the spectral engine's per-mode boiling, this
+        single-timescale blend decorrelates all spatial scales at the same rate
+        (real space has no per-mode handle).
         """
         if not self.boiling:
             return
-        for layer in self.layers:
-            layer.boil(dt)
+        regions = []
+        height = 0
+        for i, layer in enumerate(self.layers):
+            region = layer.boil_region(dt)
+            if region is None:
+                continue
+            lo, hi, a, b = region
+            regions.append((i, lo, hi, a, b))
+            height = max(height, hi - lo)
+        if not regions:
+            return
+        if self.xp is np:
+            for i, lo, hi, a, b in regions:
+                fresh = self._fresh_window_one(self.layers[i], hi - lo)
+                self._buf[i, lo:hi] = a * self._buf[i, lo:hi] + b * fresh
+            return
+        fresh = self._batched_fresh_window(height)  # (L, height, W)
+        for i, lo, hi, a, b in regions:
+            h = hi - lo
+            self._buf[i, lo:hi] = a * self._buf[i, lo:hi] + b * fresh[i, height - h :]
 
     def integrate(self, thx: float = 0.0, thy: float = 0.0) -> Any:
         """Summed reference-wavelength phase ``(n, n)`` toward one direction.

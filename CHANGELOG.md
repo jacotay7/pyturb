@@ -4,6 +4,23 @@ All notable changes to pyturb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to adhere
 to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Boiling on the non-periodic engine.** `tau_boil` now works with
+  `engine="extrude"`, not just `"spectral"`. Each step blends the ring buffer
+  toward a fresh, independently extruded screen (`buf = a·buf + √(1−a²)·fresh`,
+  `a = exp(−dt/tau)`), so temporal decorrelation composes with frozen flow while
+  the spatial covariance — and hence `r0` — is preserved and the screen stays
+  non-periodic. Unlike the spectral engine's per-mode boiling, the extruder
+  decorrelates every spatial scale at the single `tau_boil` rate (real space has
+  no per-mode handle); staying non-periodic costs a modest deficit in the
+  largest-scale power of the boiled screen, and re-extruding the fresh window
+  makes a boiling frame markedly costlier than a frozen one. `lgs_altitude` now
+  composes with boiling on the extruder too (the cone acts on readout geometry,
+  boiling on the stored turbulence).
+
 ## [0.2.0] 
 
 The "atmosphere" release: pyturb goes from a phase-screen library to a complete,

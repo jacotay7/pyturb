@@ -132,14 +132,23 @@ class Atmosphere:
     tau_boil : float or sequence, optional
         Boiling (temporal decorrelation) time constant [s] of each layer's
         *outer-scale* structure, scalar or one per layer. ``None`` (default)
-        is pure frozen flow. When set, every mode relaxes via an AR(1) process
-        toward fresh noise with retention ``exp(-dt/tau(f))`` while keeping
-        its spatial statistics; finer spatial structure boils faster than
-        ``tau_boil`` per Kolmogorov eddy-turnover scaling,
-        ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for ``f >= f_ref = 1/L0``
-        (the grid fundamental frequency for Kolmogorov ``L0=inf``), clamped to
-        ``tau_boil`` below ``f_ref``. Active only while stepping with
-        :meth:`frames`. Requires ``engine="spectral"``.
+        is pure frozen flow. When set, the layer relaxes via an AR(1) process
+        toward fresh, statistically identical turbulence with retention
+        ``exp(-dt/tau)`` while preserving its spatial statistics. Active only
+        while stepping with :meth:`frames`/:meth:`evolve`. Works on **both**
+        engines, but the two realise it differently:
+
+        - ``engine="spectral"`` boils **per Fourier mode**, so finer spatial
+          structure decorrelates faster than the outer scale per Kolmogorov
+          eddy-turnover scaling, ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for
+          ``f >= f_ref = 1/L0`` (the grid fundamental for Kolmogorov
+          ``L0=inf``), clamped to ``tau_boil`` below ``f_ref``.
+        - ``engine="extrude"`` blends its ring buffer toward a fresh
+          independently extruded screen -- a single-timescale AR(1) that
+          decorrelates **all** spatial scales at ``tau_boil`` (real space has
+          no per-mode handle). Staying non-periodic costs a modest deficit in
+          the largest-scale power of the boiled screen; use ``"spectral"`` if
+          exact scale-resolved boiling matters more than non-periodicity.
     engine : {"spectral", "extrude"}, optional
         Frozen-flow engine for :meth:`frames`/:meth:`opd`. ``"spectral"``
         (default) is the fastest: an exact sub-pixel shift-theorem translation,
@@ -207,21 +216,24 @@ class Atmosphere:
     interchangeable ways to get the same features faster/slower -- each
     supports a different subset:
 
-    - ``tau_boil`` (boiling), non-Kolmogorov ``power_law``/``inner_scale``,
-      and Kolmogorov ``L0=inf`` all require ``engine="spectral"``: they need
-      either discrete Fourier modes to apply a per-mode operation to, or a
-      closed-form covariance that only exists for the standard von Karman
-      case. None of these three can be combined with genuinely non-periodic
+    - ``tau_boil`` (boiling) works on **both** engines, but with different
+      spatial character: ``engine="spectral"`` boils per Fourier mode (finer
+      structure faster, scale-resolved), while ``engine="extrude"`` blends its
+      ring buffer toward fresh extruded turbulence at a single timescale across
+      all scales, preserving non-periodicity (see ``tau_boil`` above).
+    - non-Kolmogorov ``power_law``/``inner_scale`` and Kolmogorov ``L0=inf``
+      still require ``engine="spectral"``: they need either discrete Fourier
+      modes or a closed-form covariance that only exists for the standard von
+      Karman case, so none can combine with non-periodic
       (``engine="extrude"``) evolution.
     - ``lgs_altitude`` (the LGS cone effect) works on **both** engines. On the
       extruder the cone shrinks each layer's footprint via the ring-buffer
       sampling grid; on the spectral engine each layer's screen is
-      zoom-resampled about the pupil centre by the same factor. So on spectral
-      the cone **does** combine with ``tau_boil`` boiling (and non-Kolmogorov
-      statistics); on the extruder it combines with non-periodic evolution but
-      not with boiling. The spectral cone falls back to a per-layer transform
-      (each layer zooms differently), so it runs below the on-axis spectral
-      throughput.
+      zoom-resampled about the pupil centre by the same factor. On either
+      engine it composes with ``tau_boil`` boiling (the cone acts on readout
+      geometry, boiling on the stored turbulence, so they are independent). The
+      spectral cone falls back to a per-layer transform (each layer zooms
+      differently), so it runs below the on-axis spectral throughput.
     - ``directions`` (off-axis/tomography) works with both engines, but every
       requested direction must lie within the declared ``field_of_view`` (a
       ``ValueError`` is raised otherwise, in both engines) -- construct the
@@ -395,13 +407,13 @@ class Atmosphere:
         self._boil_rng = self.xp.random.default_rng(
             int(master.spawn(1)[0].generate_state(1)[0])
         )
+        self._ext_boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
         self._layers: List[_LayerState] = []
         ext_r0, ext_L0, ext_wind, ext_alt, ext_seeds = [], [], [], [], []
-        ext_boil_seeds = []
         for layer, child in zip(self.layers, seeds):
             # Per-layer line-of-sight r0: r0_i^{-5/3} = f_i * r0_los^{-5/3}.
             r0_i = self.r0_los * layer.cn2_fraction ** (-3.0 / 5.0)
-            gen_seed, flow_seed, ext_seed, ext_boil_seed = child.spawn(4)
+            gen_seed, flow_seed, ext_seed = child.spawn(3)
             generator = PhaseScreen(
                 n=self.n_screen,
                 pixel_scale=self.pixel_scale,
@@ -436,7 +448,6 @@ class Atmosphere:
             ext_wind.append((vx, vy))
             ext_alt.append(altitude_los)
             ext_seeds.append(int(ext_seed.generate_state(1)[0]))
-            ext_boil_seeds.append(int(ext_boil_seed.generate_state(1)[0]))
 
         # LGS cone effect in the spectral engine: each layer's screen is
         # zoom-sampled about the pupil centre by its magnification
@@ -485,7 +496,7 @@ class Atmosphere:
                 dtype=dtype,
                 seeds=ext_seeds,
                 tau_boil=(None if tau_boil is None else list(self.tau_boil)),
-                boil_seeds=ext_boil_seeds,
+                boil_seed=self._ext_boil_seed,
             )
             self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
 

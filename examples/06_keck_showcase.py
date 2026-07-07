@@ -5,19 +5,23 @@ under frozen-flow wind, in four panels that build on one another. All four
 share the *same random seed*, so the turbulence is the same sky sampled four
 ways — every visible difference is a physics feature, not a different draw:
 
-  1. NGS, frozen flow       -- non-periodic ``engine="extrude"`` (Assemat-Wilson
-                               row extrusion; the screen never repeats)
+All four use the non-periodic ``engine="extrude"`` (Assemat-Wilson row
+extrusion; the screen never repeats):
+
+  1. NGS, frozen flow       -- pure wind-blown frozen flow
   2. + boiling              -- local temporal decorrelation on top of the wind
-                               (``tau_boil``; needs the spectral engine, so this
-                               one panel uses ``engine="spectral"``)
+                               (``tau_boil``), blending the ring buffer toward
+                               fresh extruded turbulence each step
   3. + LGS cone, on-axis    -- finite-range sodium beacon (``lgs_altitude``);
-                               each layer is magnified by the cone (extrude)
+                               each layer is magnified by the cone
   4. LGS, off-axis          -- the cone beacon pointed off-axis (``directions``),
                                adding angular anisoplanatism
 
 Each panel is overlaid with the throughput pyturb sustained generating that
 case (independent screens per second, measured on this machine with warm
-kernels), so the GIF doubles as a speed sheet across the feature set.
+kernels), so the GIF doubles as a speed sheet across the feature set. Boiling
+(panel 2) runs far below the others: it re-extrudes a fresh screen to blend in
+every step, so a boiling frame is inherently many times a frozen one.
 
 Run:  ``python examples/06_keck_showcase.py``            (auto GPU if available)
       ``python examples/06_keck_showcase.py --device cpu --n 256``
@@ -130,7 +134,7 @@ def build_panels(device: str) -> List[Panel]:
     def extrude_step(atm, i):            # on-axis, non-periodic frozen flow
         return atm.opd(i * DT)
 
-    def boil_step(atm, i):               # frozen flow + boiling (spectral)
+    def boil_step(atm, i):               # frozen flow + boiling (extrude)
         return atm.opd(0.0) if i == 0 else atm.evolve(DT)
 
     def offaxis_step(atm, i):            # off-axis cone beacon
@@ -146,8 +150,8 @@ def build_panels(device: str) -> List[Panel]:
         ),
         Panel(
             "boil",
-            "②  + boiling\nτ_boil (spectral)",
-            lambda: make(n, engine="spectral", tau_boil=TAU_BOIL),
+            "②  + boiling\nτ_boil (extrude)",
+            lambda: make(n, engine="extrude", tau_boil=TAU_BOIL),
             boil_step,
         ),
         Panel(
