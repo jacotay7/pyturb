@@ -41,7 +41,7 @@ from .utils import (
     water_vapour_refractivity,
 )
 
-__all__ = ["Atmosphere", "PeriodicWrapWarning"]
+__all__ = ["Atmosphere", "PeriodicWrapWarning", "ExtrudeBoilingPerformanceWarning"]
 
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 
@@ -57,6 +57,25 @@ class PeriodicWrapWarning(UserWarning):
     ``warnings.filterwarnings("ignore", category=pyturb.PeriodicWrapWarning)``
     if this is intentional (e.g. deliberately studying the periodic case), or
     switch to ``engine="extrude"`` for genuinely non-periodic frozen flow.
+    """
+
+
+class ExtrudeBoilingPerformanceWarning(UserWarning):
+    """``tau_boil`` on ``engine="extrude"`` is markedly slower than ``"spectral"``.
+
+    The spectral engine boils with one per-mode AR(1) update on its already-
+    stored spectrum. The extruder has no such spectrum -- it works in real
+    space -- so each boiling step must re-extrude an independent, fresh
+    ``(rows, width)`` screen from scratch (seeding a few stencil rows, then
+    running the same row recurrence forward) and blend it into the ring
+    buffer. That extra extrusion, repeated every :meth:`Atmosphere.frames` /
+    :meth:`Atmosphere.evolve` step, is the dominant cost: a boiling extrude
+    frame is many times a frozen one, far more than the corresponding slowdown
+    on the spectral engine. Prefer ``engine="spectral"`` for boiling-heavy runs
+    unless genuine non-periodicity is required; silence with
+    ``warnings.filterwarnings("ignore",
+    category=pyturb.ExtrudeBoilingPerformanceWarning)`` if the cost is
+    already accounted for.
     """
 
 
@@ -147,8 +166,10 @@ class Atmosphere:
           independently extruded screen -- a single-timescale AR(1) that
           decorrelates **all** spatial scales at ``tau_boil`` (real space has
           no per-mode handle). Staying non-periodic costs a modest deficit in
-          the largest-scale power of the boiled screen; use ``"spectral"`` if
-          exact scale-resolved boiling matters more than non-periodicity.
+          the largest-scale power of the boiled screen, and re-extruding that
+          fresh screen every step makes it markedly slower than spectral
+          boiling (raises :class:`ExtrudeBoilingPerformanceWarning`); use
+          ``"spectral"`` unless genuine non-periodicity is required.
     engine : {"spectral", "extrude"}, optional
         Frozen-flow engine for :meth:`frames`/:meth:`opd`. ``"spectral"``
         (default) is the fastest: an exact sub-pixel shift-theorem translation,
@@ -313,6 +334,17 @@ class Atmosphere:
                     "covariance. inner_scale is available for sample() and "
                     "engine='spectral' frames()/opd()."
                 )
+        if engine == "extrude" and tau_boil is not None:
+            warnings.warn(
+                "boiling (tau_boil) on engine='extrude' re-extrudes an "
+                "independent fresh screen every step and is markedly slower "
+                "than the spectral engine's per-mode AR(1) boiling -- see "
+                "ExtrudeBoilingPerformanceWarning for why. Prefer "
+                "engine='spectral' for boiling-heavy runs unless genuine "
+                "non-periodicity is required.",
+                ExtrudeBoilingPerformanceWarning,
+                stacklevel=2,
+            )
         if lgs_altitude is not None and lgs_altitude <= 0:
             raise ValueError("lgs_altitude must be positive [m]")
         if dispersion not in (None, "edlen", "ciddor"):

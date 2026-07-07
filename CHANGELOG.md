@@ -19,7 +19,12 @@ to [Semantic Versioning](https://semver.org/).
   largest-scale power of the boiled screen, and re-extruding the fresh window
   makes a boiling frame markedly costlier than a frozen one. `lgs_altitude` now
   composes with boiling on the extruder too (the cone acts on readout geometry,
-  boiling on the stored turbulence).
+  boiling on the stored turbulence). On the GPU, boiling's fresh-screen
+  extrusion is batched across layers (one pair of matmuls per row instead of a
+  Python loop per layer per row), a several-fold speedup over the naive
+  per-layer path. Constructing `Atmosphere(engine="extrude", tau_boil=...)` now
+  raises `ExtrudeBoilingPerformanceWarning`, noting that this combination is
+  still markedly slower than `engine="spectral"` boiling.
 
 ## [0.2.0] 
 

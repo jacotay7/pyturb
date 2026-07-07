@@ -414,6 +414,21 @@ def test_extrude_boiling_stays_nonperiodic_and_frozen_default():
     np.testing.assert_array_equal(pyturb.to_numpy(f), pyturb.to_numpy(ref))
 
 
+def test_extrude_boiling_warns_about_performance():
+    # engine="extrude" + tau_boil is legal (see above) but re-extrudes a fresh
+    # screen every step, so it should flag itself as markedly slower than
+    # spectral boiling -- once per construction, like PeriodicWrapWarning.
+    with pytest.warns(pyturb.ExtrudeBoilingPerformanceWarning):
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       engine="extrude", tau_boil=0.1)
+    # Frozen extrude (no tau_boil) and spectral boiling must not warn.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", pyturb.ExtrudeBoilingPerformanceWarning)
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32, engine="extrude")
+        pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
+                                       engine="spectral", tau_boil=0.1)
+
+
 @pytest.mark.parametrize("engine", ["spectral", "extrude"])
 def test_evolve_steps_in_seconds_and_matches_frames(engine):
     """evolve(dt) advances the clock by dt and yields the same OPD as sampling
