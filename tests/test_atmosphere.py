@@ -607,10 +607,72 @@ def test_lgs_validation():
         with pytest.raises(ValueError):
             pyturb.Atmosphere.from_profile("two-layer", seeing=0.8, n=32,
                                            engine=engine, lgs_altitude=-1.0)
-    # A beacon at/below a layer gives a degenerate cone (spectral path).
+    # A beacon at/below a layer gives a degenerate cone. This must be rejected
+    # on BOTH engines: the spectral path zoom-resamples and the extruder
+    # magnifies its ring buffer, but a <= 0 magnification would collapse the
+    # layer to a piston on either -- so neither may silently accept it.
+    for engine in ("spectral", "extrude"):
+        with pytest.raises(ValueError):
+            pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=32,
+                                           engine=engine, lgs_altitude=5000.0)
+
+
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_reset_restores_boiled_state_to_fresh(engine):
+    """reset() must return a boiled atmosphere to its t=0 realisation on both
+    engines. Boiling mutates the spectral engine's stored spectra in place (and
+    consumes its boil RNG); reset() has to rebuild them, or a reused object
+    keeps the boiled turbulence instead of restarting."""
+    kw = dict(r0=0.15, n=64, diameter=4.0, seed=1, dtype="float64",
+              tau_boil=0.02, engine=engine)
+    layers = [pyturb.Layer(0.0, 1.0, 10.0, 0.0, 25.0)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # extrude boiling perf warning is expected
+        atm = pyturb.Atmosphere(layers, **kw)
+        fresh = pyturb.to_numpy(atm.opd(0.0)).copy()
+        for _ in range(5):
+            atm.evolve(0.01)
+        atm.reset()
+        after_reset = pyturb.to_numpy(atm.opd(0.0))
+        # Exact restoration (float64): reset frame equals the original t=0 frame.
+        np.testing.assert_allclose(after_reset, fresh, rtol=0, atol=1e-10)
+        # And the subsequent boiled sequence must replay identically too.
+        fresh_atm = pyturb.Atmosphere(layers, **kw)
+        a = pyturb.to_numpy(atm.evolve(0.01))
+        b = pyturb.to_numpy(fresh_atm.evolve(0.01))
+    np.testing.assert_allclose(a, b, rtol=0, atol=1e-10)
+
+
+def test_nonfinite_physical_inputs_are_rejected():
+    """NaN/Inf physical inputs must raise, not silently produce NaN screens."""
+    layers = [pyturb.Layer(0.0, 1.0, 10.0, 0.0, 25.0)]
     with pytest.raises(ValueError):
-        pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=32,
-                                       lgs_altitude=5000.0)  # below the 9/18 km layers
+        pyturb.Atmosphere(layers, r0=np.nan, n=16, diameter=4.0)
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere(layers, r0=0.15, wavelength=0.0, n=16, diameter=4.0)
+    with pytest.raises(ValueError):
+        pyturb.Atmosphere(layers, seeing=np.inf, n=16, diameter=4.0)
+    with pytest.raises(ValueError):
+        pyturb.PhaseScreen(n=16, pixel_scale=0.1, r0=np.nan, L0=25.0)
+    with pytest.raises(ValueError):
+        pyturb.PhaseScreen(n=16, pixel_scale=0.1, r0=0.15, L0=np.nan)
+    with pytest.raises(ValueError):
+        pyturb.InfinitePhaseScreen(n=16, pixel_scale=0.1, r0=np.nan, L0=25.0)
+
+
+def test_direction_radius_beyond_fov_is_rejected():
+    """field_of_view is a radius: a corner direction whose radius exceeds it is
+    rejected even when each component is within it (the screens are only
+    oversized to that radius, so the extruder would otherwise clamp taps)."""
+    for engine in ("spectral", "extrude"):
+        atm = pyturb.Atmosphere([pyturb.Layer(10000.0, 1.0, 10.0, 45.0, 25.0)],
+                                seeing=0.8, n=48, diameter=8.0,
+                                field_of_view=10.0, engine=engine, dtype="float64")
+        # radius sqrt(10^2 + 10^2) = 14.1 > 10 -> rejected
+        with pytest.raises(ValueError):
+            atm.opd(0.0, directions=[(10.0, 10.0)])
+        # a direction on the fov circle is accepted
+        atm.opd(0.0, directions=[(10.0, 0.0)])
 
 
 def test_extrude_lgs_and_boiling_compose():

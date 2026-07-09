@@ -118,7 +118,15 @@ class Atmosphere:
         Default 500 nm.
     zenith_angle : float, optional
         Zenith angle [deg]. Scales ``r0`` (``cos^{3/5}``) and layer ranges
-        (``sec``) for the line of sight. Default 0.
+        (``sec``) for the line of sight. Default 0. This is a **scalar
+        airmass/range approximation**, not full slant-path geometry: the pupil
+        grid and winds stay isotropic, so it does not apply the anisotropic
+        pupil-to-tilted-layer coordinate transform a real slant path needs (a
+        baseline in the zenith plane maps to a screen separation stretched by
+        ``sec(z)`` versus the perpendicular one, making the structure function
+        differ between axes by ``sec(z)^{5/3}`` — ~3.2x at 60 deg). Accurate as
+        a seeing/range scaling near zenith; not a substitute for full slant-path
+        geometry at large zenith angles.
     diameter : float, optional
         Pupil diameter [m]; with ``n`` this sets ``pixel_scale = diameter/n``.
         Default 8 m.
@@ -182,16 +190,27 @@ class Atmosphere:
         low-pass filter (exact at integer pixel travel, most attenuating at
         half-pixel travel), so its finest-scale (1-2 px) structure function
         deviates from theory by 5-15% and oscillates with the sub-pixel travel
-        phase; ``"spectral"`` has no such artifact. Prefer ``"spectral"`` when
-        fine-scale (near-Nyquist) fidelity matters more than non-periodicity.
-        :meth:`sample` (Monte-Carlo) is unaffected by this choice.
+        phase; ``"spectral"`` has no such artifact. Separately, once the initial
+        FFT-seeded rows have scrolled off, the row recurrence is a finite-order
+        (``stencil_rows``) Markov approximation *along* the wind, so the extruded
+        field is mildly **anisotropic** at large separations: the along-wind
+        structure function runs several-to-~15% low toward the outer scale while
+        the cross-wind axis runs slightly high. Prefer ``"spectral"`` when
+        fine-scale (near-Nyquist) fidelity or large-separation isotropy matters
+        more than non-periodicity. :meth:`sample` (Monte-Carlo) is unaffected by
+        this choice.
     interp : {"cubic", "linear", "lanczos"}, optional
         Sub-pixel interpolation kernel for ``engine="extrude"``. ``"cubic"``
         (Catmull-Rom, default) is a good speed/quality balance; ``"lanczos"``
         (6-tap Lanczos-3) has a flatter sub-Nyquist response that reduces the
         extruder's finest-scale structure-function deficit and its travel-phase
         flicker (see the ``engine`` note), at the cost of more taps per readout;
-        ``"linear"`` is fastest and lowest fidelity.
+        ``"linear"`` (2-tap) is the lowest fidelity. Note that ``"cubic"`` and
+        ``"lanczos"`` run through a fused CUDA/Numba readout kernel while
+        ``"linear"`` falls back to a generic tap-broadcast gather that
+        materialises temporaries, so despite its lower tap count ``"linear"`` is
+        typically **slower**, not faster, than the default ``"cubic"`` on both
+        CPU and GPU; pick it for its low-pass character, not for speed.
     lgs_altitude : float, optional
         Altitude [m] of a laser guide star (e.g. ``90e3`` for sodium). When
         set, each layer's footprint is magnified by ``(1 - h/lgs_altitude)`` —
@@ -256,10 +275,10 @@ class Atmosphere:
       spectral cone falls back to a per-layer transform (each layer zooms
       differently), so it runs below the on-axis spectral throughput.
     - ``directions`` (off-axis/tomography) works with both engines, but every
-      requested direction must lie within the declared ``field_of_view`` (a
-      ``ValueError`` is raised otherwise, in both engines) -- construct the
-      ``Atmosphere`` with a ``field_of_view`` covering every direction you
-      plan to request.
+      requested direction's radius ``sqrt(thx**2 + thy**2)`` must lie within the
+      declared ``field_of_view`` (a ``ValueError`` is raised otherwise, in both
+      engines) -- construct the ``Atmosphere`` with a ``field_of_view`` covering
+      every direction you plan to request.
 
     Examples
     --------
@@ -301,20 +320,26 @@ class Atmosphere:
             raise ValueError("at least one layer is required")
         if (r0 is None) == (seeing is None):
             raise ValueError("give exactly one of r0 or seeing")
+        if not np.isfinite(wavelength) or wavelength <= 0:
+            raise ValueError("wavelength must be positive and finite [m]")
         if not 0.0 <= zenith_angle < 90.0:
             raise ValueError("zenith_angle must be in [0, 90) degrees")
-        if diameter <= 0 or n < 2:
-            raise ValueError("diameter must be positive and n >= 2")
+        if not np.isfinite(diameter) or diameter <= 0 or n < 2:
+            raise ValueError("diameter must be positive and finite, and n >= 2")
         if field_of_view < 0:
             raise ValueError("field_of_view must be >= 0 arcsec")
         if engine not in ("spectral", "extrude"):
             raise ValueError("engine must be 'spectral' or 'extrude'")
         if interp not in ("cubic", "linear", "lanczos"):
             raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
-        if power_law <= 2.0:
-            raise ValueError("power_law must be > 2 (Kolmogorov is 11/3)")
-        if inner_scale < 0:
-            raise ValueError("inner_scale must be >= 0 (0 disables it)")
+        if not np.isfinite(power_law) or power_law <= 2.0:
+            raise ValueError("power_law must be > 2 and finite (Kolmogorov is 11/3)")
+        if not np.isfinite(inner_scale) or inner_scale < 0:
+            raise ValueError("inner_scale must be >= 0 and finite (0 disables it)")
+        if L0 is not None and (np.isnan(L0) or L0 <= 0):
+            raise ValueError(
+                "L0 override must be positive (use numpy.inf for Kolmogorov)"
+            )
         if engine == "extrude":
             if power_law != 11.0 / 3.0:
                 raise ValueError(
@@ -366,7 +391,12 @@ class Atmosphere:
 
         self.wavelength = float(wavelength)
         if seeing is not None:
+            if not np.isfinite(seeing) or seeing <= 0:
+                raise ValueError("seeing must be positive and finite [arcsec]")
             r0 = r0_from_seeing(seeing, wavelength)
+        if not np.isfinite(r0) or r0 <= 0:
+            raise ValueError("r0 (or the r0 implied by seeing) must be positive "
+                             "and finite [m]")
         self.r0_zenith = float(r0)
         self.zenith_angle = float(zenith_angle)
         self.diameter = float(diameter)
@@ -434,11 +464,11 @@ class Atmosphere:
         self.tau_boil = tau
 
         self.xp = get_array_module(device)
+        self.seed = seed
         master = np.random.SeedSequence(seed)
         seeds = master.spawn(len(self.layers))
-        self._boil_rng = self.xp.random.default_rng(
-            int(master.spawn(1)[0].generate_state(1)[0])
-        )
+        self._boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
+        self._boil_rng = self.xp.random.default_rng(self._boil_seed)
         self._ext_boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
         self._layers: List[_LayerState] = []
         ext_r0, ext_L0, ext_wind, ext_alt, ext_seeds = [], [], [], [], []
@@ -487,8 +517,14 @@ class Atmosphere:
         # internally, so ``_lgs_mag`` stays None there). Sampling the *same*
         # realisation at magnified coordinates — not a differently-scaled draw
         # — is what makes it the focal-anisoplanatism (cone vs cylinder) error.
+        # Validate the LGS cone on *both* engines: a beacon at or below a layer
+        # gives a non-positive magnification, which collapses that layer's
+        # footprint to a point (piston) instead of modelling focal
+        # anisoplanatism. Only the spectral engine needs the precomputed
+        # per-layer magnification array (``_lgs_mag``); the extruder derives its
+        # own from ``lgs_altitude_los``, but must be rejected here just the same.
         self._lgs_mag: Optional[np.ndarray] = None
-        if lgs_altitude is not None and self.engine == "spectral":
+        if lgs_altitude is not None:
             lgs_los = float(lgs_altitude) * self.airmass
             mag = 1.0 - np.array([s.altitude_los for s in self._layers]) / lgs_los
             if np.any(mag <= 0.0):
@@ -496,9 +532,12 @@ class Atmosphere:
                     f"lgs_altitude ({lgs_altitude:.0f} m) must exceed every "
                     "layer altitude (projected to the line of sight): a layer "
                     "at or above the beacon gives a degenerate (<= 0) cone "
-                    "magnification."
+                    "magnification, which would collapse that layer's footprint "
+                    "to a point rather than model focal anisoplanatism. Rejected "
+                    "on both engine='spectral' and engine='extrude'."
                 )
-            self._lgs_mag = mag
+            if self.engine == "spectral":
+                self._lgs_mag = mag
 
         self._t = 0.0
         if self.engine == "spectral":
@@ -809,11 +848,15 @@ class Atmosphere:
             ``wind_vector * t`` metres further along the wind direction at
             ``t=0`` (the pattern is carried past the aperture by the wind,
             not translated bodily along ``+wind_vector`` in pupil
-            coordinates).
+            coordinates). ``engine="spectral"`` (default) supports arbitrary
+            random-access ``t``; ``engine="extrude"`` is **streaming**: ``t``
+            must not decrease relative to a previous ``opd``/``frames``/
+            ``evolve`` call on the same object (a decreasing ``t`` raises
+            ``ValueError``), and :meth:`reset` restarts it at ``t=0``.
         directions : sequence of (thx, thy), optional
             Off-axis directions [arcsec] from the on-axis line of sight. Each
-            component of each direction (not just the radius) must lie within
-            the ``field_of_view`` declared at construction, or the screens are
+            direction's radius ``sqrt(thx**2 + thy**2)`` must lie within the
+            ``field_of_view`` declared at construction, or the screens are
             not guaranteed to be oversized enough and the request raises
             ``ValueError`` instead of silently sampling stale/wrapped data.
             Each layer's footprint is shifted by ``altitude_los * tan(theta)``
@@ -829,12 +872,16 @@ class Atmosphere:
         xp = self.xp
         out = []
         for thx, thy in directions:
-            if abs(thx) > self.field_of_view or abs(thy) > self.field_of_view:
+            radius = float(np.hypot(thx, thy))
+            if radius > self.field_of_view:
                 raise ValueError(
-                    f"direction ({thx}, {thy}) arcsec exceeds the declared "
-                    f"field_of_view={self.field_of_view} arcsec; construct "
-                    "the Atmosphere with a field_of_view covering every "
-                    "direction you plan to request."
+                    f"direction ({thx}, {thy}) arcsec has radius {radius:.3g} "
+                    f"arcsec, exceeding the declared "
+                    f"field_of_view={self.field_of_view} arcsec (a radius). The "
+                    "screens are only oversized out to that radius, so a larger "
+                    "request would sample wrapped (spectral) or clamped "
+                    "(extrude) turbulence. Construct the Atmosphere with a "
+                    "field_of_view covering every direction you plan to request."
                 )
             ox = np.tan(thx * _ARCSEC_TO_RAD)
             oy = np.tan(thy * _ARCSEC_TO_RAD)
@@ -1095,15 +1142,27 @@ class Atmosphere:
         return self._to_opd(total, wavelength)
 
     def reset(self) -> "Atmosphere":
-        """Reset the internal clock to ``t = 0``. Returns ``self``.
+        """Reset to ``t = 0`` and restore the initial turbulence. Returns ``self``.
 
-        For ``engine="extrude"`` the extruded layers are rebuilt from their
-        seeds (wind travel is monotonic, so the run restarts identically).
+        Rewinds the internal clock and, when boiling (``tau_boil``) has run,
+        restores the pre-boil turbulence and boiling RNG so a reused atmosphere
+        replays identically. For ``engine="extrude"`` the extruded layers are
+        rebuilt from their seeds (wind travel is monotonic, so the run restarts
+        identically). For ``engine="spectral"`` frozen flow never mutates the
+        stored spectra, but boiling does, so the stacked spectra, subharmonic
+        coefficients and boiling RNG are rebuilt from the layers' fixed
+        realisations.
         """
         self._t = 0.0
         self._wrap_warned = False
         if self.engine == "extrude":
             self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
+        elif np.any(np.isfinite(self.tau_boil)):
+            # Boiling reassigns self._spectra / self._sh_coeffs in place; rebuild
+            # them from the untouched per-layer flow realisations and rewind the
+            # boil RNG so the boiled sequence repeats bit-for-bit.
+            self._boil_rng = self.xp.random.default_rng(self._boil_seed)
+            self._build_batched()
         return self
 
     @property
@@ -1113,18 +1172,32 @@ class Atmosphere:
 
     @property
     def metadata(self) -> Dict[str, Any]:
-        """The parameters that define this atmosphere, for saving with output.
+        """Provenance describing this atmosphere, for saving with output.
 
         A flat dict of scalars/strings suitable for :func:`pyturb.save`
-        headers — geometry, line-of-sight ``r0``/``L0``, engine, and the
-        integrated seeing/theta0/tau0 — so a saved OPD carries its provenance.
+        headers — geometry, line-of-sight ``r0``, the integrated
+        seeing/theta0/tau0, and the main construction parameters — so a saved
+        OPD records how it was made. This is a **descriptive summary, not a
+        full replayable checkpoint**: the per-layer profile (altitudes, Cn2
+        fractions, winds) and any evolved/boiled stochastic state are not
+        serialised here, so it cannot by itself reconstruct a specific evolved
+        frame. ``L0``/``tau_boil`` are reported only when every layer shares one
+        value (otherwise ``None``, which :func:`pyturb.save` drops).
         """
+        l0_values = {round(float(layer.L0), 9) for layer in self.layers}
+        uniform_l0 = float(self.layers[0].L0) if len(l0_values) == 1 else None
+        tau = self.tau_boil
+        if np.all(np.isfinite(tau)) and np.all(tau == tau[0]):
+            uniform_tau = float(tau[0])  # every layer boiling at one rate
+        else:
+            uniform_tau = None           # frozen, or mixed/per-layer rates
         return {
             "units": "metres",
             "pixel_scale": self.pixel_scale,
             "diameter": self.diameter,
             "n": self.n,
             "r0": self.r0_los,
+            "L0": uniform_l0,
             "wavelength": self.wavelength,
             "seeing": self.seeing,
             "theta0": self.theta0,
@@ -1132,10 +1205,20 @@ class Atmosphere:
             "zenith_angle": self.zenith_angle,
             "n_layers": len(self.layers),
             "engine": self.engine,
+            "interp": self.interp,
+            "power_law": self.power_law,
+            "inner_scale": self.inner_scale,
+            "subharmonics": self.subharmonics,
+            "field_of_view": self.field_of_view,
+            "tau_boil": uniform_tau,
             "dispersion": self.dispersion,
             "wet_fraction": self.wet_fraction,
             "lgs_altitude": (0.0 if self.lgs_altitude is None
                              else float(self.lgs_altitude)),
+            "device": self.device,
+            "dtype": self.dtype,
+            "seed": self.seed,
+            "time": self._t,
         }
 
     def __repr__(self) -> str:

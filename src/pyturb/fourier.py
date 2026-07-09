@@ -53,7 +53,11 @@ class PhaseScreen:
         power that the periodic FFT grid cannot represent. ``0`` disables.
         Each level extends spectral coverage by a further factor of 3 in
         scale; the default of 8 reproduces the Kolmogorov structure
-        function to within a few percent.
+        function to within a few percent at separations of a few pixels and up.
+        The 1-2 pixel (near-Nyquist) scales show a larger deficit (order
+        5-10%) that comes from finite grid sampling, not from subharmonic
+        depth, so quote the "few percent" figure with a >~2-4 pixel resolution
+        qualifier at the shortest scale of interest.
     power_law : float, optional
         Power-law index of the phase PSD, ``PSD ~ f^{-power_law}``. Default
         ``11/3`` (Kolmogorov, structure function ``~ r^{5/3}``). Other values
@@ -95,18 +99,20 @@ class PhaseScreen:
     ) -> None:
         if n < 2:
             raise ValueError("n must be at least 2")
-        if pixel_scale <= 0 or r0 <= 0:
-            raise ValueError("pixel_scale and r0 must be positive")
+        if not np.isfinite(pixel_scale) or pixel_scale <= 0:
+            raise ValueError("pixel_scale must be positive and finite")
+        if not np.isfinite(r0) or r0 <= 0:
+            raise ValueError("r0 must be positive and finite")
         if L0 is None:
             L0 = np.inf
-        if L0 <= 0:
+        if np.isnan(L0) or L0 <= 0:
             raise ValueError("L0 must be positive (use numpy.inf for Kolmogorov)")
         if subharmonics < 0:
             raise ValueError("subharmonics must be >= 0")
-        if power_law <= 2.0:
-            raise ValueError("power_law must be > 2 (Kolmogorov is 11/3)")
-        if inner_scale < 0:
-            raise ValueError("inner_scale must be >= 0 (0 disables it)")
+        if not np.isfinite(power_law) or power_law <= 2.0:
+            raise ValueError("power_law must be > 2 and finite (Kolmogorov is 11/3)")
+        if not np.isfinite(inner_scale) or inner_scale < 0:
+            raise ValueError("inner_scale must be >= 0 and finite (0 disables it)")
 
         self.n = int(n)
         self.pixel_scale = float(pixel_scale)

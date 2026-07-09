@@ -52,9 +52,11 @@ _fft_workers = None
 def set_fft_workers(workers: Optional[int]) -> Optional[int]:
     """Set the thread count for CPU (SciPy) FFTs; affects all pyturb objects.
 
-    ``None`` (default) is single-threaded; ``-1`` uses every core; a positive
-    integer pins that many. No effect on the GPU path (CuPy). Returns the
-    previous value.
+    ``None`` (default) is single-threaded; ``-1`` uses every core; any positive
+    integer pins that many. Other negative values follow ``scipy.fft``
+    wraparound semantics (``os.cpu_count() + 1 + workers``, e.g. ``-2`` = all
+    cores but one). ``0`` is rejected. No effect on the GPU path (CuPy). Returns
+    the previous value.
 
     >>> import pyturb                       # doctest: +SKIP
     >>> pyturb.set_fft_workers(-1)          # use all cores for CPU FFTs

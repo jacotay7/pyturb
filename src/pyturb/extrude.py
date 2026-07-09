@@ -548,6 +548,15 @@ class ExtrudedAtmosphere:
         layer_wind = list(layer_wind)
         layer_altitude_los = list(layer_altitude_los)
         n_layers = len(layer_r0)
+        if not (len(layer_L0) == len(layer_wind) == len(layer_altitude_los)
+                == n_layers):
+            raise ValueError(
+                "layer_r0, layer_L0, layer_wind and layer_altitude_los must "
+                f"have equal length (got {n_layers}, {len(layer_L0)}, "
+                f"{len(layer_wind)}, {len(layer_altitude_los)}); each is one "
+                "entry per layer, so a length mismatch would silently drop "
+                "layers when zipped."
+            )
         # A scalar broadcasts to every layer (the pre-per-layer behaviour,
         # still used directly by tests); a sequence gives each layer its own
         # off-axis reach (what Atmosphere passes, scaled by that layer's own

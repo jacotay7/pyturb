@@ -63,7 +63,9 @@ Full 9-layer Paranal atmosphere, closed-loop OPD frames/s, on an RTX 5090
 | 1024² | ~1,500 | ~600 | ~650 | ~62 | ~57 |
 
 Single-layer Monte-Carlo (`PhaseScreen.generate`) draws ~31,000 independent
-512² screens/s on the GPU (~108,000 at 256²). Run
+512² screens/s on the GPU (~108,000 at 256²) — batched, device-resident
+throughput (a batch of 64 kept on the GPU); a single default `generate()` call,
+or one that copies its result back to the host, is lower. Run
 `python -c "import pyturb; pyturb.benchmark()"` on your own machine, or
 `python benchmarks/bench_suite.py` for the full per-use-case sweep. A
 head-to-head against aotools, soapy and HCIPy lives in
@@ -89,8 +91,11 @@ head-to-head against aotools, soapy and HCIPy lives in
   mode variances, temporal PSD + power-law fit, angular decorrelation.
 - **I/O** — `pyturb.save`/`pyturb.load` for FITS (optional astropy) and
   `.npz`, with provenance metadata.
-- **GPU-optional** — every class takes `device="gpu"` (CuPy); results are
-  numerically identical to CPU (to float round-off).
+- **GPU-optional** — every class takes `device="gpu"` (CuPy); the GPU path is
+  statistically identical to CPU (validated against the same theory to
+  numerical precision). CuPy and NumPy have independent RNG streams, so a given
+  `seed` draws a *different* realisation on each backend — the guarantee is
+  matched statistics, not a bit-for-bit copy.
 - **Validated against theory** — structure function, Zernike spectrum,
   temporal PSD and angular decorrelation checked against analytic predictions
   in CI; see **[Validation](https://jacotay7.github.io/pyturb/validation/)**.

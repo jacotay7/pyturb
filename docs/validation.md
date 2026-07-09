@@ -15,8 +15,11 @@ python validation/validate.py
 
 **Structure function vs Kolmogorov.** The azimuthally-averaged phase structure
 function of an ensemble of FFT screens (subharmonic-corrected) matches
-`D(r) = 6.88 (r/r0)^{5/3}` to a few percent across the inertial range — the
-core check that the spatial statistics are right.
+`D(r) = 6.88 (r/r0)^{5/3}` to a few percent across the inertial range at
+separations of a few pixels and up — the core check that the spatial statistics
+are right. The 1-2 pixel (near-Nyquist) scales show a larger deficit (order
+5-10%) from finite grid sampling, so read the "few percent" figure with a
+>~2-4 pixel resolution qualifier at the shortest scale of interest.
 
 **Zernike spectrum vs Noll (1976).** Screens are decomposed with
 `pyturb.analysis.zernike_decompose` and the per-mode variances compared to the

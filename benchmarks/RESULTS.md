@@ -164,14 +164,17 @@ modest (~1-3%) systematic effect that needs a large ensemble to resolve.
 ## Takeaways
 
 1. **Monte-Carlo generation is a rout** — pyturb is ~1000× the pure-Python FFT
-   loops in aotools/soapy on GPU, and ~13× even on a single CPU core.
-2. **The multi-layer GPU product hits loop rate** — ~800 fps of a full 9-layer
-   512² atmosphere, the metric AO closed-loop simulation actually cares about.
+   loops in aotools/soapy on GPU (comparing pyturb's batched, device-resident
+   throughput against their single-call CPU latency), and ~13× even on a single
+   CPU core.
+2. **The multi-layer GPU product hits loop rate** — ~3,000 fps of a full
+   9-layer 512² spectral atmosphere (§2b), the metric AO closed-loop simulation
+   actually cares about.
 3. **Extrusion still wins one cell** — single-layer integer-pixel CPU stepping
    in aotools/soapy is faster per frame at small n; pyturb trades that for
    sub-pixel, any-direction, GPU generality. For the unbounded-duration case
    pyturb now ships its own ring-buffer extruder (`engine="extrude"`): a
-   non-periodic 9-layer 512² atmosphere at ~120 fps on GPU.
+   non-periodic 9-layer 512² atmosphere at ~1,700 fps on GPU (§2b).
 4. **Accuracy is comparable, not a rout** — pyturb, HCIPy and soapy score
    within each other's noise at practical ensemble sizes; pyturb's genuine
    edge is a smaller (~1%) *systematic* bias, visible only on much larger

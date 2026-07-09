@@ -13,8 +13,16 @@ the standard way to simulate wind-blown (Taylor frozen-flow) turbulence in
 adaptive-optics loops.
 
 Unlike the periodic spectral engine (:class:`pyturb.FourierFlowScreen`), this
-screen never repeats, so it is the right tool for long closed-loop runs. Two
-implementation choices make it practical at loop rate:
+screen never repeats, so it is the right tool for long closed-loop runs. The
+trade-off is a mild anisotropy: the new row is drawn jointly across the screen
+width but conditioned on only ``stencil_rows`` rows along the wind, so it is a
+finite-order Markov approximation *along* the extrusion axis. Once the initial
+FFT-seeded rows have scrolled off, the along-wind structure function therefore
+runs several-to-~15% low toward the outer scale while the cross-wind axis runs
+slightly high; the target von Kármán covariance is isotropic. Use the spectral
+engine (:class:`pyturb.PhaseScreen`) where large-separation isotropy matters
+more than non-periodicity. Two implementation choices make it practical at loop
+rate:
 
 - a **ring buffer**: new rows are extruded into pre-allocated storage and the
   window is advanced by an index, so a step costs one small mat-vec instead of
@@ -171,6 +179,10 @@ class InfinitePhaseScreen:
             raise ValueError(
                 "InfinitePhaseScreen requires a finite positive outer scale L0"
             )
+        if not np.isfinite(pixel_scale) or pixel_scale <= 0:
+            raise ValueError("pixel_scale must be positive and finite")
+        if not np.isfinite(r0) or r0 <= 0:
+            raise ValueError("r0 must be positive and finite")
         if not 1 <= stencil_rows < n:
             raise ValueError("stencil_rows must be in [1, n)")
         if interp not in ("cubic", "linear", "lanczos"):
