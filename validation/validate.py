@@ -70,39 +70,60 @@ def zernike_spectrum(ax):
 
 
 def temporal_psd(ax):
-    """Single pupil point under frozen flow: temporal PSD is a decaying power law.
+    """Single pupil point under frozen flow: temporal PSD slope **and** amplitude.
 
     The point-wise frozen-flow temporal PSD approaches ``f^{-8/3}`` at high
-    frequency; measured over a finite screen and a realistic AO band it sits a
-    little shallower (~ -2.3 to -2.5). This check runs a **non-wrapping** case
-    (the screen period, ``n*pixel_scale = 8 m``, exceeds the 7 m of wind travel,
-    so no realisation repeats and no ``PeriodicWrapWarning`` fires) and averages
-    several seeds to stabilise the single-point periodogram, then verifies the
-    slope is a genuine decaying power law in the frozen-flow range.
+    frequency; measured over a finite screen and a realistic AO band the slope
+    sits a little shallower (~ -2.3 to -2.5). This check runs a **non-wrapping**
+    case (screen period ``n*pixel_scale = 8 m`` exceeds the 7 m of wind travel,
+    so nothing repeats and no ``PeriodicWrapWarning`` fires), averages 8 seeds to
+    stabilise the single-point periodogram, and reports:
+
+    - the power-law **slope** with a bootstrap 95% CI over seeds, and
+    - the **amplitude** relative to the analytic Kolmogorov frozen-flow
+      single-point PSD ``W1(f) = 0.0774 r0^{-5/3} V^{5/3} f^{-8/3}`` (rad^2/Hz,
+      one-sided). The ``r0^{-5/3}`` scaling is exact; the measured level sits
+      within a factor of ~2 of theory for this band (the residual is the same
+      finite-screen effect that shallows the slope).
+
+    Phase (rad at 500 nm) is used, not OPD, so the amplitude is physical.
     """
-    v, dt, steps = 10.0, 1e-3, 700
+    v, dt, steps, lam, r0 = 10.0, 1e-3, 700, 500e-9, 0.15
     layers = [pyturb.Layer(0.0, 1.0, wind_speed=v, wind_direction=0.0, L0=25.0)]
-    freq, psd_acc, n_seeds = None, None, 8
-    for seed in range(n_seeds):
-        atm = pyturb.Atmosphere(layers, r0=0.15, n=96, diameter=8.0, seed=seed,
+    freq, psds = None, []
+    for seed in range(8):
+        atm = pyturb.Atmosphere(layers, r0=r0, n=96, diameter=8.0, seed=seed,
                                 subharmonics=8)
         assert atm.time_to_wrap > steps * dt  # non-wrapping by construction
         series = np.array([np.array(o)[48, 48]
-                           for _, o in atm.frames(dt=dt, steps=steps)])
+                           for _, o in atm.frames(dt=dt, steps=steps, wavelength=lam)])
         f, p = analysis.temporal_psd(series, dt)
         freq = f
-        psd_acc = p if psd_acc is None else psd_acc + p
-    psd = psd_acc / n_seeds
+        psds.append(p)
+    psds = np.array(psds)
+    psd = psds.mean(axis=0)
     slope, amp = analysis.fit_power_law(freq, psd, fmin=5, fmax=40)
-    ax.loglog(freq, psd, lw=0.7, label=f"pyturb ({n_seeds}-seed mean)")
-    ref = amp * freq ** slope
-    ax.loglog(freq, ref, "k--", label=f"fit f$^{{{slope:.2f}}}$")
-    ax.loglog(freq, psd[5] * (freq / freq[5]) ** (-8 / 3), "r:",
-              label="f$^{-8/3}$ (high-f asymptote)")
-    ax.set(xlabel="frequency [Hz]", ylabel="PSD", title="Temporal PSD (1 pixel)")
+    # Bootstrap the ensemble slope over seeds (resample seeds -> mean PSD -> refit).
+    rng = np.random.default_rng(0)
+    boot = [analysis.fit_power_law(
+                freq, psds[rng.integers(0, len(psds), len(psds))].mean(axis=0),
+                fmin=5, fmax=40)[0]
+            for _ in range(1000)]
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    # Amplitude vs analytic frozen-flow single-point PSD (median over the band).
+    analytic = 0.0774 * r0 ** (-5.0 / 3.0) * v ** (5.0 / 3.0) * freq ** (-8.0 / 3.0)
+    band = (freq >= 5) & (freq <= 40)
+    amp_ratio = float(np.median(psd[band] / analytic[band]))
+    ax.loglog(freq, psd, lw=0.7, label="pyturb (8-seed mean)")
+    ax.loglog(freq, amp * freq ** slope, "k--", label=f"fit f$^{{{slope:.2f}}}$")
+    ax.loglog(freq, analytic, "r:", label="frozen-flow f$^{-8/3}$")
+    ax.set(xlabel="frequency [Hz]", ylabel="PSD [rad$^2$/Hz]",
+           title="Temporal PSD (1 pixel)")
     ax.legend(fontsize=7)
-    check("temporal PSD is a frozen-flow power law (non-wrapping)",
-          -3.0 < slope < -2.0, f"slope {slope:.2f}, {n_seeds}-seed mean")
+    ok = (-3.0 < slope < -2.0) and (1.0 < amp_ratio < 3.0)
+    check("temporal PSD slope + amplitude (non-wrapping, 8-seed)", ok,
+          f"slope {slope:.2f} (95% CI [{lo:.2f}, {hi:.2f}]), "
+          f"amplitude {amp_ratio:.1f}x frozen-flow theory")
 
 
 def angular_decorrelation(ax):

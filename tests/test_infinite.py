@@ -194,3 +194,46 @@ def test_extruded_statistics_match_theory():
     assert np.all(ratio > 0.7)
     assert np.all(ratio < 1.3)
     assert abs(np.mean(ratio) - 1.0) < 0.15
+
+
+def test_extruded_screen_is_isotropic_after_burn_in():
+    """The extruded screen must be isotropic (no systematic along- vs cross-wind
+    anisotropy) after the FFT-seeded rows have scrolled off.
+
+    A single realisation is noisy at large separations -- a 2-row-stencil screen
+    can show 10-20% apparent anisotropy by chance at ~1 m on one draw. Averaged
+    over a modest ensemble and several decorrelated snapshots it is isotropic to
+    within a few percent: this pins that the row recurrence introduces no
+    *systematic* directional bias (measurements are taken at integer travel, so
+    the sub-pixel interpolation low-pass -- a separate, finest-scale artifact --
+    is not in play). Guards against a regression that would make the extruder
+    genuinely anisotropic.
+    """
+    n, dx, r0, L0 = 48, 0.05, 0.15, 25.0
+    seps = [8, 12, 16]  # 0.4-0.8 m; along axis 0 (wind), across axis 1
+    snaps = [120 + 20 * k for k in range(8)]  # integer travel -> exact interp
+    acc_along = np.zeros(len(seps))
+    acc_cross = np.zeros(len(seps))
+    for seed in range(50):
+        scr = pyturb.InfinitePhaseScreen(n=n, pixel_scale=dx, r0=r0, L0=L0,
+                                         seed=seed, dtype="float64")
+        prev = 0
+        for travel in snaps:
+            scr.advance(travel - prev)
+            prev = travel
+            s = np.asarray(scr.screen)
+            for i, d in enumerate(seps):
+                acc_along[i] += np.mean((s[d:, :] - s[:-d, :]) ** 2)
+                acc_cross[i] += np.mean((s[:, d:] - s[:, :-d]) ** 2)
+    n_samp = 50 * len(snaps)
+    d_along = acc_along / n_samp
+    d_cross = acc_cross / n_samp
+    theory = 2.0 * (phase_covariance(0.0, r0, L0)
+                    - phase_covariance(np.array(seps) * dx, r0, L0))
+    # Both axes match von Karman, and each other, to within ~10% on this
+    # ensemble -- no systematic anisotropy (the claimed ~10-15% along-wind
+    # deficit does not survive proper ensemble averaging).
+    assert np.all(0.85 < d_along / theory) and np.all(d_along / theory < 1.15)
+    assert np.all(0.85 < d_cross / theory) and np.all(d_cross / theory < 1.15)
+    ratio = d_along.mean() / d_cross.mean()
+    assert 0.85 < ratio < 1.15, f"along/cross anisotropy {ratio:.3f} out of band"

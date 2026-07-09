@@ -36,7 +36,9 @@ _trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
 __all__ = [
     "Layer",
+    "ProfileInfo",
     "get_profile",
+    "profile_info",
     "list_profiles",
     "hufnagel_valley",
     "bufton_wind",
@@ -214,6 +216,105 @@ _PROFILES = {
 }
 
 
+@dataclass(frozen=True)
+class ProfileInfo:
+    """Machine-readable provenance for a named profile.
+
+    The prose in each profile-building function's comment, made queryable and
+    serialisable so a saved OPD can carry *where its atmosphere came from* and
+    how much to trust it.
+
+    Attributes
+    ----------
+    name : str
+        The profile key (as passed to :func:`get_profile`).
+    traceable : bool
+        ``True`` if the Cn2/altitude layers reproduce a specific published
+        table (or an analytic model); ``False`` for a representative
+        discretisation that only follows the general shape of a site's
+        statistics.
+    source : str
+        Citation for a traceable profile, or a short description of what a
+        representative one is modelled on.
+    site : str
+        Observatory/site (or "illustrative" for teaching profiles).
+    outer_scale : float or None
+        The uniform per-layer outer scale ``L0`` [m], or ``None`` if it varies.
+    wind_direction_measured : bool
+        Always ``False`` here: none of the sources tabulate per-layer wind
+        *direction*, so every profile's directions are illustrative placeholders.
+    caveat : str
+        One-line summary of the representativeness/uncertainty to carry with
+        results.
+    """
+
+    name: str
+    traceable: bool
+    source: str
+    site: str
+    outer_scale: Union[float, None]
+    wind_direction_measured: bool
+    caveat: str
+
+
+_REPRESENTATIVE = ("representative discretisation (general shape of the site's "
+                   "published statistics), not a reproduction of one table; "
+                   "wind direction illustrative")
+_CITED = "traceable to the cited table; wind direction not in the source (illustrative)"
+
+_PROFILE_INFO = {
+    "single-layer": ProfileInfo(
+        "single-layer", False, "illustrative single ground layer", "illustrative",
+        25.0, False, "teaching/smoke-test, not a site model; wind illustrative"),
+    "two-layer": ProfileInfo(
+        "two-layer", False, "illustrative ground + jet-stream layer", "illustrative",
+        25.0, False, "teaching case, not a site model; wind illustrative"),
+    "paranal-median": ProfileInfo(
+        "paranal-median", False,
+        "shape of published Paranal median turbulence statistics",
+        "Paranal (VLT)", 25.0, False, _REPRESENTATIVE),
+    "mauna-kea": ProfileInfo(
+        "mauna-kea", True,
+        "Guyon (2005) ApJ 629, 592, from Tokovinin et al. (2005) PASP 117, 395",
+        "Mauna Kea", 10.0, False, _CITED + "; 6 layers, no ground layer, uniform 10 m/s"),
+    "keck": ProfileInfo(
+        "keck", True, "Keck AO note KAON 303", "Mauna Kea (Keck)", 20.0, False, _CITED),
+    "las-campanas": ProfileInfo(
+        "las-campanas", True,
+        "Males et al. (2018) JATIS 4, 019001 (Prieto 2010; Thomas-Osip 2011)",
+        "Las Campanas (Magellan/GMT)", 25.0, False, _CITED),
+    "cerro-pachon": ProfileInfo(
+        "cerro-pachon", False,
+        "shape of Tokovinin & Travouillon (2006) MNRAS 365, 1235 model",
+        "Cerro Pachon (~2715 m)", 25.0, False, _REPRESENTATIVE),
+    "armazones": ProfileInfo(
+        "armazones", False,
+        "shape of ESO/Sarazin Cerro Armazones site-testing statistics",
+        "Cerro Armazones (ELT, ~3060 m)", 25.0, False, _REPRESENTATIVE),
+    "hv57": ProfileInfo(
+        "hv57", True,
+        "Hufnagel-Valley 5/7 analytic Cn2 model + Bufton wind profile",
+        "analytic model", None, False,
+        "analytic HV 5/7 model discretised into layers, not a site survey"),
+}
+
+
+def profile_info(name: str) -> ProfileInfo:
+    """Return the :class:`ProfileInfo` provenance record for a named profile.
+
+    >>> profile_info("mauna-kea").traceable
+    True
+    >>> profile_info("paranal-median").traceable
+    False
+    """
+    key = str(name).lower()
+    if key not in _PROFILE_INFO:
+        raise ValueError(
+            f"Unknown profile {name!r}. Available: {list_profiles()}."
+        )
+    return _PROFILE_INFO[key]
+
+
 def list_profiles() -> List[str]:
     """Names accepted by :func:`get_profile` and ``Atmosphere.from_profile``."""
     return sorted(_PROFILES)
@@ -232,7 +333,8 @@ def get_profile(name: str) -> List[Layer]:
     ``"armazones"``, ``"single-layer"`` and ``"two-layer"`` are
     representative/illustrative rather than a specific cited site survey. Wind
     *direction* is illustrative in every profile — none of the cited sources
-    tabulate it.
+    tabulate it. Call :func:`profile_info` for the machine-readable provenance
+    (source, traceable flag, site, caveat) of any named profile.
     """
     key = str(name).lower()
     if key not in _PROFILES:

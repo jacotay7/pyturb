@@ -37,6 +37,15 @@ def air_refractivity(wavelength: ArrayLike) -> Union[float, np.ndarray]:
     achromatic path length. Temperature/pressure scale ``n - 1`` overall and so
     cancel in that ratio; only the dispersion shape matters here.
 
+    Validity: the Edlén (1966) formula is established over ~0.23-1.7 µm. Its
+    dispersion *ratio* (the only thing used here) agrees with the independent
+    Ciddor (1996) standard-air formula to < 0.05 % over 0.35-1.7 µm and stays
+    within ~0.1 % out to ~2.5 µm, so the ratio is reliable somewhat past the
+    nominal range; the limiting factor for thermal-IR / interferometric work is
+    not the dry-air dispersion shape but the wet/dry split and the
+    weather-independent ``wet_fraction`` (see :func:`water_vapour_refractivity`
+    and the ``dispersion`` argument of :class:`pyturb.Atmosphere`).
+
     Parameters
     ----------
     wavelength : float or array_like
@@ -74,6 +83,15 @@ def water_vapour_refractivity(wavelength: ArrayLike) -> Union[float, np.ndarray]
     mid-IR the dry term flattens while the wet term keeps more structure. That
     divergence is the "wet–dry" problem in interferometry, where the
     water-vapour contribution to the turbulent OPD dominates.
+
+    Validity: the Ciddor (1996) water-vapour dispersion is established over
+    ~0.35-1.7 µm (extrapolated beyond). It gives only the dispersion *shape*;
+    the density weighting (partial pressure, temperature) and the split between
+    wet and dry turbulent refractivity are **not** modelled from weather inputs
+    — the caller supplies a single scalar ``wet_fraction`` (see the
+    ``dispersion``/``wet_fraction`` arguments of :class:`pyturb.Atmosphere`),
+    which is the real accuracy limit for thermal-IR / interferometric OPD, not
+    the dispersion formula itself.
 
     Parameters
     ----------

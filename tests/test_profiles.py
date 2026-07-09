@@ -19,6 +19,41 @@ def test_named_profiles_load_and_are_nonempty():
 def test_unknown_profile_raises():
     with pytest.raises(ValueError):
         pyturb.get_profile("does-not-exist")
+    with pytest.raises(ValueError):
+        pyturb.profile_info("does-not-exist")
+
+
+def test_every_profile_has_provenance():
+    """Each named profile must carry a serialisable provenance record, and the
+    traceable/representative distinction must match reality."""
+    for name in pyturb.list_profiles():
+        info = pyturb.profile_info(name)
+        assert info.name == name
+        assert isinstance(info.source, str) and info.source
+        assert isinstance(info.caveat, str) and info.caveat
+        assert info.wind_direction_measured is False  # no source tabulates it
+    # Cited-table profiles are traceable; representative/teaching ones are not.
+    assert pyturb.profile_info("mauna-kea").traceable
+    assert pyturb.profile_info("keck").traceable
+    assert pyturb.profile_info("las-campanas").traceable
+    assert not pyturb.profile_info("paranal-median").traceable
+    assert not pyturb.profile_info("cerro-pachon").traceable
+    assert not pyturb.profile_info("two-layer").traceable
+
+
+def test_metadata_records_profile_provenance():
+    """from_profile records the profile name + provenance in metadata; a direct
+    build (no named profile) reports None for those fields."""
+    atm = pyturb.Atmosphere.from_profile("mauna-kea", seeing=0.8, n=32, seed=1)
+    md = atm.metadata
+    assert md["profile"] == "mauna-kea"
+    assert md["profile_traceable"] is True
+    assert "Guyon" in md["profile_source"]
+    assert md["profile_site"] == "Mauna Kea"
+
+    direct = pyturb.Atmosphere(pyturb.get_profile("two-layer"), seeing=0.8, n=32)
+    assert direct.metadata["profile"] is None
+    assert direct.metadata["profile_source"] is None
 
 
 @pytest.mark.parametrize("name", ["cerro-pachon", "armazones"])

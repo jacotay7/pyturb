@@ -30,6 +30,7 @@ from .infinite import InfinitePhaseScreen, phase_covariance
 from .io import load, save
 from .profiles import (
     Layer,
+    ProfileInfo,
     bufton_wind,
     coherence_time,
     discretize_cn2,
@@ -40,6 +41,7 @@ from .profiles import (
     isoplanatic_angle,
     list_profiles,
     mean_turbulence_height,
+    profile_info,
 )
 from .utils import (
     air_refractivity,
@@ -68,6 +70,8 @@ __all__ = [
     "phase_covariance",
     "structure_function",
     "get_profile",
+    "profile_info",
+    "ProfileInfo",
     "list_profiles",
     "hufnagel_valley",
     "bufton_wind",

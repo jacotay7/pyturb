@@ -96,6 +96,49 @@ def test_water_vapour_refractivity_dispersion():
     assert abs(wet_ratio - dry_ratio) > 1e-3
 
 
+def test_dispersion_matches_reference_standards():
+    """Validate the dispersion against an *independent* standard, not just
+    internal consistency.
+
+    pyturb's `air_refractivity` is the Edlén (1966) dry-air formula. The Ciddor
+    (1996) standard-air dispersion is a different published formula; the
+    chromatic OPD only uses the *ratio* to the reference wavelength, and the two
+    standards' ratios must agree tightly across the visible--NIR.
+    """
+    def ciddor_dry(lam_m):  # Ciddor (1996) standard-air dispersion, (n-1)
+        s2 = (1.0 / (np.asarray(lam_m) * 1e6)) ** 2
+        return (5792105.0 / (238.0185 - s2) + 167917.0 / (57.362 - s2)) * 1e-8
+
+    # Absolute refractivity anchored to the literature value for standard dry
+    # air at 633 nm (HeNe), n - 1 ≈ 2.765e-4.
+    assert pyturb.air_refractivity(633e-9) == pytest.approx(2.765e-4, rel=2e-3)
+
+    ref = 500e-9
+    lams = np.array([350, 400, 633, 800, 1000, 1300, 1700]) * 1e-9
+    edlen_ratio = pyturb.air_refractivity(lams) / pyturb.air_refractivity(ref)
+    ciddor_ratio = ciddor_dry(lams) / ciddor_dry(ref)
+    # Two independent standards agree to < 0.05 % over 0.35–1.7 µm.
+    np.testing.assert_allclose(edlen_ratio, ciddor_ratio, rtol=5e-4)
+
+    # The water-vapour term reproduces the Ciddor (1996) wv dispersion exactly.
+    def ciddor_wv(lam_m):
+        s2 = (1.0 / (np.asarray(lam_m) * 1e6)) ** 2
+        return 1.022e-8 * (295.235 + 2.6422 * s2 - 0.032380 * s2 ** 2
+                           + 0.004028 * s2 ** 3)
+    wv = pyturb.water_vapour_refractivity(lams)
+    np.testing.assert_allclose(wv, ciddor_wv(lams), rtol=1e-6)
+
+    # The wet/dry chromatic split is a real, growing effect into the IR: the
+    # wet and dry dispersion ratios (both normalised to the reference) diverge
+    # more at longer wavelength.
+    def split(lam):
+        dry = pyturb.air_refractivity(lam) / pyturb.air_refractivity(ref)
+        wet = (pyturb.water_vapour_refractivity(lam)
+               / pyturb.water_vapour_refractivity(ref))
+        return abs(wet - dry)
+    assert split(2200e-9) > split(800e-9) > 0.0  # divergence grows into IR
+
+
 def test_ciddor_dry_equals_edlen():
     """dispersion='ciddor' with wet_fraction=0 is exactly the dry-air model."""
     kw = dict(seeing=0.8, n=32, seed=1)

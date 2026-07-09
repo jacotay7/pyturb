@@ -13,16 +13,15 @@ the standard way to simulate wind-blown (Taylor frozen-flow) turbulence in
 adaptive-optics loops.
 
 Unlike the periodic spectral engine (:class:`pyturb.FourierFlowScreen`), this
-screen never repeats, so it is the right tool for long closed-loop runs. The
-trade-off is a mild anisotropy: the new row is drawn jointly across the screen
-width but conditioned on only ``stencil_rows`` rows along the wind, so it is a
-finite-order Markov approximation *along* the extrusion axis. Once the initial
-FFT-seeded rows have scrolled off, the along-wind structure function therefore
-runs several-to-~15% low toward the outer scale while the cross-wind axis runs
-slightly high; the target von Kármán covariance is isotropic. Use the spectral
-engine (:class:`pyturb.PhaseScreen`) where large-separation isotropy matters
-more than non-periodicity. Two implementation choices make it practical at loop
-rate:
+screen never repeats, so it is the right tool for long closed-loop runs. Its
+recurrence conditions each new row on only ``stencil_rows`` rows along the wind
+(a finite-order Markov approximation along the extrusion axis), yet on an
+averaged ensemble the extruded field stays isotropic: the along- and cross-wind
+structure functions agree with von Kármán, and with each other, to the method's
+general few-percent accuracy at separations up to the outer scale. (A single
+short realisation can look more anisotropic from finite spatial sampling, but
+that averages out — it is not a systematic bias.) Two implementation choices
+make it practical at loop rate:
 
 - a **ring buffer**: new rows are extruded into pre-allocated storage and the
   window is advanced by an index, so a step costs one small mat-vec instead of

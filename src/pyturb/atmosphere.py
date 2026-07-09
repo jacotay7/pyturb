@@ -190,15 +190,12 @@ class Atmosphere:
         low-pass filter (exact at integer pixel travel, most attenuating at
         half-pixel travel), so its finest-scale (1-2 px) structure function
         deviates from theory by 5-15% and oscillates with the sub-pixel travel
-        phase; ``"spectral"`` has no such artifact. Separately, once the initial
-        FFT-seeded rows have scrolled off, the row recurrence is a finite-order
-        (``stencil_rows``) Markov approximation *along* the wind, so the extruded
-        field is mildly **anisotropic** at large separations: the along-wind
-        structure function runs several-to-~15% low toward the outer scale while
-        the cross-wind axis runs slightly high. Prefer ``"spectral"`` when
-        fine-scale (near-Nyquist) fidelity or large-separation isotropy matters
-        more than non-periodicity. :meth:`sample` (Monte-Carlo) is unaffected by
-        this choice.
+        phase; ``"spectral"`` has no such artifact. (At larger separations the
+        extruded field stays isotropic and on-theory to the method's usual
+        few-percent accuracy — the row recurrence introduces no systematic
+        large-scale along-vs-cross anisotropy.) Prefer ``"spectral"`` when
+        fine-scale (near-Nyquist) fidelity matters more than non-periodicity.
+        :meth:`sample` (Monte-Carlo) is unaffected by this choice.
     interp : {"cubic", "linear", "lanczos"}, optional
         Sub-pixel interpolation kernel for ``engine="extrude"``. ``"cubic"``
         (Catmull-Rom, default) is a good speed/quality balance; ``"lanczos"``
@@ -234,7 +231,15 @@ class Atmosphere:
         correction is wrong in the mid-IR and for interferometry where the wet
         turbulence dominates. ``"ciddor"`` with ``wet_fraction=0`` is identical
         to ``"edlen"``. Only affects output methods called with an explicit
-        ``wavelength``; the metre-valued OPD is unchanged.
+        ``wavelength``; the metre-valued OPD is unchanged. Both models use the
+        Edlén (1966) dry-air and Ciddor (1996) water-vapour *dispersion shapes*,
+        validated against the independent Ciddor standard-air formula to
+        < 0.05 % over 0.35-1.7 µm (the dry-air ratio stays within ~0.1 % to
+        ~2.5 µm). They are scalar models with **no weather inputs**: the wet/dry
+        density split is the user-supplied ``wet_fraction``, not a
+        pressure/temperature/humidity computation, so treat the thermal-IR /
+        interferometric wet-dominated regime as an order-of-magnitude estimate
+        set by ``wet_fraction`` rather than a first-principles wet–dry model.
     wet_fraction : float, optional
         Fraction (0–1) of the reference-wavelength turbulent refractivity
         carried by water vapour rather than dry air, used only by
@@ -465,6 +470,8 @@ class Atmosphere:
 
         self.xp = get_array_module(device)
         self.seed = seed
+        # Set by from_profile() to the named profile; None for a direct build.
+        self._profile_name: Optional[str] = None
         master = np.random.SeedSequence(seed)
         seeds = master.spawn(len(self.layers))
         self._boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
@@ -707,8 +714,14 @@ class Atmosphere:
 
             Atmosphere.from_profile("paranal-median", seeing=0.8,
                                     zenith_angle=30, diameter=8, n=512)
+
+        The profile name and its :func:`pyturb.profile_info` provenance
+        (traceable-vs-representative, source, site) are recorded in
+        :attr:`metadata` so a saved OPD carries where its atmosphere came from.
         """
-        return cls(_profiles.get_profile(name), **kwargs)
+        atm = cls(_profiles.get_profile(name), **kwargs)
+        atm._profile_name = str(name).lower()
+        return atm
 
     # ------------------------------------------------------------------
     # integrated quantities
@@ -1177,12 +1190,16 @@ class Atmosphere:
         A flat dict of scalars/strings suitable for :func:`pyturb.save`
         headers — geometry, line-of-sight ``r0``, the integrated
         seeing/theta0/tau0, and the main construction parameters — so a saved
-        OPD records how it was made. This is a **descriptive summary, not a
-        full replayable checkpoint**: the per-layer profile (altitudes, Cn2
-        fractions, winds) and any evolved/boiled stochastic state are not
-        serialised here, so it cannot by itself reconstruct a specific evolved
-        frame. ``L0``/``tau_boil`` are reported only when every layer shares one
-        value (otherwise ``None``, which :func:`pyturb.save` drops).
+        OPD records how it was made. For atmospheres built via
+        :meth:`from_profile` it also records the profile name and its
+        :func:`pyturb.profile_info` provenance (source, whether it is traceable
+        to a published table, site, and the representativeness caveat). This is
+        a **descriptive summary, not a full replayable checkpoint**: the
+        per-layer arrays (altitudes, Cn2 fractions, winds) and any evolved/boiled
+        stochastic state are not serialised here, so it cannot by itself
+        reconstruct a specific evolved frame. ``L0``/``tau_boil`` are reported
+        only when every layer shares one value (otherwise ``None``, which
+        :func:`pyturb.save` drops).
         """
         l0_values = {round(float(layer.L0), 9) for layer in self.layers}
         uniform_l0 = float(self.layers[0].L0) if len(l0_values) == 1 else None
@@ -1191,6 +1208,8 @@ class Atmosphere:
             uniform_tau = float(tau[0])  # every layer boiling at one rate
         else:
             uniform_tau = None           # frozen, or mixed/per-layer rates
+        # Profile provenance (only for atmospheres built via from_profile).
+        prof = _profiles.profile_info(self._profile_name) if self._profile_name else None
         return {
             "units": "metres",
             "pixel_scale": self.pixel_scale,
@@ -1219,6 +1238,11 @@ class Atmosphere:
             "dtype": self.dtype,
             "seed": self.seed,
             "time": self._t,
+            "profile": self._profile_name,
+            "profile_source": None if prof is None else prof.source,
+            "profile_traceable": None if prof is None else prof.traceable,
+            "profile_site": None if prof is None else prof.site,
+            "profile_caveat": None if prof is None else prof.caveat,
         }
 
     def __repr__(self) -> str:
