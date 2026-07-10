@@ -44,9 +44,9 @@ RTX 5090 + 32-core CPU (`pyturb[accel]`), 8 m pupil, 512² pupil, von Kármán
 
 | metric | pyturb (GPU / CPU) | aotools | soapy | HCIPy |
 |---|---:|---:|---:|---:|
-| Generation, batched (screens/s) | 30,700 / 210 | 12 | 12 | n/a |
+| Generation, batched (screens/s) | 30,629 / 286 | 12 | 12 | n/a |
 | Frozen flow, 1-layer (fps) | 5,700 / 670 | 5,083 | 5,034 | 52 |
-| Frozen flow, 9-layer atmosphere (fps) | 3,100 / 270 | — | — | — |
+| Frozen flow, 9-layer atmosphere (fps) | 3,133 / 283 | — | — | — |
 | Structure-function error vs von Kármán (256², ensemble) | 1.2% | 3.1% | 1.5% | 0.8% |
 
 `n/a` = no batched i.i.d.-generation entry point; `—` = not offered by that

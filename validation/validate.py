@@ -183,6 +183,75 @@ def extruder_stationarity(ax):
     check("extruder long-run stationarity", drift < 0.1, f"{drift*100:.1f}% drift")
 
 
+def finite_resolution(ax):
+    """Finite-grid structure-function ratio at 1, 2, 4, and 8 pixels."""
+    n, D, r0 = 256, 8.0, 0.15
+    pixel_scale = D / n
+    gen = pyturb.PhaseScreen(
+        n=n, pixel_scale=pixel_scale, r0=r0, L0=np.inf, seed=31, dtype="float64"
+    )
+    acc = None
+    for _ in range(80):
+        r, d = pyturb.structure_function(gen.generate(), pixel_scale)
+        acc = d if acc is None else acc + d
+    measured = acc / 80
+    theory = 6.88 * (r / r0) ** (5.0 / 3.0)
+    pixels = np.array([1, 2, 4, 8])
+    ratio = measured[pixels - 1] / theory[pixels - 1]
+    ax.semilogx(pixels, ratio, "o-", label="pyturb / Kolmogorov")
+    ax.axhline(1.0, color="k", linestyle="--", lw=0.8, label="theory")
+    ax.set(
+        xlabel="separation [pixels]",
+        ylabel="structure-function ratio",
+        title="Finite-screen resolution",
+        xticks=pixels,
+        ylim=(0.8, 1.05),
+    )
+    ax.legend(fontsize=7)
+    ok = np.all(ratio > np.array([0.85, 0.9, 0.92, 0.92])) and np.all(ratio < 1.08)
+    check(
+        "finite-screen resolution at 1–8 pixels",
+        ok,
+        "ratios " + ", ".join(f"{value:.3f}" for value in ratio),
+    )
+
+
+def zenith_projection(ax):
+    """Scalar airmass model: r0, theta0, and layer range scale with zenith."""
+    angles = np.array([0.0, 30.0, 60.0])
+    r0, theta0, altitude = [], [], []
+    for angle in angles:
+        atm = pyturb.Atmosphere.from_profile(
+            "paranal-median", seeing=0.8, n=32, diameter=8.0,
+            zenith_angle=float(angle), seed=0,
+        )
+        r0.append(atm.r0)
+        theta0.append(atm.theta0)
+        altitude.append(atm._layers[-1].altitude_los)
+    cosine = np.cos(np.deg2rad(angles))
+    r0_ratio = np.asarray(r0) / r0[0]
+    theta0_ratio = np.asarray(theta0) / theta0[0]
+    range_ratio = np.asarray(altitude) / altitude[0]
+    ax.plot(angles, r0_ratio, "o", label="r$_0$")
+    ax.plot(angles, theta0_ratio, "s", label="θ$_0$")
+    ax.plot(angles, range_ratio, "^", label="layer range")
+    ax.plot(angles, cosine ** (3.0 / 5.0), "C0--", lw=0.8)
+    ax.plot(angles, cosine ** (8.0 / 5.0), "C1--", lw=0.8)
+    ax.plot(angles, 1.0 / cosine, "C2--", lw=0.8)
+    ax.set(
+        xlabel="zenith angle [deg]",
+        ylabel="ratio to zenith",
+        title="Scalar zenith projection",
+    )
+    ax.legend(fontsize=7)
+    ok = (
+        np.allclose(r0_ratio, cosine ** (3.0 / 5.0), rtol=1e-12)
+        and np.allclose(theta0_ratio, cosine ** (8.0 / 5.0), rtol=1e-12)
+        and np.allclose(range_ratio, 1.0 / cosine, rtol=1e-12)
+    )
+    check("scalar zenith projection", ok, "r0 cos^(3/5), theta0 cos^(8/5), range sec(z)")
+
+
 def _parse_args(argv: Optional[Sequence[str]] = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -228,19 +297,22 @@ def _source_provenance():
 def main(argv: Optional[Sequence[str]] = None):
     args = _parse_args(argv)
     RESULTS.clear()
-    fig, axes = plt.subplots(2, 3, figsize=(13, 7.5))
+    fig, axes = plt.subplots(3, 3, figsize=(13, 10.5))
     structure_function(axes[0, 0])
     zernike_spectrum(axes[0, 1])
     temporal_psd(axes[0, 2])
     angular_decorrelation(axes[1, 0])
     extruder_stationarity(axes[1, 1])
-    axes[1, 2].axis("off")
+    finite_resolution(axes[1, 2])
+    zenith_projection(axes[2, 0])
+    axes[2, 1].axis("off")
+    axes[2, 2].axis("off")
     summary = "\n".join(
         f"{'PASS' if result['passed'] else 'FAIL'}  {result['name']}"
         for result in RESULTS
     )
-    axes[1, 2].text(0.02, 0.95, "pyturb validation\n\n" + summary, va="top",
-                    family="monospace", fontsize=9, transform=axes[1, 2].transAxes)
+    axes[2, 1].text(0.02, 0.95, "pyturb validation\n\n" + summary, va="top",
+                    family="monospace", fontsize=9, transform=axes[2, 1].transAxes)
     fig.suptitle(f"pyturb {pyturb.__version__} — turbulence validated against theory",
                  fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.97))

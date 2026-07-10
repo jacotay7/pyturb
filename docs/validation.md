@@ -44,6 +44,15 @@ secular drift over thousands of steps (guarding against conditional-covariance
 error accumulation). The fast wiggle is the physical beating of the few
 large-scale modes a small screen contains, not drift.
 
+**Finite-screen resolution.** The structure-function/theory ratio at 1, 2, 4,
+and 8 pixels makes the documented near-Nyquist finite-grid deficit explicit;
+the resolved 4–8 pixel scales remain close to theory.
+
+**Zenith projection.** The scalar airmass approximation is checked directly:
+`r0` scales as `cos(z)^(3/5)`, layer range as `sec(z)`, and therefore `theta0`
+as `cos(z)^(8/5)`. This validates the implemented scalar model, not an
+anisotropic slant-path coordinate transform.
+
 ## Reproducing
 
 The script uses only pyturb, NumPy and Matplotlib, and by default writes

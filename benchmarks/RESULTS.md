@@ -12,6 +12,12 @@ Regenerate with:
 python benchmarks/bench_compare.py --json results.json
 ```
 
+For pyturb's own throughput rows, capture the release evidence with
+`python benchmarks/bench_suite.py --json benchmarks/artifacts/<name>.json`.
+The JSON records the command, commit, runtime, dependencies, device selection,
+batch size, and timing budget alongside every measurement; use it as the source
+for future table updates rather than transcribing terminal output.
+
 ## Machine of record
 
 | | |
@@ -20,7 +26,7 @@ python benchmarks/bench_compare.py --json results.json
 | CuPy / CUDA | 13.6.0 / 12.x |
 | CPU | 32-core; SciPy 1.16 / NumPy 2.2; Numba 0.63 (`pyturb[accel]`) |
 | Python | 3.12 |
-| pyturb | 0.2.0 |
+| pyturb | 1.0.0 (release artifact revision recorded below) |
 | aotools | 0.1.dev477 |
 | soapy | 0.15.0 |
 | HCIPy | 0.7.0 |
@@ -81,17 +87,18 @@ CPU rows use the optional `pyturb[accel]` (Numba) extra.
 
 | configuration | fps |
 |---|---:|
-| pyturb spectral, GPU (periodic) | 3,213 |
-| pyturb extrude, GPU (non-periodic — the engine long runs need) | 1,729 |
-| pyturb spectral + boiling, GPU | 2,198 |
-| pyturb extrude, CPU (Numba accel) | 425 |
-| pyturb spectral, CPU, `set_fft_workers(-1)` | 310 |
+| pyturb spectral, GPU (periodic) | 3,133 |
+| pyturb extrude, GPU (non-periodic — the engine long runs need) | 1,733 |
+| pyturb spectral + boiling, GPU | 2,134 |
+| pyturb extrude, CPU (Numba accel) | 324 |
 | pyturb spectral, CPU (Numba accel) | 283 |
 | pyturb spectral + boiling, CPU | 21 |
 | aotools, 9x `add_row` + sum, CPU (integer-pixel, axis-aligned) | 422 † |
 | HCIPy, 9-layer `evolve_until`+`phase_for`, CPU (sub-pixel, non-periodic) | 5.7 † |
 
-pyturb rows are regenerated from `bench_suite.py` on the machine of record;
+pyturb rows are recorded in
+[`artifacts/v1.0.0-reference.json`](artifacts/v1.0.0-reference.json), generated
+by `bench_suite.py` on the machine of record;
 the aotools/HCIPy rows (†) are from the separate `bench_compare.py` harness and
 are indicative cross-references, not part of the same run.
 
@@ -105,17 +112,14 @@ Reading this honestly:
 - On CPU, the same 9-layer job runs at ~283 fps on the spectral engine — within
   ~1.5x of the indicative aotools loop (422 fps) built from integer-pixel,
   axis-aligned steps, while doing exact sub-pixel, arbitrary-direction motion
-  the aotools loop cannot. `set_fft_workers(-1)` gives a modest ~10% gain here
-  (~310 fps): at 512² the single inverse FFT is a large enough slice of the
-  per-frame cost that threading it across cores pays for its dispatch overhead
-  (the gain grows at 1024² and for large Monte-Carlo batches).
-- The non-periodic engine (`engine="extrude"`) costs ~1.9x throughput relative
-  to the periodic one on GPU (1,729 vs 3,213 fps). On **CPU it is now the
-  faster of the two** (425 vs 283 fps): its fused Numba readout — a per-frame
+  the aotools loop cannot.
+- The non-periodic engine (`engine="extrude"`) costs ~1.8x throughput relative
+  to the periodic one on GPU (1,733 vs 3,133 fps). On **CPU it is now the
+  faster of the two** (324 vs 283 fps): its fused Numba readout — a per-frame
   rotated-gather over the ring buffer — beats a 512² inverse FFT on 32 cores,
   and it is ~75x HCIPy's pure-Python non-periodic equivalent (5.7 fps) for the
   same non-periodic, sub-pixel, any-direction job.
-- Boiling costs ~30% of GPU throughput (3,213→2,198 fps) but far more on CPU
+- Boiling costs ~32% of GPU throughput (3,133→2,134 fps) but far more on CPU
   (283→21 fps): the per-frame `(2, L, n, n)` fresh-noise draw for the AR(1)
   update is cheap on the GPU RNG and dominates the single-threaded CPU RNG.
 
@@ -171,7 +175,7 @@ modest (~1-3%) systematic effect that needs a large ensemble to resolve.
    loops in aotools/soapy on GPU (comparing pyturb's batched, device-resident
    throughput against their single-call CPU latency), and ~13× even on a single
    CPU core.
-2. **The multi-layer GPU product hits loop rate** — ~3,000 fps of a full
+2. **The multi-layer GPU product hits loop rate** — 3,133 fps of a full
    9-layer 512² spectral atmosphere (§2b), the metric AO closed-loop simulation
    actually cares about.
 3. **Extrusion still wins one cell** — single-layer integer-pixel CPU stepping

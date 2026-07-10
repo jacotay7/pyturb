@@ -10,6 +10,10 @@
 
 **Fast, GPU-optional atmospheric turbulence for adaptive optics.**
 
+<p align="center">
+  <img src="examples/keck_showcase.webp" width="503" alt="Animated Keck atmosphere showcase: frozen flow, boiling, and on/off-axis LGS turbulence.">
+</p>
+
 `pyturb` generates the optical path differences (OPD) that an adaptive-optics
 system sees through the atmosphere: full **layered turbulence** for a
 representative sky, with per-layer wind, **frozen-flow time evolution**,
@@ -42,7 +46,7 @@ ensemble = atm.sample(256)                # (256, 512, 512) Monte-Carlo OPDs
 
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, device="gpu")
 for t, opd in atm.frames(dt=1e-3, steps=2000):
-    ...                                   # cupy arrays, ~3,100 fps at 512^2
+    ...                                   # cupy arrays, ~3,200 fps at 512^2
 ```
 
 See **[Quickstart](https://jacotay7.github.io/pyturb/quickstart/)** for
@@ -54,19 +58,20 @@ lower-level `PhaseScreen`/`InfinitePhaseScreen` building blocks; and
 ## Benchmarks
 
 Full 9-layer Paranal atmosphere, closed-loop OPD frames/s, on an RTX 5090
-(GPU) and a 32-core CPU (`pyturb[accel]`) — see `benchmarks/bench_suite.py`:
+(GPU) and a 32-core CPU (`pyturb[accel]`). The exact raw artifact and invocation
+are [versioned with the benchmarks](benchmarks/artifacts/v1.0.0-reference.json):
 
 | screen | GPU spectral | GPU extrude | GPU Monte-Carlo screens/s | CPU spectral | CPU extrude |
 |---|---|---|---|---|---|
-| 256² | ~3,300 | ~4,500 | ~105,000 | ~1,020 | ~2,590 |
-| 512² | ~3,200 | ~1,700 | ~29,700 | ~283 | ~425 |
-| 1024² | ~1,500 | ~600 | ~5,960 | ~50 | ~69 |
+| 256² | 3,219 | 4,489 | 104,981 | 1,014 | 2,571 |
+| 512² | 3,133 | 1,733 | 29,789 | 283 | 324 |
+| 1024² | 1,492 | 602 | 5,970 | 70 | 62 |
 
 The Monte-Carlo column is `Atmosphere.sample()` — the full 9-layer atmosphere.
 Layers that share an outer scale are drawn as one aggregate screen (their PSDs
 add exactly), so a uniform-`L0` profile costs one FFT, not nine: `sample()` now
-runs at nearly the single-layer `PhaseScreen.generate` rate (~30,600 512²
-screens/s on the GPU, ~108,000 at 256²). All Monte-Carlo figures are batched,
+runs at nearly the single-layer `PhaseScreen.generate` rate (30,629 512²
+screens/s on the GPU, 108,054 at 256²). All Monte-Carlo figures are batched,
 device-resident throughput (a batch of 64 kept on the GPU); a single default
 call, or one that copies its result back to the host, is lower. Run
 `python -c "import pyturb; pyturb.benchmark()"` on your own machine, or

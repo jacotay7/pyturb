@@ -1,0 +1,127 @@
+{
+  "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-07-10T06:00:31.656669+00:00",
+    "command": "benchmarks/bench_suite.py --seconds 1.0 --json benchmarks/artifacts/v1.0.0-reference.json",
+    "revision": "bba7ae8450ffb93581ce14bec53474b24884d997",
+    "source_dirty": true,
+    "python": "3.12.0 | packaged by conda-forge | (main, Oct  3 2023, 08:43:22) [GCC 12.3.0]",
+    "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
+    "pyturb": "1.0.0",
+    "dependencies": {
+      "numpy": "2.2.6",
+      "scipy": "1.16.3",
+      "numba": "0.63.1",
+      "cupy": "13.6.0"
+    }
+  },
+  "configuration": {
+    "profile": "paranal-median",
+    "seeing_arcsec": 0.8,
+    "diameter_m": 8.0,
+    "n": [
+      256,
+      512,
+      1024
+    ],
+    "devices": [
+      "cpu",
+      "gpu"
+    ],
+    "seconds_per_cell": 1.0,
+    "monte_carlo_batch": {
+      "256": 64,
+      "512": 64,
+      "1024": 16
+    }
+  },
+  "results": {
+    "cpu": {
+      "256": {
+        "sample screens/s": 1256.379402377315,
+        "generate screens/s": 1261.4334693450246,
+        "frames spectral fps": 1013.801914107916,
+        "frames extrude fps": 2570.8262180071615,
+        "frames boiling fps": 91.01468007346837,
+        "tomography dirs/s": 483.32340619417784,
+        "frames LGS fps": 73.1611084471264,
+        "infinite step/s": 5713.574292239439,
+        "infinite advance/s": 5844.301206755843
+      },
+      "512": {
+        "sample screens/s": 285.5437930649737,
+        "generate screens/s": 291.27863019409807,
+        "frames spectral fps": 283.2235703335666,
+        "frames extrude fps": 323.7322748083813,
+        "frames boiling fps": 20.57649225481999,
+        "tomography dirs/s": 131.78059650027043,
+        "frames LGS fps": 13.04819712047815,
+        "infinite step/s": 1596.7870252822916,
+        "infinite advance/s": 1655.2438880838836
+      },
+      "1024": {
+        "sample screens/s": 70.249005006248,
+        "generate screens/s": 71.84453719394837,
+        "frames spectral fps": 69.79199535807106,
+        "frames extrude fps": 62.48921081455698,
+        "frames boiling fps": 4.827335779916619,
+        "tomography dirs/s": 30.289471322044864,
+        "frames LGS fps": 1.4318617782649792,
+        "infinite step/s": 275.3671523542303,
+        "infinite advance/s": 284.8231085817578
+      }
+    },
+    "gpu": {
+      "256": {
+        "sample screens/s": 104980.8355692563,
+        "generate screens/s": 108054.01125216739,
+        "frames spectral fps": 3218.750984436342,
+        "frames extrude fps": 4489.44197810525,
+        "frames boiling fps": 2157.353044325889,
+        "tomography dirs/s": 7863.557169995726,
+        "frames LGS fps": 817.5560866972041,
+        "infinite step/s": 4338.7924192758555,
+        "infinite advance/s": 4751.474568095497
+      },
+      "512": {
+        "sample screens/s": 29788.61292966189,
+        "generate screens/s": 30629.35560205365,
+        "frames spectral fps": 3132.7249716406905,
+        "frames extrude fps": 1732.5586699277417,
+        "frames boiling fps": 2133.549707800748,
+        "tomography dirs/s": 4968.1019842316955,
+        "frames LGS fps": 793.4726778749159,
+        "infinite step/s": 4302.449106014435,
+        "infinite advance/s": 4710.206461801184
+      },
+      "1024": {
+        "sample screens/s": 5969.6907324133645,
+        "generate screens/s": 6108.821525918592,
+        "frames spectral fps": 1492.301390745167,
+        "frames extrude fps": 602.0476585352636,
+        "frames boiling fps": 566.1372976481997,
+        "tomography dirs/s": 1028.5458094079204,
+        "frames LGS fps": 198.87440317338195,
+        "infinite step/s": 4309.716592083025,
+        "infinite advance/s": 4702.2138845753
+      }
+    }
+  },
+  "analysis": {
+    "256": {
+      "zernike_decompose stacks/s": 155.53013030240925,
+      "structure_function calls/s": 254.14345854293387,
+      "temporal_psd calls/s": 148.5201512862467
+    },
+    "512": {
+      "zernike_decompose stacks/s": 27.053692779594133,
+      "structure_function calls/s": 33.59741516807104,
+      "temporal_psd calls/s": 25.71837689806061
+    },
+    "1024": {
+      "zernike_decompose stacks/s": 5.244966532456334,
+      "structure_function calls/s": 3.6725077460714908,
+      "temporal_psd calls/s": 6.927729552437617
+    }
+  }
+}

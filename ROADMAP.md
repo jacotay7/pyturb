@@ -4,7 +4,7 @@ The core is complete: `Atmosphere.from_profile(...).frames(dt)` delivers
 multi-layer, sub-pixel, arbitrary-direction OPD on CPU or GPU, via a periodic
 spectral engine or a non-periodic extruder, with boiling, off-axis/tomography,
 LGS cone, chromatic OPD, named profiles, an analysis toolkit, FITS/npz I/O, a
-benchmark suite, a validation gallery, docs, and CI. Version **0.2.0** is
+benchmark suite, a validation gallery, docs, and CI. Version **1.0.0** is
 build-ready.
 
 This file tracks only what is **not yet done**. Ground rule from here on
@@ -12,17 +12,7 @@ This file tracks only what is **not yet done**. Ground rule from here on
 against theory; every performance claim lands with a benchmark; every feature
 lands with a docs page.
 
-## Release — cut v0.2.0
-
-These need a maintainer with the right accounts; the workflows are already
-written (`.github/workflows/release.yml`, `docs.yml`).
-
-- [ ] Configure the PyPI **trusted publisher** for `pyturb`, then push tag
-      `v0.2.0` to publish (the workflow builds + uploads).
-- [ ] Enable **GitHub Pages** (Settings → Pages → Source: GitHub Actions) so the
-      docs site deploys on push to main.
-- [ ] Add an **animated GIF** of a wind-blown multi-layer screen to the README
-      hero (disproportionate adoption value; needs a recorded asset).
+## Release — cut v1.0.0
 
 ## Physics & profiles
 

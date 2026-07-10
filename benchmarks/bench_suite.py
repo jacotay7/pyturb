@@ -17,7 +17,7 @@ Run::
     python benchmarks/bench_suite.py                       # full sweep, markdown
     python benchmarks/bench_suite.py --n 512 --device gpu  # one size / device
     python benchmarks/bench_suite.py --quick               # short budget
-    python benchmarks/bench_suite.py --json out.json       # also dump raw numbers
+    python benchmarks/bench_suite.py --json out.json       # self-describing raw artifact
 
 GPU rows are skipped automatically when CuPy is unavailable. Numba (optional)
 accelerates the CPU frozen-flow paths; its first call JIT-compiles, which the
@@ -28,7 +28,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
+import shlex
+import subprocess
+import sys
 import time
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from typing import Callable, Dict
 
 import numpy as np
@@ -39,6 +46,62 @@ PROFILE = "paranal-median"
 SEEING = 0.8
 DIAMETER = 8.0
 DIRECTIONS = [(0.0, 0.0), (15.0, 0.0), (0.0, 15.0), (10.0, 10.0), (-12.0, 6.0)]
+
+
+def _package_version(name: str):
+    """Return an installed package version without making it a requirement."""
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def _revision():
+    """Return the CI revision or local Git commit, when available."""
+    revision = os.environ.get("GITHUB_SHA")
+    if revision:
+        return revision
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, check=False, text=True
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() or None
+
+
+def _source_dirty():
+    """Report whether a local benchmark included uncommitted source changes."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    return bool(result.stdout.strip())
+
+
+def _provenance():
+    """Machine-readable context needed to interpret a throughput result."""
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "command": shlex.join(sys.argv),
+        "revision": _revision(),
+        "source_dirty": _source_dirty(),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "pyturb": pyturb.__version__,
+        "dependencies": {
+            "numpy": _package_version("numpy"),
+            "scipy": _package_version("scipy"),
+            "numba": _package_version("numba"),
+            "cupy": _package_version("cupy"),
+        },
+    }
 
 
 def _sync(device: str) -> None:
@@ -194,9 +257,26 @@ def main() -> None:
         print(f"| {m} | " + " | ".join(f"{analysis[n][m]:,.0f}" for n in args.n) + " |")
 
     if args.json:
-        with open(args.json, "w") as fh:
-            json.dump({"pyturb": pyturb.__version__, "profile": PROFILE,
-                       "results": results, "analysis": analysis}, fh, indent=2)
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "provenance": _provenance(),
+                    "configuration": {
+                        "profile": PROFILE,
+                        "seeing_arcsec": SEEING,
+                        "diameter_m": DIAMETER,
+                        "n": args.n,
+                        "devices": devices,
+                        "seconds_per_cell": args.seconds,
+                        "monte_carlo_batch": {str(n): _batch_for(n) for n in args.n},
+                    },
+                    "results": results,
+                    "analysis": analysis,
+                },
+                fh,
+                indent=2,
+            )
+            fh.write("\n")
         print(f"\nwrote {args.json}")
 
 

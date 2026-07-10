@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-09
+
 ### Added
 
 - **Boiling on the non-periodic engine.** `tau_boil` now works with
@@ -28,6 +30,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Construction is now model/state separated.** Immutable validated
+  configurations define phase-screen, atmosphere, and extrusion inputs before
+  backend dispatch; mutable runtime objects own only derived geometry, random
+  streams, spectra, and ring buffers. The two extrusion implementations share
+  their stencil-preserving ring compaction primitive.
+- **Validation evidence expanded.** The CI validation gallery now asserts and
+  plots finite-screen structure-function ratios at 1–8 pixels and the scalar
+  zenith-projection laws for `r0`, `theta0`, and layer range.
+- **Benchmark evidence is versioned.** `bench_suite.py --json` records the
+  invocation, Git revision, platform, dependency versions, device selection,
+  timing budget, and batch size with every result. The 1.0.0 reference artifact
+  is checked in alongside the published tables.
 - **`Atmosphere.sample()` is ~L× faster for shared-outer-scale profiles.** It
   now draws one aggregate phase screen per distinct `L0` rather than one per
   layer: independent von Kármán screens with the same PSD shape add exactly
