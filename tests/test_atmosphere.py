@@ -137,6 +137,58 @@ def test_sample_matches_total_structure_function():
     assert np.all(ratio < 1.2)
 
 
+def test_batched_directions_match_per_direction_spectral():
+    """The batched multi-direction spectral path (opd(directions=...) on GPU)
+    must be numerically identical to integrating each direction separately."""
+    atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=96,
+                                         diameter=8.0, field_of_view=30.0,
+                                         dtype="float64", seed=3)
+    arcsec = np.pi / (180.0 * 3600.0)
+    dirs = [(0.0, 0.0), (15.0, 0.0), (0.0, -12.0), (10.0, 10.0), (-8.0, 20.0)]
+    oxs = [np.tan(a * arcsec) for a, _ in dirs]
+    oys = [np.tan(b * arcsec) for _, b in dirs]
+    batched = pyturb.to_numpy(atm._integrate_dirs(0.001, oxs, oys))
+    per = np.stack([pyturb.to_numpy(atm._integrate(0.001, ox, oy))
+                    for ox, oy in zip(oxs, oys)])
+    np.testing.assert_allclose(batched, per, rtol=0, atol=1e-9)
+    # Public opd(): a multi-direction call equals separate single-direction ones.
+    multi = pyturb.to_numpy(atm.opd(0.002, directions=dirs))
+    for k in range(len(dirs)):
+        single = pyturb.to_numpy(atm.opd(0.002, directions=[dirs[k]]))[0]
+        np.testing.assert_allclose(multi[k], single, rtol=0, atol=1e-12)
+
+
+def test_sample_aggregation_matches_per_layer_and_groups_by_l0():
+    """sample() draws one aggregate screen per distinct L0 -- independent von
+    Karman screens with the same PSD shape add exactly. Verify it (a) groups by
+    L0 and (b) is distributionally identical to an explicit per-layer sum."""
+    # paranal-median: all layers share L0=25 -> a single aggregate generator.
+    atm = pyturb.Atmosphere.from_profile("paranal-median", r0=0.15, n=64,
+                                         diameter=8.0, dtype="float64", seed=7)
+    assert len(atm.layers) == 9
+    assert len(atm._sample_generators) == 1                 # one L0 group
+
+    lam = atm.wavelength
+    agg = pyturb.to_numpy(atm.sample(150, wavelength=lam))
+    total = None
+    for state in atm._layers:                               # explicit per-layer sum
+        screens = state.generator.generate(150)
+        total = screens if total is None else total + screens
+    per = pyturb.to_numpy(total[..., atm._crop, atm._crop])
+    # Distributionally identical: matched ensemble variance and structure fn.
+    assert abs(agg.var() / per.var() - 1) < 0.1
+    r, d_agg = pyturb.structure_function(agg, atm.pixel_scale)
+    _, d_per = pyturb.structure_function(per, atm.pixel_scale)
+    assert np.max(np.abs(d_agg / d_per - 1)) < 0.1
+
+    # Mixed L0 -> one aggregate generator per distinct L0.
+    layers = [pyturb.Layer(0.0, 0.5, 10.0, 0.0, L0=25.0),
+              pyturb.Layer(5000.0, 0.3, 10.0, 0.0, L0=25.0),
+              pyturb.Layer(10000.0, 0.2, 10.0, 0.0, L0=10.0)]
+    mixed = pyturb.Atmosphere(layers, r0=0.15, n=48, dtype="float64", seed=1)
+    assert len(mixed._sample_generators) == 2               # L0 in {25, 10}
+
+
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 
 
@@ -673,6 +725,46 @@ def test_direction_radius_beyond_fov_is_rejected():
             atm.opd(0.0, directions=[(10.0, 10.0)])
         # a direction on the fov circle is accepted
         atm.opd(0.0, directions=[(10.0, 0.0)])
+
+
+def test_lgs_zoom_batched_and_loop_agree():
+    """The two `_lgs_zoom` code paths -- the batched take_along_axis gathers
+    used on the GPU and the per-layer loop used on the CPU / large working sets
+    -- must produce identical output. CI runs CPU-only (which only exercises the
+    loop), so this differential check exercises both on numpy."""
+    atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=64,
+                                         lgs_altitude=90e3, dtype="float64", seed=5)
+    idx, w = atm._zoom_idx, atm._zoom_w
+    n_layers, n_taps, n, ns = idx.shape[0], idx.shape[1], atm.n, atm.n_screen
+    screens = np.random.default_rng(0).standard_normal((n_layers, ns, ns))
+
+    rows = None                                   # batched (GPU path)
+    for a in range(n_taps):
+        gather = np.broadcast_to(idx[:, a, :, None], (n_layers, n, ns))
+        term = w[:, a, :, None] * np.take_along_axis(screens, gather, axis=1)
+        rows = term if rows is None else rows + term
+    out = None
+    for b in range(n_taps):
+        gather = np.broadcast_to(idx[:, b, None, :], (n_layers, n, n))
+        term = w[:, b, None, :] * np.take_along_axis(rows, gather, axis=2)
+        out = term if out is None else out + term
+    batched = out.sum(axis=0)
+
+    total = None                                  # per-layer loop (CPU path)
+    for layer in range(n_layers):
+        field = screens[layer]
+        o = None
+        for a in range(n_taps):
+            band = field[idx[layer, a]]
+            row_term = None
+            for b in range(n_taps):
+                t = w[layer, b][None, :] * band[:, idx[layer, b]]
+                row_term = t if row_term is None else row_term + t
+            c = w[layer, a][:, None] * row_term
+            o = c if o is None else o + c
+        total = o if total is None else total + o
+
+    np.testing.assert_allclose(batched, total, rtol=0, atol=1e-10)
 
 
 def test_extrude_lgs_and_boiling_compose():

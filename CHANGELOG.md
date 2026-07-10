@@ -26,6 +26,34 @@ to [Semantic Versioning](https://semver.org/).
   raises `ExtrudeBoilingPerformanceWarning`, noting that this combination is
   still markedly slower than `engine="spectral"` boiling.
 
+### Changed
+
+- **`Atmosphere.sample()` is ~L× faster for shared-outer-scale profiles.** It
+  now draws one aggregate phase screen per distinct `L0` rather than one per
+  layer: independent von Kármán screens with the same PSD shape add exactly
+  (`r0_agg^{-5/3} = Σ r0_i^{-5/3}`), so summing them is distributionally
+  identical to summing per-layer draws. A 9-layer `paranal-median` (uniform
+  `L0`) `sample()` is ~9× faster on both CPU and GPU (measured 9.0×/9.1× at
+  512², ~30k screens/s on GPU). Layers that share `L0` are pooled; a profile
+  with mixed `L0` uses one screen per distinct value. Reproducibility note: for
+  a profile with **multiple layers sharing an `L0`**, `sample()` now consumes a
+  different RNG stream, so a fixed `seed` yields a different (but
+  statistically identical) realisation than before; single-layer-per-`L0`
+  profiles are unchanged (the layer's own generator is reused).
+- **Batched multi-direction tomography on the GPU.** `opd(directions=[...])`
+  on `engine="spectral"` (without the LGS cone) now integrates all directions
+  through one batched inverse FFT and one subharmonic matmul chain instead of a
+  Python loop, ~1.8× faster at 512² by removing per-direction kernel-launch
+  latency (bit-identical output). The CPU path keeps its per-direction fused
+  loop, which is faster there than a batched transform.
+- **Faster spectral LGS cone frames on the GPU.** The per-layer cone-zoom
+  readout in `_integrate_lgs` (previously ~77% of the frame, a per-layer,
+  per-tap Python loop) is now a handful of `take_along_axis` gathers batched
+  over all layers and taps: ~3× at 256²/512² (275 → ~830 fps at 512²),
+  bit-identical output. Gated to the GPU below a working-set threshold — on the
+  CPU, and for large `(L, n, n_screen)` working sets on the GPU (≳1024²), the
+  cache-friendlier per-layer loop is kept.
+
 ## [0.2.0] 
 
 The "atmosphere" release: pyturb goes from a phase-screen library to a complete,

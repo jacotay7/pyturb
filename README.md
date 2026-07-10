@@ -58,14 +58,17 @@ Full 9-layer Paranal atmosphere, closed-loop OPD frames/s, on an RTX 5090
 
 | screen | GPU spectral | GPU extrude | GPU Monte-Carlo screens/s | CPU spectral | CPU extrude |
 |---|---|---|---|---|---|
-| 256² | ~3,200 | ~4,500 | ~11,600 | ~1,090 | ~970 |
-| 512² | ~3,100 | ~1,700 | ~3,200 | ~270 | ~180 |
-| 1024² | ~1,500 | ~600 | ~650 | ~62 | ~57 |
+| 256² | ~3,300 | ~4,500 | ~105,000 | ~1,020 | ~2,590 |
+| 512² | ~3,200 | ~1,700 | ~29,700 | ~283 | ~425 |
+| 1024² | ~1,500 | ~600 | ~5,960 | ~50 | ~69 |
 
-Single-layer Monte-Carlo (`PhaseScreen.generate`) draws ~31,000 independent
-512² screens/s on the GPU (~108,000 at 256²) — batched, device-resident
-throughput (a batch of 64 kept on the GPU); a single default `generate()` call,
-or one that copies its result back to the host, is lower. Run
+The Monte-Carlo column is `Atmosphere.sample()` — the full 9-layer atmosphere.
+Layers that share an outer scale are drawn as one aggregate screen (their PSDs
+add exactly), so a uniform-`L0` profile costs one FFT, not nine: `sample()` now
+runs at nearly the single-layer `PhaseScreen.generate` rate (~30,600 512²
+screens/s on the GPU, ~108,000 at 256²). All Monte-Carlo figures are batched,
+device-resident throughput (a batch of 64 kept on the GPU); a single default
+call, or one that copies its result back to the host, is lower. Run
 `python -c "import pyturb; pyturb.benchmark()"` on your own machine, or
 `python benchmarks/bench_suite.py` for the full per-use-case sweep. A
 head-to-head against aotools, soapy and HCIPy lives in

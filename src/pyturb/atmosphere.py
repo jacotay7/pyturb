@@ -45,6 +45,12 @@ __all__ = ["Atmosphere", "PeriodicWrapWarning", "ExtrudeBoilingPerformanceWarnin
 
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 
+# LGS cone zoom: above this batched working set (L * n * n_screen elements) the
+# GPU's batched gather goes memory-bound and loses to the tight per-layer loop
+# (measured crossover between 512² and 1024² at 9 layers); below it the batched
+# path is ~3-8x faster by removing per-layer launch latency.
+_LGS_BATCH_MAX_ELEMS = 4_000_000
+
 
 class PeriodicWrapWarning(UserWarning):
     """The default ``engine="spectral"`` screen has wrapped (repeated).
@@ -518,6 +524,39 @@ class Atmosphere:
             ext_alt.append(altitude_los)
             ext_seeds.append(int(ext_seed.generate_state(1)[0]))
 
+        # sample() returns only the summed on-axis field, and independent
+        # Gaussian screens sharing a PSD shape add: L layers with the same
+        # L0/grid/power_law/inner_scale sum to one screen whose Fried parameter
+        # satisfies r0_agg^{-5/3} = sum_i r0_i^{-5/3}. So sample() draws one
+        # aggregate PhaseScreen per L0 group rather than one per layer --
+        # distributionally identical, O(groups) FFTs per frame instead of
+        # O(layers). Frozen flow / directions / LGS keep the per-layer
+        # generators above. Singleton groups reuse the layer's own generator, so
+        # a one-layer-per-L0 sample() stays bit-for-bit reproducible.
+        groups: Dict[float, List[int]] = {}
+        for i, ly in enumerate(self.layers):
+            groups.setdefault(round(float(ly.L0), 9), []).append(i)
+        self._sample_generators: List[PhaseScreen] = []
+        for idxs, child in zip(groups.values(), master.spawn(len(groups))):
+            if len(idxs) == 1:
+                self._sample_generators.append(self._layers[idxs[0]].generator)
+                continue
+            r0_agg = sum(ext_r0[i] ** (-5.0 / 3.0) for i in idxs) ** (-3.0 / 5.0)
+            self._sample_generators.append(
+                PhaseScreen(
+                    n=self.n_screen,
+                    pixel_scale=self.pixel_scale,
+                    r0=r0_agg,
+                    L0=self.layers[idxs[0]].L0,
+                    subharmonics=self.subharmonics,
+                    power_law=self.power_law,
+                    inner_scale=self.inner_scale,
+                    seed=int(child.generate_state(1)[0]),
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+
         # LGS cone effect in the spectral engine: each layer's screen is
         # zoom-sampled about the pupil centre by its magnification
         # ``1 - h/H_LGS`` at readout (the extruder handles its own cone
@@ -628,20 +667,23 @@ class Atmosphere:
             self._build_lgs_zoom()
 
     def _build_lgs_zoom(self):
-        """Precompute the per-layer LGS cone zoom taps (magnification is fixed).
+        """Precompute the stacked per-layer LGS cone zoom taps (fixed magnification).
 
         Each layer's ``(n_screen, n_screen)`` screen is sampled at the central
         pupil grid scaled about the screen centre by that layer's cone
         magnification ``mag = 1 - h/H_LGS`` (isotropic, so rows and columns
         share one set of taps). The taps — clipped buffer indices and the
         interpolation weights (honouring ``interp``) — depend only on the fixed
-        magnification, so they are built once and reused every frame.
+        magnification, so they are built once and stacked into ``(L, T, n)``
+        arrays (``T`` taps: 2 linear / 4 cubic / 6 lanczos). The per-frame
+        readout is then a handful of batched ``take_along_axis`` gathers over
+        all layers at once, not a per-layer/per-tap Python loop.
         """
         xp = self.xp
         centre = (self.n_screen - 1) / 2.0
         base = np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0
         rdtype = self._spectra.real.dtype
-        self._zoom_taps: List[List[Tuple[Any, Any]]] = []
+        idx_layers, w_layers = [], []
         for mag in self._lgs_mag:
             pos = centre + base * float(mag)
             p0 = np.floor(pos).astype(np.int64)
@@ -654,12 +696,12 @@ class Atmosphere:
             else:  # cubic
                 offsets = (-1, 0, 1, 2)
                 weights = _catmull_rom_weights(fr)
-            taps = [
-                (xp.asarray(np.clip(p0 + off, 0, self.n_screen - 1)),
-                 xp.asarray(w, dtype=rdtype))
-                for off, w in zip(offsets, weights)
-            ]
-            self._zoom_taps.append(taps)
+            idx_layers.append(
+                np.stack([np.clip(p0 + off, 0, self.n_screen - 1) for off in offsets])
+            )  # (T, n)
+            w_layers.append(np.stack([np.asarray(w) for w in weights]))  # (T, n)
+        self._zoom_idx = xp.asarray(np.stack(idx_layers))             # (L, T, n) int
+        self._zoom_w = xp.asarray(np.stack(w_layers), dtype=rdtype)   # (L, T, n)
 
     def _build_boil_tau_maps(self):
         """Per-mode boiling time constants (Kolmogorov eddy-turnover scaling).
@@ -883,7 +925,7 @@ class Atmosphere:
             return self._to_opd(phase, wavelength)
 
         xp = self.xp
-        out = []
+        oxs, oys = [], []
         for thx, thy in directions:
             radius = float(np.hypot(thx, thy))
             if radius > self.field_of_view:
@@ -896,10 +938,22 @@ class Atmosphere:
                     "(extrude) turbulence. Construct the Atmosphere with a "
                     "field_of_view covering every direction you plan to request."
                 )
-            ox = np.tan(thx * _ARCSEC_TO_RAD)
-            oy = np.tan(thy * _ARCSEC_TO_RAD)
-            out.append(self._phase(float(t), ox, oy))
-        stacked = xp.stack(out)
+            oxs.append(np.tan(thx * _ARCSEC_TO_RAD))
+            oys.append(np.tan(thy * _ARCSEC_TO_RAD))
+        # On the GPU the spectral engine (without the per-layer LGS zoom)
+        # batches all directions through one inverse FFT and one subharmonic
+        # matmul chain -- ~1.8x at 512² by removing per-direction launch
+        # latency. On the CPU the per-direction fused path (one threaded FFT +
+        # Numba layer sum each) is faster than a batched scipy transform, so the
+        # loop is kept there; the extruder (streaming readout) and the spectral
+        # LGS cone (per-layer zoom) also stay a per-direction pass.
+        if (self.engine == "spectral" and self._lgs_mag is None
+                and self.xp is not np):
+            stacked = self._integrate_dirs(float(t), oxs, oys)
+        else:
+            stacked = xp.stack(
+                [self._phase(float(t), ox, oy) for ox, oy in zip(oxs, oys)]
+            )
         return self._to_opd(stacked, wavelength)
 
     def _phase(self, t: float, ox: float, oy: float) -> Any:
@@ -971,6 +1025,66 @@ class Atmosphere:
         total = total[self._crop, self._crop]
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
+    def _integrate_dirs(self, t: float, oxs: Sequence[float],
+                        oys: Sequence[float]) -> Any:
+        """Spectral integrate for several off-axis directions at once -> (D, n, n).
+
+        Numerically identical to calling :meth:`_integrate` per direction, but
+        the per-direction summed spectra are stacked and inverse-FFT'd in a
+        single batched call, and the subharmonic contribution is evaluated for
+        all directions in batched matmuls -- so D directions cost one FFT launch
+        and one matmul chain, not D. The memory-heavy ``(L, n, n)`` layer sum
+        stays a per-direction loop, so no ``(D, L, n, n)`` intermediate is ever
+        formed.
+        """
+        xp = self.xp
+        cdtype = self._cdtype
+        ns = self.n_screen
+        rdtype = self._spectra.real.dtype
+        oxs = np.asarray(oxs, dtype=np.float64)
+        oys = np.asarray(oys, dtype=np.float64)
+        D = oxs.shape[0]
+        disp_x = self._vx[None, :] * t + self._alt[None, :] * oxs[:, None]  # (D, L)
+        disp_y = self._vy[None, :] * t + self._alt[None, :] * oys[:, None]
+        if not self._wrap_warned:
+            self._check_wrap(disp_x, disp_y)
+        f = self._grid_f
+        sx_all = xp.asarray(disp_x, dtype=rdtype)  # (D, L)
+        sy_all = xp.asarray(disp_y, dtype=rdtype)
+        specs = xp.empty((D, ns, ns), dtype=cdtype)
+        for d in range(D):
+            phx = xp.exp((2j * np.pi) * sx_all[d][:, None] * f[None, :]).astype(cdtype)
+            phy = xp.exp((2j * np.pi) * sy_all[d][:, None] * f[None, :]).astype(cdtype)
+            if xp is np and _accel.HAVE_NUMBA:
+                spectrum = np.empty((ns, ns), dtype=cdtype)
+                _accel.spectral_layer_sum(self._spectra, phx, phy, spectrum)
+                specs[d] = spectrum
+            else:
+                specs[d] = (
+                    self._spectra * phx[:, :, None] * phy[:, None, :]
+                ).sum(axis=0)
+        total = (self._fft.ifft2(specs, axes=(-2, -1)) * (ns * ns)).real  # (D, ns, ns)
+
+        if self._n_sh:
+            fp = self._sh_freqs  # (P, 3)
+            px = xp.exp(
+                (2j * np.pi) * sx_all[:, None, :, None] * fp[None, :, None, :]
+            ).astype(cdtype)  # (D, P, L, 3)
+            py = xp.exp(
+                (2j * np.pi) * sy_all[:, None, :, None] * fp[None, :, None, :]
+            ).astype(cdtype)
+            # (D, P, 3, 3): shift each level's per-layer 3x3 coeffs, sum layers.
+            shifted = (
+                self._sh_coeffs[None] * px[:, :, :, :, None] * py[:, :, :, None, :]
+            ).sum(axis=2)
+            m = xp.matmul(shifted, self._sh_basis[None]).reshape(D, self._n_sh * 3, ns)
+            basis_flat = self._sh_basis.reshape(self._n_sh * 3, ns)  # (3P, ns)
+            low = xp.matmul(basis_flat.T[None], m).real  # (D, ns, ns)
+            low = low - low.mean(axis=(-2, -1), keepdims=True)
+            total = total + low
+        total = total[:, self._crop, self._crop]
+        return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
+
     def _integrate_lgs(self, t: float, ox: float, oy: float) -> Any:
         """Spectral frame with the LGS cone: per-layer inverse FFT then zoom.
 
@@ -1013,22 +1127,55 @@ class Atmosphere:
             low = low - low.mean(axis=(-2, -1), keepdims=True)
             screens = screens + low
 
-        # Zoom-sample each layer's screen about the centre by its cone
-        # magnification (precomputed taps) and sum the layers into the pupil.
-        total = None
-        for layer_idx, taps in enumerate(self._zoom_taps):
-            field = screens[layer_idx]
-            out = None
-            for idx_r, weight_r in taps:
-                band = field[idx_r]  # (n, ns)
-                row_term = None
-                for idx_c, weight_c in taps:
-                    term = weight_c[None, :] * band[:, idx_c]  # (n, n)
-                    row_term = term if row_term is None else row_term + term
-                contrib = weight_r[:, None] * row_term
-                out = contrib if out is None else out + contrib
-            total = out if total is None else total + out
+        # Zoom-sample every layer's screen about the centre by its cone
+        # magnification and sum the layers into the pupil.
+        total = self._lgs_zoom(screens)
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
+
+    def _lgs_zoom(self, screens: Any) -> Any:
+        """Cone-zoom the ``(L, n_screen, n_screen)`` layer screens into ``(n, n)``.
+
+        Separable interpolation (rows then columns) with the precomputed
+        per-layer taps (:meth:`_build_lgs_zoom`), summed over layers. On the GPU,
+        below a working-set threshold, this is a handful of ``take_along_axis``
+        gathers batched over all layers and taps (3-8x the old per-layer/per-tap
+        Python loop at 256²-512²). On the CPU (the tight loop is
+        cache-friendlier) or for a large batched working set on the GPU (the
+        ``(L, n, n_screen)`` intermediates go memory-bound), the per-layer loop
+        is used instead.
+        """
+        xp = self.xp
+        idx, w = self._zoom_idx, self._zoom_w  # (L, T, n)
+        n_layers, n_taps = idx.shape[0], idx.shape[1]
+        n, ns = self.n, self.n_screen
+        if xp is np or n_layers * n * ns > _LGS_BATCH_MAX_ELEMS:
+            total = None
+            for layer in range(n_layers):
+                field = screens[layer]
+                out = None
+                for a in range(n_taps):
+                    band = field[idx[layer, a]]  # (n, ns)
+                    row_term = None
+                    for b in range(n_taps):
+                        term = w[layer, b][None, :] * band[:, idx[layer, b]]
+                        row_term = term if row_term is None else row_term + term
+                    contrib = w[layer, a][:, None] * row_term
+                    out = contrib if out is None else out + contrib
+                total = out if total is None else total + out
+            return total
+        rows = None  # row-interpolated screens, (L, n, ns)
+        for a in range(n_taps):
+            gather = xp.broadcast_to(idx[:, a, :, None], (n_layers, n, ns))
+            band = xp.take_along_axis(screens, gather, axis=1)  # (L, n, ns)
+            term = w[:, a, :, None] * band
+            rows = term if rows is None else rows + term
+        out = None  # then interpolate along columns, (L, n, n)
+        for b in range(n_taps):
+            gather = xp.broadcast_to(idx[:, b, None, :], (n_layers, n, n))
+            col = xp.take_along_axis(rows, gather, axis=2)  # (L, n, n)
+            term = w[:, b, None, :] * col
+            out = term if out is None else out + term
+        return out.sum(axis=0)  # sum layers -> (n, n)
 
     def _boil_step(self, dt: float) -> None:
         """Advance boiling by ``dt`` seconds: one AR(1) update per mode.
@@ -1135,8 +1282,13 @@ class Atmosphere:
         """Draw statistically independent integrated OPDs.
 
         Each call produces fresh, uncorrelated realisations of the summed
-        atmosphere (on-axis). Independent screens from every layer are added,
-        so the ensemble structure function matches the total ``r0``.
+        atmosphere (on-axis), so the ensemble structure function matches the
+        total ``r0``. Layers that share an outer scale are drawn as a single
+        aggregate screen (independent von Kármán screens with the same PSD shape
+        add exactly, ``r0_agg^{-5/3} = sum_i r0_i^{-5/3}``), so this costs one
+        FFT per distinct ``L0`` rather than one per layer -- for a profile whose
+        layers share ``L0`` it is ~L times faster than a per-layer sum, and
+        distributionally identical.
 
         Parameters
         ----------
@@ -1147,8 +1299,8 @@ class Atmosphere:
             If given, return phase [rad] at this wavelength; otherwise OPD [m].
         """
         total = None
-        for state in self._layers:
-            screens = state.generator.generate(count)
+        for generator in self._sample_generators:
+            screens = generator.generate(count)
             total = screens if total is None else total + screens
         # Crop the central pupil out of the (possibly oversized) screens.
         total = total[..., self._crop, self._crop]

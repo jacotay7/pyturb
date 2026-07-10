@@ -81,15 +81,19 @@ CPU rows use the optional `pyturb[accel]` (Numba) extra.
 
 | configuration | fps |
 |---|---:|
-| pyturb spectral, GPU (periodic) | 3,004 |
+| pyturb spectral, GPU (periodic) | 3,213 |
 | pyturb extrude, GPU (non-periodic — the engine long runs need) | 1,729 |
-| pyturb spectral + boiling, GPU | 2,100 |
-| pyturb spectral, CPU (Numba accel) | 270 |
-| pyturb spectral, CPU, `set_fft_workers(-1)` | 240 |
-| pyturb spectral + boiling, CPU | 19 |
-| pyturb extrude, CPU (Numba accel) | 164 |
-| aotools, 9x `add_row` + sum, CPU (integer-pixel, axis-aligned) | 422 |
-| HCIPy, 9-layer `evolve_until`+`phase_for`, CPU (sub-pixel, non-periodic) | 5.7 |
+| pyturb spectral + boiling, GPU | 2,198 |
+| pyturb extrude, CPU (Numba accel) | 425 |
+| pyturb spectral, CPU, `set_fft_workers(-1)` | 310 |
+| pyturb spectral, CPU (Numba accel) | 283 |
+| pyturb spectral + boiling, CPU | 21 |
+| aotools, 9x `add_row` + sum, CPU (integer-pixel, axis-aligned) | 422 † |
+| HCIPy, 9-layer `evolve_until`+`phase_for`, CPU (sub-pixel, non-periodic) | 5.7 † |
+
+pyturb rows are regenerated from `bench_suite.py` on the machine of record;
+the aotools/HCIPy rows (†) are from the separate `bench_compare.py` harness and
+are indicative cross-references, not part of the same run.
 
 Reading this honestly:
 
@@ -98,21 +102,21 @@ Reading this honestly:
   `n·pixel_scale / wind_speed` re-samples the same screen realisation for
   that layer (`Atmosphere.time_to_wrap` reports the threshold;
   `PeriodicWrapWarning` fires the first time a run crosses it).
-- On CPU, the same 9-layer job runs at ~270 fps — now within ~1.6x of the
-  equivalent aotools loop (422 fps) built from integer-pixel, axis-aligned
-  steps, and it does exact sub-pixel, arbitrary-direction motion the aotools
-  loop cannot. `set_fft_workers(-1)` no longer helps here (it is ~11% slower):
-  the per-frame cost is now the fused layer sum and the subharmonic matmul, not
-  the single inverse FFT, so spreading that FFT across cores only adds
-  dispatch overhead. Threaded FFTs still help at 1024² and for large
-  Monte-Carlo batches, where the transform dominates.
-- The non-periodic engine (`engine="extrude"`) costs ~1.7x throughput relative
-  to the periodic one on GPU (1,729 vs 3,004 fps) — its fused CUDA readout
-  kernel closed most of the old gap — and ~1.6x on CPU (164 vs 270 fps). On CPU
-  it is ~29x HCIPy's pure-Python non-periodic equivalent (5.7 fps) for the same
-  non-periodic job.
-- Boiling costs ~30% of GPU throughput (3,004→2,100 fps) but far more on CPU
-  (270→19 fps): the per-frame `(2, L, n, n)` fresh-noise draw for the AR(1)
+- On CPU, the same 9-layer job runs at ~283 fps on the spectral engine — within
+  ~1.5x of the indicative aotools loop (422 fps) built from integer-pixel,
+  axis-aligned steps, while doing exact sub-pixel, arbitrary-direction motion
+  the aotools loop cannot. `set_fft_workers(-1)` gives a modest ~10% gain here
+  (~310 fps): at 512² the single inverse FFT is a large enough slice of the
+  per-frame cost that threading it across cores pays for its dispatch overhead
+  (the gain grows at 1024² and for large Monte-Carlo batches).
+- The non-periodic engine (`engine="extrude"`) costs ~1.9x throughput relative
+  to the periodic one on GPU (1,729 vs 3,213 fps). On **CPU it is now the
+  faster of the two** (425 vs 283 fps): its fused Numba readout — a per-frame
+  rotated-gather over the ring buffer — beats a 512² inverse FFT on 32 cores,
+  and it is ~75x HCIPy's pure-Python non-periodic equivalent (5.7 fps) for the
+  same non-periodic, sub-pixel, any-direction job.
+- Boiling costs ~30% of GPU throughput (3,213→2,198 fps) but far more on CPU
+  (283→21 fps): the per-frame `(2, L, n, n)` fresh-noise draw for the AR(1)
   update is cheap on the GPU RNG and dominates the single-threaded CPU RNG.
 
 ## 3. Structure-function accuracy — fractional-RMS error vs von Kármán (lower is better)
