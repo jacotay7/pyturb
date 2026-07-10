@@ -15,6 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -194,6 +199,32 @@ def _parse_args(argv: Optional[Sequence[str]] = None):
     return parser.parse_args(argv)
 
 
+def _source_provenance():
+    """Return the CI/local revision and whether the source tree is dirty."""
+    revision = os.environ.get("GITHUB_SHA")
+    try:
+        if not revision:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            revision = result.stdout.strip() or None
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return {"revision": revision, "source_dirty": None}
+    return {
+        "revision": revision,
+        "source_dirty": bool(status.stdout.strip()),
+    }
+
+
 def main(argv: Optional[Sequence[str]] = None):
     args = _parse_args(argv)
     RESULTS.clear()
@@ -219,12 +250,16 @@ def main(argv: Optional[Sequence[str]] = None):
     print(f"\nwrote {args.output}")
     n_pass = sum(result["passed"] for result in RESULTS)
     if args.metrics is not None:
+        provenance = _source_provenance()
         args.metrics.parent.mkdir(parents=True, exist_ok=True)
         args.metrics.write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "pyturb_version": pyturb.__version__,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "command": shlex.join(sys.argv),
+                    **provenance,
                     "checks": RESULTS,
                     "passed": n_pass,
                     "total": len(RESULTS),

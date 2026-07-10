@@ -56,6 +56,11 @@ python validation/validate.py --output /tmp/validation.png \
     --metrics /tmp/validation.json
 ```
 
+The JSON records the command, UTC generation time, installed pyturb version,
+and GitHub Actions revision (or the local Git commit when available), alongside
+the individual check results. A `source_dirty` flag makes it clear when a local
+artifact was produced from uncommitted source changes.
+
 Every check is an ensemble comparison to a closed form, so re-running with a
 different seed gives the same conclusions within the stated tolerances. The
 same primitives (`pyturb.analysis`) are available to build your own diagnostics
