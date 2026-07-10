@@ -15,6 +15,7 @@ jobs:
           args: check
 
   test:
+    name: Test without Numba (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -26,13 +27,54 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[test,fits]"
-      - run: pytest -q --cov=pyturb --cov-report=xml
+      - run: pytest -q --cov=pyturb --cov-report=xml --cov-fail-under=85
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
-        continue-on-error: true
+
+  test-accel:
+    name: Test optional Numba acceleration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[test,fits,accel]"
+      - run: pytest -q tests/test_accel.py
+
+  wheel-smoke:
+    name: Install built wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build --wheel
+      - run: pip install --force-reinstall dist/*.whl
+      - run: python -c "import pyturb; print(pyturb.__version__)"
+
+  validation:
+    name: Validate against turbulence theory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[plot]"
+      - run: >-
+          python validation/validate.py
+          --output validation-artifacts/validation.png
+          --metrics validation-artifacts/validation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation
+          path: validation-artifacts/
 
   docs:
     runs-on: ubuntu-latest

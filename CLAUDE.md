@@ -5,12 +5,15 @@ Guidance for agents working in this repo. Keep it current if the CI workflow cha
 ## Before considering any change done
 
 Run these from the repo root (activate an env with the project installed
-editable, e.g. `pip install -e ".[test,fits,docs]"`). All four mirror
-`.github/workflows/ci.yml` exactly — if they pass locally, CI passes.
+editable, e.g. `pip install -e ".[test,fits,docs]"`). These cover the local
+equivalents of the CI checks.
 
 ```bash
 ruff check .                                    # lint (must be clean, zero errors)
-python -m pytest -q --cov=pyturb --cov-report=term-missing   # full test suite + coverage
+python -m pytest -q --cov=pyturb --cov-report=term-missing --cov-fail-under=85  # no-Numba path
+python -m pytest -q tests/test_accel.py         # after installing .[accel]
+python -m build --wheel && python -m pip install --force-reinstall dist/*.whl
+python validation/validate.py --output /tmp/validation.png --metrics /tmp/validation.json
 mkdocs build --strict                           # docs (only if you touched README/docs/mkdocs.yml)
 python -c "import pyturb"                       # sanity import after any src/ change
 ```

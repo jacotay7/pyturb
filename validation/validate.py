@@ -1,15 +1,22 @@
 """Regenerate the pyturb validation gallery — evidence, not just claims.
 
 Runs five ensemble checks against analytic turbulence theory and writes a
-figure to ``docs/images/validation.png``. Each check also prints PASS/FAIL with
-its tolerance, so this doubles as a (slow) integration test that can run in CI.
+figure and machine-readable metrics. Each check also prints PASS/FAIL with its
+tolerance, so this doubles as a (slow) integration test that can run in CI.
 
     python validation/validate.py
+    python validation/validate.py --output /tmp/validation.png \
+        --metrics /tmp/validation.json
 
 Uses only pyturb + numpy + matplotlib.
 """
 
 from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Optional, Sequence
 
 import matplotlib
 
@@ -24,7 +31,7 @@ RESULTS = []
 
 
 def check(name, ok, detail):
-    RESULTS.append((name, ok))
+    RESULTS.append({"name": name, "passed": bool(ok), "detail": detail})
     print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
 
@@ -171,7 +178,25 @@ def extruder_stationarity(ax):
     check("extruder long-run stationarity", drift < 0.1, f"{drift*100:.1f}% drift")
 
 
-def main():
+def _parse_args(argv: Optional[Sequence[str]] = None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("docs/images/validation.png"),
+        help="path for the validation figure (default: docs/images/validation.png)",
+    )
+    parser.add_argument(
+        "--metrics",
+        type=Path,
+        help="optional path for JSON validation metrics",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[Sequence[str]] = None):
+    args = _parse_args(argv)
+    RESULTS.clear()
     fig, axes = plt.subplots(2, 3, figsize=(13, 7.5))
     structure_function(axes[0, 0])
     zernike_spectrum(axes[0, 1])
@@ -179,17 +204,37 @@ def main():
     angular_decorrelation(axes[1, 0])
     extruder_stationarity(axes[1, 1])
     axes[1, 2].axis("off")
-    summary = "\n".join(f"{'PASS' if ok else 'FAIL'}  {name}"
-                        for name, ok in RESULTS)
+    summary = "\n".join(
+        f"{'PASS' if result['passed'] else 'FAIL'}  {result['name']}"
+        for result in RESULTS
+    )
     axes[1, 2].text(0.02, 0.95, "pyturb validation\n\n" + summary, va="top",
                     family="monospace", fontsize=9, transform=axes[1, 2].transAxes)
     fig.suptitle(f"pyturb {pyturb.__version__} — turbulence validated against theory",
                  fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    out = "docs/images/validation.png"
-    fig.savefig(out, dpi=110)
-    print(f"\nwrote {out}")
-    n_pass = sum(ok for _, ok in RESULTS)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(args.output, dpi=110)
+    plt.close(fig)
+    print(f"\nwrote {args.output}")
+    n_pass = sum(result["passed"] for result in RESULTS)
+    if args.metrics is not None:
+        args.metrics.parent.mkdir(parents=True, exist_ok=True)
+        args.metrics.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "pyturb_version": pyturb.__version__,
+                    "checks": RESULTS,
+                    "passed": n_pass,
+                    "total": len(RESULTS),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote {args.metrics}")
     print(f"{n_pass}/{len(RESULTS)} checks passed")
     return 0 if n_pass == len(RESULTS) else 1
 

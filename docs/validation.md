@@ -46,8 +46,17 @@ large-scale modes a small screen contains, not drift.
 
 ## Reproducing
 
-The script uses only pyturb, NumPy and Matplotlib, and writes
-`docs/images/validation.png`. Every check is an ensemble comparison to a closed
-form, so re-running with a different seed gives the same conclusions within the
-stated tolerances. The same primitives (`pyturb.analysis`) are available to
-build your own diagnostics — see [interop](interop.md).
+The script uses only pyturb, NumPy and Matplotlib, and by default writes
+`docs/images/validation.png`. For CI or an experiment, keep generated evidence
+out of the worktree with `--output` and record the per-check results with
+`--metrics`:
+
+```bash
+python validation/validate.py --output /tmp/validation.png \
+    --metrics /tmp/validation.json
+```
+
+Every check is an ensemble comparison to a closed form, so re-running with a
+different seed gives the same conclusions within the stated tolerances. The
+same primitives (`pyturb.analysis`) are available to build your own diagnostics
+— see [interop](interop.md).
