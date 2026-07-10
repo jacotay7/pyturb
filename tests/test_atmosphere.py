@@ -776,3 +776,15 @@ def test_extrude_lgs_and_boiling_compose():
     frames = [pyturb.to_numpy(o) for _, o in atm.frames(dt=1e-3, steps=5)]
     assert all(np.isfinite(f).all() for f in frames)
     assert np.corrcoef(frames[0].ravel(), frames[-1].ravel())[0, 1] < 0.999
+
+
+def test_atmosphere_keeps_an_immutable_normalized_model_config():
+    """Caller layer mutation cannot change the validated atmosphere model."""
+    layers = [pyturb.Layer(0.0, 2.0, L0=20.0), pyturb.Layer(1000.0, 1.0, L0=30.0)]
+    atm = pyturb.Atmosphere(layers, r0=0.15, n=32, diameter=4.0)
+    layers[0].cn2_fraction = 100.0
+    layers[0].L0 = 99.0
+    assert [layer.cn2_fraction for layer in atm.layers] == pytest.approx([2 / 3, 1 / 3])
+    assert [layer.L0 for layer in atm.layers] == [20.0, 30.0]
+    with pytest.raises(AttributeError):
+        atm.config.layers[0].L0 = 99.0

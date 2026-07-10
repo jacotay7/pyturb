@@ -28,6 +28,7 @@ import numpy as np
 from . import _accel
 from . import profiles as _profiles
 from .backend import get_array_module
+from .config import AtmosphereConfig
 from .extrude import ExtrudedAtmosphere, _catmull_rom_weights
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
@@ -36,7 +37,6 @@ from .profiles import Layer
 from .utils import (
     air_refractivity,
     r0_at_wavelength,
-    r0_from_seeing,
     seeing_from_r0,
     water_vapour_refractivity,
 )
@@ -326,51 +326,13 @@ class Atmosphere:
         dtype: str = "float32",
         seed: Optional[int] = None,
     ) -> None:
-        layers = list(layers)
-        if not layers:
-            raise ValueError("at least one layer is required")
-        if (r0 is None) == (seeing is None):
-            raise ValueError("give exactly one of r0 or seeing")
-        if not np.isfinite(wavelength) or wavelength <= 0:
-            raise ValueError("wavelength must be positive and finite [m]")
-        if not 0.0 <= zenith_angle < 90.0:
-            raise ValueError("zenith_angle must be in [0, 90) degrees")
-        if not np.isfinite(diameter) or diameter <= 0 or n < 2:
-            raise ValueError("diameter must be positive and finite, and n >= 2")
-        if field_of_view < 0:
-            raise ValueError("field_of_view must be >= 0 arcsec")
-        if engine not in ("spectral", "extrude"):
-            raise ValueError("engine must be 'spectral' or 'extrude'")
-        if interp not in ("cubic", "linear", "lanczos"):
-            raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
-        if not np.isfinite(power_law) or power_law <= 2.0:
-            raise ValueError("power_law must be > 2 and finite (Kolmogorov is 11/3)")
-        if not np.isfinite(inner_scale) or inner_scale < 0:
-            raise ValueError("inner_scale must be >= 0 and finite (0 disables it)")
-        if L0 is not None and (np.isnan(L0) or L0 <= 0):
-            raise ValueError(
-                "L0 override must be positive (use numpy.inf for Kolmogorov)"
-            )
-        if engine == "extrude":
-            if power_law != 11.0 / 3.0:
-                raise ValueError(
-                    "non-Kolmogorov power_law requires engine='spectral': the "
-                    "extruder's row-to-row recurrence is a closed-form "
-                    "conditional distribution derived specifically for the "
-                    "von Karman covariance (power_law=11/3); generalizing it "
-                    "to other exponents needs a different closed form, not "
-                    "just a different PSD, so it is not offered here. "
-                    "power_law is available for sample() and "
-                    "engine='spectral' frames()/opd()."
-                )
-            if inner_scale > 0:
-                raise ValueError(
-                    "inner_scale requires engine='spectral': the extruder's "
-                    "recurrence has no inner-scale term in its closed-form "
-                    "covariance. inner_scale is available for sample() and "
-                    "engine='spectral' frames()/opd()."
-                )
-        if engine == "extrude" and tau_boil is not None:
+        config = AtmosphereConfig.create(
+            layers, r0, seeing, wavelength, zenith_angle, diameter, n, L0,
+            power_law, inner_scale, subharmonics, field_of_view, tau_boil,
+            engine, interp, lgs_altitude, dispersion, wet_fraction, device,
+            dtype, seed,
+        )
+        if config.engine == "extrude" and config.has_tau_boil:
             warnings.warn(
                 "boiling (tau_boil) on engine='extrude' re-extrudes an "
                 "independent fresh screen every step and is markedly slower "
@@ -381,72 +343,31 @@ class Atmosphere:
                 ExtrudeBoilingPerformanceWarning,
                 stacklevel=2,
             )
-        if lgs_altitude is not None and lgs_altitude <= 0:
-            raise ValueError("lgs_altitude must be positive [m]")
-        if dispersion not in (None, "edlen", "ciddor"):
-            raise ValueError("dispersion must be None, 'edlen', or 'ciddor'")
-        if not 0.0 <= wet_fraction <= 1.0:
-            raise ValueError("wet_fraction must be in [0, 1]")
-        if wet_fraction > 0.0 and dispersion != "ciddor":
-            raise ValueError(
-                "wet_fraction > 0 requires dispersion='ciddor' (the wet/dry "
-                "chromatic split): dispersion='edlen' models dry air only and "
-                "dispersion=None is achromatic, so neither has a water-vapour "
-                "term to weight."
-            )
-        self.engine = engine
-        self.interp = interp
-        self.lgs_altitude = lgs_altitude
-        self.dispersion = dispersion
-        self.wet_fraction = float(wet_fraction)
-
-        self.wavelength = float(wavelength)
-        if seeing is not None:
-            if not np.isfinite(seeing) or seeing <= 0:
-                raise ValueError("seeing must be positive and finite [arcsec]")
-            r0 = r0_from_seeing(seeing, wavelength)
-        if not np.isfinite(r0) or r0 <= 0:
-            raise ValueError("r0 (or the r0 implied by seeing) must be positive "
-                             "and finite [m]")
-        self.r0_zenith = float(r0)
-        self.zenith_angle = float(zenith_angle)
-        self.diameter = float(diameter)
-        self.n = int(n)
-        self.subharmonics = int(subharmonics)
-        self.power_law = float(power_law)
-        self.inner_scale = float(inner_scale)
-        self.field_of_view = float(field_of_view)
-        self.device = device
-        self.dtype = dtype
-        self.pixel_scale = self.diameter / self.n
+        self.config = config
+        self.engine = config.engine
+        self.interp = config.interp
+        self.lgs_altitude = config.lgs_altitude
+        self.dispersion = config.dispersion
+        self.wet_fraction = config.wet_fraction
+        self.wavelength = config.wavelength
+        self.r0_zenith = config.r0_zenith
+        self.zenith_angle = config.zenith_angle
+        self.diameter = config.diameter
+        self.n = config.grid.n
+        self.subharmonics = config.subharmonics
+        self.power_law = config.power_law
+        self.inner_scale = config.inner_scale
+        self.field_of_view = config.field_of_view
+        self.device = config.grid.device
+        self.dtype = config.grid.dtype.name
+        self.pixel_scale = config.grid.pixel_scale
 
         cos_z = np.cos(np.deg2rad(self.zenith_angle))
         self.airmass = 1.0 / cos_z
         # Line-of-sight r0 shrinks with airmass; ranges stretch with sec(z).
         self.r0_los = self.r0_zenith * cos_z ** (3.0 / 5.0)
 
-        # Normalise Cn2 fractions and store a copy of the (possibly L0-overridden)
-        # profile for reporting and integrated-quantity calculations.
-        frac = _profiles._fractions(layers)
-        self.layers: List[Layer] = []
-        for layer, f in zip(layers, frac):
-            self.layers.append(
-                Layer(
-                    altitude=layer.altitude,
-                    cn2_fraction=float(f),
-                    wind_speed=layer.wind_speed,
-                    wind_direction=layer.wind_direction,
-                    L0=layer.L0 if L0 is None else float(L0),
-                )
-            )
-        if engine == "extrude" and any(not np.isfinite(ly.L0) for ly in self.layers):
-            raise ValueError(
-                "engine='extrude' requires a finite outer scale L0 for every "
-                "layer: the extruder's row recurrence conditions on the von "
-                "Karman phase covariance, which is only well-defined (finite "
-                "variance) for finite L0. Kolmogorov (L0=inf) is only "
-                "available for engine='spectral' or sample()."
-            )
+        self.layers = [layer.to_layer() for layer in config.layers]
 
         # Oversize the generated screens so off-axis footprints (up to
         # field_of_view radius) stay inside the screen instead of wrapping.
@@ -463,22 +384,13 @@ class Atmosphere:
         self._screen_period_m = self.n_screen * self.pixel_scale
         self._wrap_warned = False
 
-        # Per-layer boiling time constants (s); inf/None means frozen flow.
-        if tau_boil is None:
-            tau = np.full(len(self.layers), np.inf)
-        else:
-            tau = np.broadcast_to(
-                np.asarray(tau_boil, dtype=np.float64), (len(self.layers),)
-            ).astype(np.float64)
-        if np.any(tau <= 0):
-            raise ValueError("tau_boil must be positive (or None for frozen flow)")
-        self.tau_boil = tau
+        self.tau_boil = np.asarray(config.tau_boil, dtype=np.float64)
 
-        self.xp = get_array_module(device)
-        self.seed = seed
+        self.xp = get_array_module(self.device)
+        self.seed = config.seed
         # Set by from_profile() to the named profile; None for a direct build.
         self._profile_name: Optional[str] = None
-        master = np.random.SeedSequence(seed)
+        master = np.random.SeedSequence(self.seed)
         seeds = master.spawn(len(self.layers))
         self._boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
         self._boil_rng = self.xp.random.default_rng(self._boil_seed)
@@ -498,8 +410,8 @@ class Atmosphere:
                 power_law=self.power_law,
                 inner_scale=self.inner_scale,
                 seed=int(gen_seed.generate_state(1)[0]),
-                device=device,
-                dtype=dtype,
+                device=self.device,
+                dtype=self.dtype,
             )
             # The spectral flow screen is only needed for engine="spectral".
             flow = (
@@ -552,8 +464,8 @@ class Atmosphere:
                     power_law=self.power_law,
                     inner_scale=self.inner_scale,
                     seed=int(child.generate_state(1)[0]),
-                    device=device,
-                    dtype=dtype,
+                    device=self.device,
+                    dtype=self.dtype,
                 )
             )
 
@@ -570,12 +482,12 @@ class Atmosphere:
         # per-layer magnification array (``_lgs_mag``); the extruder derives its
         # own from ``lgs_altitude_los``, but must be rejected here just the same.
         self._lgs_mag: Optional[np.ndarray] = None
-        if lgs_altitude is not None:
-            lgs_los = float(lgs_altitude) * self.airmass
+        if self.lgs_altitude is not None:
+            lgs_los = self.lgs_altitude * self.airmass
             mag = 1.0 - np.array([s.altitude_los for s in self._layers]) / lgs_los
             if np.any(mag <= 0.0):
                 raise ValueError(
-                    f"lgs_altitude ({lgs_altitude:.0f} m) must exceed every "
+                    f"lgs_altitude ({self.lgs_altitude:.0f} m) must exceed every "
                     "layer altitude (projected to the line of sight): a layer "
                     "at or above the beacon gives a degenerate (<= 0) cone "
                     "magnification, which would collapse that layer's footprint "
@@ -607,12 +519,12 @@ class Atmosphere:
                 layer_altitude_los=ext_alt,
                 field_of_view_pix=ext_fov_margin_pix,
                 interp=self.interp,
-                lgs_altitude_los=(None if lgs_altitude is None
-                                  else float(lgs_altitude) * self.airmass),
-                device=device,
-                dtype=dtype,
+                lgs_altitude_los=(None if self.lgs_altitude is None
+                                  else self.lgs_altitude * self.airmass),
+                device=self.device,
+                dtype=self.dtype,
                 seeds=ext_seeds,
-                tau_boil=(None if tau_boil is None else list(self.tau_boil)),
+                tau_boil=(None if not config.has_tau_boil else list(self.tau_boil)),
                 boil_seed=self._ext_boil_seed,
             )
             self._ext = ExtrudedAtmosphere(**self._ext_kwargs)

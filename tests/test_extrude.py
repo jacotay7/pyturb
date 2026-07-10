@@ -22,6 +22,28 @@ def _engine(theta_deg=0.0, speed=10.0, seed=0, altitude=0.0, interp="cubic"):
     )
 
 
+def test_extruded_engine_validates_its_grid_before_backend_dispatch():
+    """The direct extrusion API shares the periodic engine's grid contract."""
+    common = dict(
+        layer_r0=[R0],
+        layer_L0=[L0],
+        layer_wind=[(1.0, 0.0)],
+        layer_altitude_los=[0.0],
+    )
+    with pytest.raises(ValueError, match="integer"):
+        ExtrudedAtmosphere(n=32.0, pixel_scale=DX, **common)
+    with pytest.raises(ValueError, match="pixel_scale"):
+        ExtrudedAtmosphere(n=N, pixel_scale=0.0, **common)
+    with pytest.raises(ValueError, match="dtype"):
+        ExtrudedAtmosphere(n=N, pixel_scale=DX, dtype="float16", **common)
+    with pytest.raises(ValueError, match="field_of_view_pix"):
+        ExtrudedAtmosphere(n=N, pixel_scale=DX, field_of_view_pix=[0.0, 1.0], **common)
+    with pytest.raises(ValueError, match="seeds"):
+        ExtrudedAtmosphere(n=N, pixel_scale=DX, seeds=[1, 2], **common)
+    with pytest.raises(ValueError, match="tau_boil"):
+        ExtrudedAtmosphere(n=N, pixel_scale=DX, tau_boil=[0.1, 0.2], **common)
+
+
 def test_theta0_is_exact_frozen_flow_translation():
     """Wind along axis 0 by a whole pixel is an exact roll of the screen."""
     eng = _engine(0.0)

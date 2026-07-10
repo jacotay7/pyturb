@@ -63,8 +63,10 @@ import numpy as np
 
 from . import _accel
 from .backend import get_array_module
+from .config import ExtrusionConfig
 from .fourier import PhaseScreen
 from .infinite import _lanczos_weights, _spd_solve, phase_covariance
+from .ring import compact_row_ring
 
 __all__ = ["ExtrudedAtmosphere"]
 
@@ -433,16 +435,13 @@ class _ExtrudeLayer:
         # far beyond what has actually been extruded, so the bound derived
         # from it must be capped at what extrusion still needs to keep going
         # (the last ``m`` stencil rows), or this computes a negative-size copy.
-        target_bound = int(
-            np.floor(self._along_min - self._fov_margin + self._travel)
-        ) - 1
-        stencil_bound = self._base + self._fill - self.m
-        keep_from = min(target_bound, stencil_bound) - self._base
-        keep_from = max(1, keep_from)
-        keep = self._fill - keep_from
-        self._buf[:keep] = self._buf[keep_from : self._fill].copy()
-        self._base += keep_from
-        self._fill = keep
+        self._base, self._fill = compact_row_ring(
+            self._buf,
+            self._base,
+            self._fill,
+            self.m,
+            self._along_min - self._fov_margin + self._travel,
+        )
 
     def _ensure(self) -> None:
         top = int(np.ceil(self._along_max + self._fov_margin + self._travel)) + 2
@@ -536,43 +535,37 @@ class ExtrudedAtmosphere:
         tau_boil: Optional[Sequence[float]] = None,
         boil_seed: Optional[Any] = None,
     ) -> None:
-        self.n = int(n)
-        self.dx = float(pixel_scale)
-        self.xp = get_array_module(device)
+        config = ExtrusionConfig.create(
+            n, pixel_scale, layer_r0, layer_L0, layer_wind, layer_altitude_los,
+            field_of_view_pix, stencil_rows, interp, lgs_altitude_los, device,
+            dtype, seeds, tau_boil, boil_seed,
+        )
+        self.config = config
+        self.n = config.grid.n
+        self.dx = config.grid.pixel_scale
+        self.xp = get_array_module(config.grid.device)
         xp = self.xp
-        self.device = device
-        self.dtype = xp.dtype(dtype)
-        self.interp = interp
-        self.m = int(stencil_rows)
-
-        layer_wind = list(layer_wind)
-        layer_altitude_los = list(layer_altitude_los)
+        self.device = config.grid.device
+        self.dtype = xp.dtype(config.grid.dtype)
+        self.interp = config.interp
+        self.m = config.stencil_rows
+        layer_r0 = config.layer_r0
+        layer_L0 = config.layer_L0
+        layer_wind = config.layer_wind
+        layer_altitude_los = config.layer_altitude_los
+        fov_list = config.field_of_view_pix
         n_layers = len(layer_r0)
-        if not (len(layer_L0) == len(layer_wind) == len(layer_altitude_los)
-                == n_layers):
-            raise ValueError(
-                "layer_r0, layer_L0, layer_wind and layer_altitude_los must "
-                f"have equal length (got {n_layers}, {len(layer_L0)}, "
-                f"{len(layer_wind)}, {len(layer_altitude_los)}); each is one "
-                "entry per layer, so a length mismatch would silently drop "
-                "layers when zipped."
-            )
-        # A scalar broadcasts to every layer (the pre-per-layer behaviour,
-        # still used directly by tests); a sequence gives each layer its own
-        # off-axis reach (what Atmosphere passes, scaled by that layer's own
-        # altitude).
-        if np.ndim(field_of_view_pix) == 0:
-            fov_list = [float(field_of_view_pix)] * n_layers
-        else:
-            fov_list = [float(f) for f in field_of_view_pix]
+        stencil_rows = config.stencil_rows
+        seeds = config.seeds
+        tau_list = config.tau_boil
 
         # LGS cone: a layer at altitude h seen from a guide star at range
         # H_LGS has its footprint magnified by (1 - h/H_LGS). Computed once,
         # up front, since it feeds both the array-sizing pass below and each
         # layer's construction.
-        if lgs_altitude_los is not None:
+        if config.lgs_altitude_los is not None:
             magnifications = [
-                max(0.0, 1.0 - float(alt) / float(lgs_altitude_los))
+                1.0 - alt / config.lgs_altitude_los
                 for alt in layer_altitude_los
             ]
         else:
@@ -593,10 +586,6 @@ class ExtrudedAtmosphere:
         # Per-layer boiling time constants (s); inf/None means frozen flow.
         # ``self.boiling`` gates the (extra) boil work in :meth:`boil_step` and
         # whether the seed factor S is built at all (it is not cheap).
-        if tau_boil is None:
-            tau_list = [float("inf")] * n_layers
-        else:
-            tau_list = [float(t) for t in tau_boil]
         self.boiling = any(np.isfinite(t) for t in tau_list)
 
         # Share A (and the seed factor S) across layers with identical L0;
@@ -604,7 +593,6 @@ class ExtrudedAtmosphere:
         self._ab_cache: dict = {}
         self.layers: List[_ExtrudeLayer] = []
         self._buf = xp.empty((n_layers, capacity, width), dtype=self.dtype)
-        seeds = list(seeds) if seeds is not None else [None] * n_layers
         for i, (r0, L0, (vx, vy), alt, seed, mag, fov_i, tau) in enumerate(
             zip(layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds,
                 magnifications, fov_list, tau_list)

@@ -23,6 +23,7 @@ from typing import Any, Optional, Union
 import numpy as np
 
 from .backend import get_array_module, get_fft_module
+from .config import ScreenConfig
 
 __all__ = ["PhaseScreen"]
 
@@ -97,16 +98,9 @@ class PhaseScreen:
         device: str = "cpu",
         dtype: Union[str, np.dtype] = "float32",
     ) -> None:
-        if n < 2:
-            raise ValueError("n must be at least 2")
-        if not np.isfinite(pixel_scale) or pixel_scale <= 0:
-            raise ValueError("pixel_scale must be positive and finite")
-        if not np.isfinite(r0) or r0 <= 0:
-            raise ValueError("r0 must be positive and finite")
-        if L0 is None:
-            L0 = np.inf
-        if np.isnan(L0) or L0 <= 0:
-            raise ValueError("L0 must be positive (use numpy.inf for Kolmogorov)")
+        config = ScreenConfig.create(
+            n, pixel_scale, r0, L0, device, dtype, finite_outer_scale=False
+        )
         if subharmonics < 0:
             raise ValueError("subharmonics must be >= 0")
         if not np.isfinite(power_law) or power_law <= 2.0:
@@ -114,20 +108,18 @@ class PhaseScreen:
         if not np.isfinite(inner_scale) or inner_scale < 0:
             raise ValueError("inner_scale must be >= 0 and finite (0 disables it)")
 
-        self.n = int(n)
-        self.pixel_scale = float(pixel_scale)
-        self.r0 = float(r0)
-        self.L0 = float(L0)
+        self.n = config.n
+        self.pixel_scale = config.pixel_scale
+        self.r0 = config.r0
+        self.L0 = config.L0
         self.subharmonics = int(subharmonics)
         self.power_law = float(power_law)
         self.inner_scale = float(inner_scale)
-        self.device = device
+        self.device = config.device
 
-        self.xp = get_array_module(device)
+        self.xp = get_array_module(config.device)
         self._fft = get_fft_module(self.xp)
-        self.dtype = self.xp.dtype(dtype)
-        if self.dtype not in (self.xp.dtype("float32"), self.xp.dtype("float64")):
-            raise ValueError("dtype must be float32 or float64")
+        self.dtype = self.xp.dtype(config.dtype)
         self._cdtype = "complex64" if self.dtype == "float32" else "complex128"
         self._rng = self.xp.random.default_rng(seed)
 

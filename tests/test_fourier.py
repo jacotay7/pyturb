@@ -100,6 +100,21 @@ def test_invalid_arguments():
         pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1).generate(0)
 
 
+def test_common_screen_configuration_is_normalized_before_dispatch():
+    """The shared physical configuration accepts NumPy integers and normalizes
+    Kolmogorov's ``L0=None`` before either backend is selected."""
+    gen = pyturb.PhaseScreen(
+        n=np.int64(32), pixel_scale=0.01, r0=0.1, L0=None, dtype=np.float64
+    )
+    assert gen.n == 32
+    assert np.isinf(gen.L0)
+    assert gen.dtype == np.dtype("float64")
+    with pytest.raises(ValueError, match="integer"):
+        pyturb.PhaseScreen(n=32.0, pixel_scale=0.01, r0=0.1)
+    with pytest.raises(ValueError, match="dtype"):
+        pyturb.PhaseScreen(n=32, pixel_scale=0.01, r0=0.1, dtype="float16")
+
+
 def _sf_slope(power_law=11.0 / 3.0, inner_scale=0.0, draws=25):
     n, dx, r0 = 256, 8.0 / 256, 0.15
     gen = pyturb.PhaseScreen(n=n, pixel_scale=dx, r0=r0, L0=np.inf,

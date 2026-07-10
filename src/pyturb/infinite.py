@@ -44,7 +44,9 @@ from scipy import linalg
 from scipy.special import gamma, kv
 
 from .backend import get_array_module
+from .config import ScreenConfig
 from .fourier import PhaseScreen
+from .ring import compact_row_ring
 
 __all__ = ["InfinitePhaseScreen", "phase_covariance"]
 
@@ -174,31 +176,27 @@ class InfinitePhaseScreen:
         device: str = "cpu",
         dtype: Union[str, np.dtype] = "float32",
     ) -> None:
-        if not np.isfinite(L0) or L0 <= 0:
-            raise ValueError(
-                "InfinitePhaseScreen requires a finite positive outer scale L0"
-            )
-        if not np.isfinite(pixel_scale) or pixel_scale <= 0:
-            raise ValueError("pixel_scale must be positive and finite")
-        if not np.isfinite(r0) or r0 <= 0:
-            raise ValueError("r0 must be positive and finite")
-        if not 1 <= stencil_rows < n:
+        config = ScreenConfig.create(
+            n, pixel_scale, r0, L0, device, dtype, finite_outer_scale=True
+        )
+        if (
+            not isinstance(stencil_rows, (int, np.integer))
+            or not 1 <= stencil_rows < config.n
+        ):
             raise ValueError("stencil_rows must be in [1, n)")
         if interp not in ("cubic", "linear", "lanczos"):
             raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
 
-        self.n = int(n)
-        self.pixel_scale = float(pixel_scale)
-        self.r0 = float(r0)
-        self.L0 = float(L0)
+        self.n = config.n
+        self.pixel_scale = config.pixel_scale
+        self.r0 = config.r0
+        self.L0 = config.L0
         self.stencil_rows = int(stencil_rows)
         self.interp = interp
-        self.device = device
+        self.device = config.device
 
-        self.xp = get_array_module(device)
-        self.dtype = self.xp.dtype(dtype)
-        if self.dtype not in (self.xp.dtype("float32"), self.xp.dtype("float64")):
-            raise ValueError("dtype must be float32 or float64")
+        self.xp = get_array_module(config.device)
+        self.dtype = self.xp.dtype(config.dtype)
 
         self._build_extrusion_matrices()
 
@@ -294,14 +292,13 @@ class InfinitePhaseScreen:
         still needs to keep going (the last ``stencil_rows`` rows) or this
         computes a negative-size copy. Amortised O(1) rows per step.
         """
-        target_bound = int(np.floor(self._travel)) - 1
-        stencil_bound = self._base + self._fill - self.stencil_rows
-        keep_from = min(target_bound, stencil_bound) - self._base
-        keep_from = max(1, keep_from)  # always free at least one row
-        keep = self._fill - keep_from
-        self._buf[:keep] = self._buf[keep_from : self._fill].copy()
-        self._base += keep_from
-        self._fill = keep
+        self._base, self._fill = compact_row_ring(
+            self._buf,
+            self._base,
+            self._fill,
+            self.stencil_rows,
+            self._travel,
+        )
 
     def _ensure(self, top_virtual_index):
         """Extrude until virtual row ``top_virtual_index`` exists."""
