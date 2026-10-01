@@ -2,7 +2,9 @@ name: GPU
 
 # The CuPy path is not exercised by the CPU-only `CI` workflow. This job runs
 # the GPU-marked tests (pytest --run-gpu) on a self-hosted runner that has a
-# CUDA GPU + CuPy. It runs for pull requests, as well as manually and weekly.
+# CUDA GPU + CuPy. It runs for pull requests and manually. There is no weekly
+# schedule: with no runner online a scheduled job queues until GitHub cancels
+# it, which only adds a cancelled run each week.
 # Configure the ``GPU / gpu-test`` status check as required in the main branch
 # protection rule so a pull request cannot merge until a GPU runner has passed.
 #
@@ -13,10 +15,6 @@ name: GPU
 on:
   pull_request:
   workflow_dispatch:
-  schedule:
-    # Weekly, Mondays 06:00 UTC — a low-frequency regression guard for the
-    # CuPy path. Harmless (a no-op) if no self-hosted GPU runner is online.
-    - cron: "0 6 * * 1"
 
 jobs:
   gpu-test:
