@@ -51,6 +51,10 @@ _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 # path is ~3-8x faster by removing per-layer launch latency.
 _LGS_BATCH_MAX_ELEMS = 4_000_000
 
+# Marks "the source range the Atmosphere was built with" (lgs_altitude), as
+# opposed to an explicit per-direction altitude (None = a star at infinity).
+_DEFAULT_SOURCE = object()
+
 
 class PeriodicWrapWarning(UserWarning):
     """The default ``engine="spectral"`` screen has wrapped (repeated).
@@ -618,8 +622,7 @@ class Atmosphere:
                  for p in range(1, self._n_sh + 1)]
             )  # (P, 3) float64
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
-        if self._lgs_mag is not None:
-            self._build_lgs_zoom()
+        self._zoom_cache: Dict[Tuple[float, ...], Tuple[Any, Any]] = {}
         # GPU fast path (fused layer sum, device-side phasors, CUDA graph). It
         # holds references to _spectra/_sh_coeffs, which boiling updates in
         # place; rebuilding them (reset) rebuilds this too.
@@ -654,25 +657,29 @@ class Atmosphere:
         phasor = np.exp((2j * np.pi) * np.mod(cycles, 1.0))
         return self.xp.asarray(phasor, dtype=self._cdtype)
 
-    def _build_lgs_zoom(self):
-        """Precompute the stacked per-layer LGS cone zoom taps (fixed magnification).
+    def _zoom_taps(self, mags: np.ndarray) -> Tuple[Any, Any]:
+        """Stacked per-layer cone-zoom taps for magnifications ``mags`` (one per layer).
 
         Each layer's ``(n_screen, n_screen)`` screen is sampled at the central
         pupil grid scaled about the screen centre by that layer's cone
         magnification ``mag = 1 - h/H_LGS`` (isotropic, so rows and columns
         share one set of taps). The taps — clipped buffer indices and the
-        interpolation weights (honouring ``interp``) — depend only on the fixed
-        magnification, so they are built once and stacked into ``(L, T, n)``
-        arrays (``T`` taps: 2 linear / 4 cubic / 6 lanczos). The per-frame
-        readout is then a handful of batched ``take_along_axis`` gathers over
-        all layers at once, not a per-layer/per-tap Python loop.
+        interpolation weights (honouring ``interp``) — depend only on the
+        magnifications, so they are built once per source altitude and stacked
+        into ``(L, T, n)`` arrays (``T`` taps: 2 linear / 4 cubic / 6 lanczos).
+        The per-frame readout is then a handful of batched gathers over all
+        layers at once, not a per-layer/per-tap Python loop.
         """
+        key = tuple(np.round(np.asarray(mags, dtype=np.float64), 12))
+        cached = self._zoom_cache.get(key)
+        if cached is not None:
+            return cached
         xp = self.xp
         centre = (self.n_screen - 1) / 2.0
         base = np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0
         rdtype = self._spectra.real.dtype
         idx_layers, w_layers = [], []
-        for mag in self._lgs_mag:
+        for mag in key:
             pos = centre + base * float(mag)
             p0 = np.floor(pos).astype(np.int64)
             fr = pos - p0
@@ -688,8 +695,10 @@ class Atmosphere:
                 np.stack([np.clip(p0 + off, 0, self.n_screen - 1) for off in offsets])
             )  # (T, n)
             w_layers.append(np.stack([np.asarray(w) for w in weights]))  # (T, n)
-        self._zoom_idx = xp.asarray(np.stack(idx_layers))             # (L, T, n) int
-        self._zoom_w = xp.asarray(np.stack(w_layers), dtype=rdtype)   # (L, T, n)
+        taps = (xp.asarray(np.stack(idx_layers)),                 # (L, T, n) int
+                xp.asarray(np.stack(w_layers), dtype=rdtype))     # (L, T, n)
+        self._zoom_cache[key] = taps
+        return taps
 
     def _build_boil_tau_maps(self):
         """Per-mode boiling time constants (Kolmogorov eddy-turnover scaling).
@@ -954,7 +963,16 @@ class Atmosphere:
             ``evolve`` call on the same object (a decreasing ``t`` raises
             ``ValueError``), and :meth:`reset` restarts it at ``t=0``.
         directions : sequence of (thx, thy), optional
-            Off-axis directions [arcsec] from the on-axis line of sight. Each
+            Off-axis directions [arcsec] from the on-axis line of sight, each
+            ``(thx, thy)`` or ``(thx, thy, altitude)``. ``altitude`` [m, at
+            zenith] gives that direction its own source: a laser guide star at
+            that range (cone effect), or ``None`` for a natural star or science
+            target at infinity, so an LGS asterism, NGS and science directions
+            can share one call and one turbulence realisation. Two-element
+            entries use the constructor's ``lgs_altitude``. On
+            ``engine="extrude"`` a source's footprint may not exceed the one the
+            buffer was built for: build with ``lgs_altitude=None`` and give LGS
+            directions their altitude to mix them. Each
             direction's radius ``sqrt(thx**2 + thy**2)`` must lie within the
             ``field_of_view`` declared at construction, or the screens are
             not guaranteed to be oversized enough and the request raises
@@ -975,7 +993,11 @@ class Atmosphere:
             return self._to_opd(phase, wavelength)
 
         xp = self.xp
-        oxs, oys = self._direction_slopes(directions)
+        oxs, oys, mags = self._parse_directions(directions)
+        if any(m is not None for m in mags):
+            stacked = xp.stack([self._phase_source(float(t), ox, oy, m)
+                                for ox, oy, m in zip(oxs, oys, mags)])
+            return self._to_opd(stacked, wavelength)
         # On the GPU the spectral engine (without the per-layer LGS zoom)
         # batches all directions through one inverse FFT and one subharmonic
         # matmul chain -- ~1.8x at 512² by removing per-direction launch
@@ -992,12 +1014,124 @@ class Atmosphere:
             )
         return self._to_opd(stacked, wavelength)
 
+    def opd_at(
+        self,
+        x: Any,
+        y: Any,
+        t: float = 0.0,
+        direction: Tuple[float, float] = (0.0, 0.0),
+        altitude: Any = _DEFAULT_SOURCE,
+        wavelength: Optional[float] = None,
+    ) -> Any:
+        """OPD at arbitrary pupil-plane coordinates ``(x, y)`` [m].
+
+        ``x``/``y`` (broadcastable arrays, any shape) are offsets from the
+        pupil centre along axes 0 and 1 — e.g. DM actuator or sub-aperture
+        positions, a sparse or segmented aperture, or several apertures. Each
+        layer is read at its frozen-flow, off-axis-shifted and cone-magnified
+        position with the ``interp`` kernel and the layers summed, so on the
+        pupil grid itself this reproduces :meth:`opd` (exactly at its pixel
+        centres). ``direction`` [arcsec] and ``altitude`` (``None`` for a source
+        at infinity; default the constructor's ``lgs_altitude``) are as in
+        :meth:`opd`. Points must lie on the simulated screen: on
+        ``engine="spectral"`` the FFT screen (widen it with ``oversample`` or
+        ``field_of_view`` to reach beyond the pupil, e.g. for long baselines);
+        on ``engine="extrude"`` the extruded strip (the pupil footprint plus the
+        ``field_of_view`` margin). Boiling state is as for :meth:`opd`.
+        """
+        x, y = np.broadcast_arrays(np.asarray(x, dtype=np.float64),
+                                   np.asarray(y, dtype=np.float64))
+        entry = tuple(direction) if altitude is _DEFAULT_SOURCE else (
+            float(direction[0]), float(direction[1]), altitude)
+        oxs, oys, mags = self._parse_directions([entry])
+        ox, oy, mag = oxs[0], oys[0], mags[0]
+        x_pix = x / self.pixel_scale
+        y_pix = y / self.pixel_scale
+        if self.engine == "extrude":
+            self._ext_advance(float(t))
+            phase = self._ext.sample_points(x_pix, y_pix, ox, oy, mags=mag)
+            return self._to_opd(phase, wavelength)
+        if mag is None:
+            mag = (self._lgs_mag if self._lgs_mag is not None
+                   else np.ones(len(self._layers)))
+        phase = self._sample_layers(self._layer_screens(float(t), ox, oy), x_pix,
+                                    y_pix, mag)
+        return self._to_opd(phase, wavelength)
+
+    def _sample_layers(self, screens: Any, x_pix: np.ndarray, y_pix: np.ndarray,
+                       mags: np.ndarray) -> Any:
+        """Sum of every layer's screen interpolated at ``centre + mag * (x, y)``."""
+        xp = self.xp
+        centre = (self.n_screen - 1) / 2.0
+        if self.interp == "linear":
+            reach = (0, 1)
+        elif self.interp == "lanczos":
+            reach = (2, 3)
+        else:
+            reach = (1, 2)
+        total = None
+        for layer, mag in enumerate(mags):
+            row = centre + mag * x_pix
+            col = centre + mag * y_pix
+            lo = min(row.min(), col.min())
+            hi = max(row.max(), col.max())
+            if np.floor(lo) - reach[0] < 0 or np.floor(hi) + reach[1] > self.n_screen - 1:
+                raise ValueError(
+                    "opd_at: requested points fall outside the simulated FFT "
+                    f"screen ({self.n_screen} px = {self._screen_period_m:.2f} m "
+                    "across, centred on the pupil). Widen it with oversample (or "
+                    "field_of_view) to sample further from the pupil centre."
+                )
+            r0 = np.floor(row).astype(np.int64)
+            c0 = np.floor(col).astype(np.int64)
+            fr, fc = row - r0, col - c0
+            if self.interp == "linear":
+                taps_r = ((0, 1.0 - fr), (1, fr))
+                taps_c = ((0, 1.0 - fc), (1, fc))
+            elif self.interp == "lanczos":
+                taps_r = tuple(zip(*_lanczos_weights(fr, np), strict=True))
+                taps_c = tuple(zip(*_lanczos_weights(fc, np), strict=True))
+            else:
+                taps_r = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fr)))
+                taps_c = tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc)))
+            field = screens[layer]
+            out = None
+            for dr, wr in taps_r:
+                rr = xp.asarray(r0 + dr)
+                row_term = None
+                for dc, wc in taps_c:
+                    term = xp.asarray(wc) * field[rr, xp.asarray(c0 + dc)]
+                    row_term = term if row_term is None else row_term + term
+                contrib = xp.asarray(wr) * row_term
+                out = contrib if out is None else out + contrib
+            total = out if total is None else total + out
+        return total.astype(self.dtype_out, copy=False)
+
     def _direction_slopes(
-        self, directions: Sequence[Tuple[float, float]]
+        self, directions: Sequence[Tuple[float, ...]]
     ) -> Tuple[List[float], List[float]]:
         """Validated direction tangents ``(tan(thx), tan(thy))`` for each direction."""
-        oxs, oys = [], []
-        for thx, thy in directions:
+        oxs, oys, _ = self._parse_directions(directions)
+        return oxs, oys
+
+    def _parse_directions(
+        self, directions: Sequence[Tuple[float, ...]]
+    ) -> Tuple[List[float], List[float], List[Optional[np.ndarray]]]:
+        """Direction tangents plus per-layer magnifications for each direction.
+
+        An entry is ``(thx, thy)`` (the constructor's source range) or
+        ``(thx, thy, altitude)``: ``altitude`` [m, at zenith] of a laser guide
+        star, or ``None`` for a source at infinity. The magnification list has
+        ``None`` where the constructor's geometry applies.
+        """
+        oxs, oys, mags = [], [], []
+        for entry in directions:
+            if len(entry) not in (2, 3):
+                raise ValueError(
+                    f"each direction is (thx, thy) or (thx, thy, altitude); got {entry!r}"
+                )
+            thx, thy = float(entry[0]), float(entry[1])
+            mags.append(None if len(entry) == 2 else self._source_mags(entry[2]))
             radius = float(np.hypot(thx, thy))
             if radius > self.field_of_view:
                 raise ValueError(
@@ -1011,7 +1145,49 @@ class Atmosphere:
                 )
             oxs.append(np.tan(thx * _ARCSEC_TO_RAD))
             oys.append(np.tan(thy * _ARCSEC_TO_RAD))
-        return oxs, oys
+        return oxs, oys, mags
+
+    def _source_mags(self, altitude: Optional[float]) -> np.ndarray:
+        """Per-layer cone magnification ``1 - h/H`` for a source at ``altitude`` [m]."""
+        if altitude is None:
+            return np.ones(len(self._layers))
+        altitude = float(altitude)
+        if not np.isfinite(altitude) or altitude <= 0:
+            raise ValueError("a source altitude must be positive and finite [m], "
+                             "or None for a source at infinity")
+        mags = 1.0 - np.array([s.altitude_los for s in self._layers]) / (
+            altitude * self.airmass)
+        if np.any(mags <= 0):
+            raise ValueError(
+                f"source altitude {altitude:.0f} m must exceed every layer altitude: "
+                "a layer at or above the beacon gives a degenerate cone"
+            )
+        return mags
+
+    def _ext_advance(self, t: float) -> None:
+        """Move the streaming extruder to ``t`` (never backwards)."""
+        if t < self._ext_time:
+            raise ValueError(
+                f"engine='extrude' is streaming: requested t={t:g} s is earlier "
+                f"than the {self._ext_time:g} s it has already reached (via "
+                "opd/frames/evolve). Its row extrusion only moves forward, so "
+                "call atm.reset() to restart at t=0, or use engine='spectral' "
+                "for random-access times."
+            )
+        self._ext_time = t
+        self._ext.set_time(t)
+
+    def _phase_source(self, t: float, ox: float, oy: float,
+                      mags: Optional[np.ndarray]) -> Any:
+        """Phase toward (ox, oy) for a source with per-layer magnifications ``mags``."""
+        if mags is None:
+            return self._phase(t, ox, oy)
+        if self.engine == "spectral":
+            if self._lgs_mag is None and np.allclose(mags, 1.0):
+                return self._integrate(t, ox, oy)
+            return self._integrate_lgs(t, ox, oy, mags)
+        self._ext_advance(t)
+        return self._ext.integrate(ox, oy, mags=mags)
 
     def _phase_times(
         self,
@@ -1020,9 +1196,10 @@ class Atmosphere:
     ) -> Any:
         """Reference-wavelength phase for each time (and direction), stacked."""
         xp = self.xp
-        oxs, oys = self._direction_slopes(directions) if directions else ([0.0], [0.0])
+        oxs, oys, mags = (self._parse_directions(directions) if directions
+                          else ([0.0], [0.0], [None]))
         n_dirs = len(oxs)
-        if self._gpu is not None:
+        if self._gpu is not None and all(m is None for m in mags):
             ox = np.asarray(oxs)
             oy = np.asarray(oys)
             # (T, D, L) displacements, flattened to one batch of frames.
@@ -1045,8 +1222,8 @@ class Atmosphere:
         frames = []
         for t in times:
             if directions:
-                frames.append(xp.stack([self._phase(float(t), ox, oy)
-                                        for ox, oy in zip(oxs, oys)]))
+                frames.append(xp.stack([self._phase_source(float(t), ox, oy, m)
+                                        for ox, oy, m in zip(oxs, oys, mags)]))
             else:
                 frames.append(self._phase(float(t), 0.0, 0.0))
         return xp.stack(frames)
@@ -1059,16 +1236,7 @@ class Atmosphere:
         """
         if self.engine == "spectral":
             return self._integrate(t, ox, oy)
-        if t < self._ext_time:
-            raise ValueError(
-                f"engine='extrude' is streaming: requested t={t:g} s is earlier "
-                f"than the {self._ext_time:g} s it has already reached (via "
-                "opd/frames/evolve). Its row extrusion only moves forward, so "
-                "call atm.reset() to restart at t=0, or use engine='spectral' "
-                "for random-access times."
-            )
-        self._ext_time = t
-        self._ext.set_time(t)
+        self._ext_advance(t)
         return self._ext.integrate(ox, oy)
 
     def _integrate(self, t: float, ox: float, oy: float) -> Any:
@@ -1186,15 +1354,28 @@ class Atmosphere:
         total = total[:, self._crop, self._crop]
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
-    def _integrate_lgs(self, t: float, ox: float, oy: float) -> Any:
+    def _integrate_lgs(self, t: float, ox: float, oy: float,
+                       mags: Optional[np.ndarray] = None) -> Any:
         """Spectral frame with the LGS cone: per-layer inverse FFT then zoom.
 
-        Each layer's screen (frozen-flow shifted and, if boiling, boiled) is
-        inverse-FFT'd, its subharmonic low-frequency part added, then sampled at
-        the pupil grid scaled about the screen centre by the layer's cone
-        magnification, and the layers summed. The layer axis cannot be collapsed
-        before the transform (each layer zooms differently), so this is the
-        slower per-layer path — used only when ``lgs_altitude`` is set.
+        Each layer's screen (:meth:`_layer_screens`) is sampled at the pupil
+        grid scaled about the screen centre by the layer's cone magnification
+        (``mags``, default the constructor's ``lgs_altitude``), and the layers
+        summed. The layer axis cannot be collapsed before the transform (each
+        layer zooms differently), so this is the slower per-layer path.
+        """
+        xp = self.xp
+        screens = self._layer_screens(t, ox, oy)
+        taps = self._zoom_taps(self._lgs_mag if mags is None else mags)
+        total = self._lgs_zoom(screens, taps)
+        return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
+
+    def _layer_screens(self, t: float, ox: float, oy: float) -> Any:
+        """Every layer's full ``(L, n_screen, n_screen)`` phase at ``t`` toward (ox, oy).
+
+        Frozen-flow shifted (and, if boiling, boiled), inverse-FFT'd per layer,
+        with each layer's subharmonic low-frequency part added. Used where the
+        layers must be resampled individually (LGS cone, :meth:`opd_at`).
         """
         xp = self.xp
         cdtype = self._cdtype
@@ -1226,17 +1407,13 @@ class Atmosphere:
                 low = contrib.real if low is None else low + contrib.real
             low = low - low.mean(axis=(-2, -1), keepdims=True)
             screens = screens + low
+        return screens
 
-        # Zoom-sample every layer's screen about the centre by its cone
-        # magnification and sum the layers into the pupil.
-        total = self._lgs_zoom(screens)
-        return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
-
-    def _lgs_zoom(self, screens: Any) -> Any:
+    def _lgs_zoom(self, screens: Any, taps: Tuple[Any, Any]) -> Any:
         """Cone-zoom the ``(L, n_screen, n_screen)`` layer screens into ``(n, n)``.
 
         Separable interpolation (rows then columns) with the precomputed
-        per-layer taps (:meth:`_build_lgs_zoom`), summed over layers. On the GPU,
+        per-layer taps (:meth:`_zoom_taps`), summed over layers. On the GPU,
         below a working-set threshold, this is a handful of ``take_along_axis``
         gathers batched over all layers and taps (3-8x the old per-layer/per-tap
         Python loop at 256²-512²). On the CPU (the tight loop is
@@ -1245,7 +1422,7 @@ class Atmosphere:
         is used instead.
         """
         xp = self.xp
-        idx, w = self._zoom_idx, self._zoom_w  # (L, T, n)
+        idx, w = taps  # (L, T, n)
         n_layers, n_taps = idx.shape[0], idx.shape[1]
         n, ns = self.n, self.n_screen
         if xp is np or n_layers * n * ns > _LGS_BATCH_MAX_ELEMS:

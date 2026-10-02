@@ -897,7 +897,7 @@ def test_lgs_zoom_batched_and_loop_agree():
     loop), so this differential check exercises both on numpy."""
     atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=64,
                                          lgs_altitude=90e3, dtype="float64", seed=5)
-    idx, w = atm._zoom_idx, atm._zoom_w
+    idx, w = atm._zoom_taps(atm._lgs_mag)
     n_layers, n_taps, n, ns = idx.shape[0], idx.shape[1], atm.n, atm.n_screen
     screens = np.random.default_rng(0).standard_normal((n_layers, ns, ns))
 
@@ -1018,3 +1018,78 @@ def test_gpu_cuda_graph_frames_match_eager(tau_boil):
     # reset() rebuilds the spectra; the replay must follow the new arrays.
     first_again = pyturb.to_numpy(graph.reset().opd(0.0))
     np.testing.assert_array_equal(first_again, a[0])
+
+
+@pytest.mark.parametrize("engine, kw", [
+    ("spectral", {}),
+    ("spectral", {"lgs_altitude": 90e3}),
+    ("spectral", {"oversample": 1.5, "interp": "lanczos"}),
+    ("extrude", {}),
+    ("extrude", {"lgs_altitude": 90e3, "interp": "lanczos"}),
+])
+def test_opd_at_pupil_grid_reproduces_opd(device, engine, kw):
+    n = 24
+    atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=n, diameter=4.0,
+                                         field_of_view=5.0, engine=engine,
+                                         device=device, dtype="float64", seed=8, **kw)
+    g = (np.arange(n) - (n - 1) / 2.0) * atm.pixel_scale
+    x, y = np.meshgrid(g, g, indexing="ij")
+    for t, direction in ((0.004, (0.0, 0.0)), (0.011, (3.0, -2.0))):
+        ref = pyturb.to_numpy(atm.opd(t, directions=[direction]))[0]
+        got = pyturb.to_numpy(atm.opd_at(x, y, t, direction=direction))
+        np.testing.assert_allclose(got, ref, rtol=0, atol=1e-12 * np.abs(ref).max())
+    # Off-grid points interpolate between neighbours (bounded by the frame).
+    mid = pyturb.to_numpy(atm.opd_at(x[:-1, :-1] + 0.5 * atm.pixel_scale,
+                                     y[:-1, :-1] + 0.5 * atm.pixel_scale, 0.011,
+                                     direction=(3.0, -2.0)))
+    assert np.abs(mid).max() < 2 * np.abs(ref).max()
+
+
+def test_opd_at_reaches_beyond_the_pupil_only_on_an_oversampled_screen():
+    atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=32, diameter=4.0)
+    with pytest.raises(ValueError, match="oversample"):
+        atm.opd_at([3.0], [0.0])                    # 3 m off-centre on a 4 m screen
+    big = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=32, diameter=4.0,
+                                         oversample=4)
+    assert np.isfinite(big.opd_at([3.0, -7.5], [0.0, 1.0])).all()
+    ext = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=32, diameter=4.0,
+                                         engine="extrude")
+    with pytest.raises(ValueError, match="extruded strip"):
+        ext.opd_at([5.0], [0.0])
+
+
+def test_mixed_lgs_and_ngs_directions_share_one_realisation(device):
+    kw = dict(r0=0.15, n=32, diameter=8.0, field_of_view=20.0, device=device,
+              dtype="float64", seed=4)
+    ngs = pyturb.Atmosphere.from_profile("paranal-median", **kw)
+    lgs = pyturb.Atmosphere.from_profile("paranal-median", lgs_altitude=90e3, **kw)
+    t = 0.007
+    mixed = pyturb.to_numpy(ngs.opd(t, directions=[(0.0, 0.0, None),
+                                                   (10.0, 5.0, 90e3),
+                                                   (10.0, 5.0)]))
+    np.testing.assert_allclose(mixed[0], pyturb.to_numpy(ngs.opd(t)), atol=1e-15)
+    np.testing.assert_allclose(
+        mixed[1], pyturb.to_numpy(lgs.opd(t, directions=[(10.0, 5.0)]))[0], atol=1e-15)
+    np.testing.assert_allclose(
+        mixed[2], pyturb.to_numpy(ngs.opd(t, directions=[(10.0, 5.0)]))[0], atol=1e-15)
+    series = pyturb.to_numpy(ngs.opd(t=[0.0, t], directions=[(10.0, 5.0, 90e3)]))
+    assert series.shape == (2, 1, 32, 32)
+    np.testing.assert_allclose(series[1, 0], mixed[1], atol=1e-15)
+    with pytest.raises(ValueError, match="exceed every layer"):
+        ngs.opd(t, directions=[(0.0, 0.0, 5e3)])
+
+
+def test_extrude_mixed_sources_and_footprint_guard():
+    kw = dict(r0=0.15, n=32, diameter=8.0, engine="extrude", dtype="float64", seed=4)
+    ngs = pyturb.Atmosphere.from_profile("paranal-median", **kw)
+    frames = pyturb.to_numpy(ngs.opd(0.01, directions=[(0.0, 0.0, None),
+                                                       (0.0, 0.0, 90e3)]))
+    ref = pyturb.to_numpy(
+        pyturb.Atmosphere.from_profile("paranal-median", **kw).opd(0.01))
+    np.testing.assert_allclose(frames[0], ref, atol=1e-15)
+    # The LGS cone shrinks high layers' footprints: correlated but different.
+    corr = np.corrcoef(frames[0].ravel(), frames[1].ravel())[0, 1]
+    assert 0.8 < corr < 0.9999
+    lgs_built = pyturb.Atmosphere.from_profile("paranal-median", lgs_altitude=90e3, **kw)
+    with pytest.raises(ValueError, match="footprint"):
+        lgs_built.opd(0.0, directions=[(0.0, 0.0, None)])

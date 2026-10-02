@@ -581,6 +581,7 @@ class ExtrudedAtmosphere:
             ]
         else:
             magnifications = [1.0] * n_layers
+        self.magnifications = tuple(float(m) for m in magnifications)
 
         # Size the shared (L, cap, W) buffer to the largest per-layer need
         # actually present (see class docstring), not a blanket worst case.
@@ -830,8 +831,47 @@ class ExtrudedAtmosphere:
             h = hi - lo
             self._buf[i, lo:hi] = a * self._buf[i, lo:hi] + b * fresh[i, height - h :]
 
-    def integrate(self, thx: float = 0.0, thy: float = 0.0) -> Any:
+    def _grids_for(self, mags: Sequence[float]) -> Tuple[Any, Any]:
+        """Rotated ``(L, n, n)`` pupil grids for per-layer magnifications ``mags``.
+
+        A source at a different range from the one the buffer was sized for
+        (e.g. a natural star next to the LGS cone) needs its own footprint
+        geometry. Footprints larger than the construction's would read rows
+        and columns that were never extruded, so they are rejected.
+        """
+        key = tuple(round(float(m), 12) for m in mags)
+        if not hasattr(self, "_grid_cache"):
+            self._grid_cache = {}
+        if key in self._grid_cache:
+            return self._grid_cache[key]
+        for i, (mag, built) in enumerate(zip(key, self.magnifications)):
+            if mag > built + 1e-12:
+                raise ValueError(
+                    f"layer {i}: this source's footprint (cone magnification "
+                    f"{mag:.4f}) is larger than the {built:.4f} the extruder's "
+                    "buffer was sized for, so it would read turbulence that was "
+                    "never extruded. Build the Atmosphere for the widest source "
+                    "(lgs_altitude=None for natural stars) and give LGS "
+                    "directions their altitude per direction."
+                )
+        xp = self.xp
+        along, perp = [], []
+        for layer, mag in zip(self.layers, key):
+            g = (np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0) * mag
+            gx, gy = g[:, None], g[None, :]
+            along.append(gx * layer._cos + gy * layer._sin)
+            perp.append(-gx * layer._sin + gy * layer._cos + self.width / 2.0)
+        grids = (xp.asarray(np.stack(along)), xp.asarray(np.stack(perp)))
+        self._grid_cache[key] = grids
+        return grids
+
+    def integrate(self, thx: float = 0.0, thy: float = 0.0,
+                  mags: Optional[Sequence[float]] = None) -> Any:
         """Summed reference-wavelength phase ``(n, n)`` toward one direction.
+
+        ``mags`` (one per layer) reads the layers with a different cone
+        magnification than the buffer was built for (a source at another
+        range); ``None`` uses the construction's geometry.
 
         The rotated pupil grids, offset by each layer's wind travel and its
         (per-layer) off-axis footprint shift, index every layer's ring buffer.
@@ -842,11 +882,69 @@ class ExtrudedAtmosphere:
         tap-broadcast gather (looped per layer on CPU, batched on GPU). All paths
         give identical results; the backend picks the fastest.
         """
+        if mags is not None and tuple(round(float(m), 12) for m in mags) != tuple(
+                round(m, 12) for m in self.magnifications):
+            built = (self._along, self._perp)
+            self._along, self._perp = self._grids_for(mags)
+            try:
+                return self.integrate(thx, thy)
+            finally:
+                self._along, self._perp = built
         if self.xp is np:
             if self.interp in ("cubic", "lanczos") and _accel.HAVE_NUMBA:
                 return self._integrate_cpu_fused(thx, thy)
             return self._integrate_looped(thx, thy)
         return self._integrate_batched(thx, thy)
+
+    def sample_points(self, x_pix: Any, y_pix: Any, thx: float = 0.0, thy: float = 0.0,
+                      mags: Optional[Sequence[float]] = None) -> Any:
+        """Summed phase at arbitrary pupil-frame pixel coordinates (any shape).
+
+        ``x_pix``/``y_pix`` are offsets from the pupil centre in pixels along
+        axes 0 and 1. Each layer is read at its rotated, cone-magnified position
+        with the configured interpolation kernel. Only the region the buffer
+        holds (the pupil footprint plus the ``field_of_view`` margin) can be
+        read; points outside it raise.
+        """
+        xp = self.xp
+        x_pix = np.asarray(x_pix, dtype=np.float64)
+        y_pix = np.asarray(y_pix, dtype=np.float64)
+        mags = self.magnifications if mags is None else tuple(float(m) for m in mags)
+        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        reach = {"linear": (0, 1), "lanczos": (2, 3)}.get(self.interp, (1, 2))
+        total = None
+        for i, layer in enumerate(self.layers):
+            gx, gy = x_pix * mags[i], y_pix * mags[i]
+            row = gx * layer._cos + gy * layer._sin + shift_along[i]
+            col = -gx * layer._sin + gy * layer._cos + self.width / 2.0 + shift_perp[i]
+            low_row = np.floor(row.min()) - reach[0]
+            high_row = np.floor(row.max()) + reach[1]
+            low_col = np.floor(col.min()) - reach[0]
+            high_col = np.floor(col.max()) + reach[1]
+            if low_row < 0 or high_row > fill[i] - 1 or low_col < 0 or (
+                    high_col > self.width - 1):
+                raise ValueError(
+                    f"layer {i}: requested points fall outside the extruded strip "
+                    "(the pupil footprint plus the field_of_view margin). The "
+                    "extruder only holds the turbulence the pupil can see; "
+                    "widen field_of_view, or use engine='spectral' with "
+                    "oversample to sample further out."
+                )
+            r0 = np.floor(row).astype(np.int64)
+            c0 = np.floor(col).astype(np.int64)
+            taps_r, taps_c = self._taps(row - r0, col - c0, np)
+            buf = self._buf[i]
+            out = None
+            for dr, weight_r in taps_r:
+                rr = xp.asarray(r0 + dr)
+                row_term = None
+                for dc, weight_c in taps_c:
+                    term = xp.asarray(weight_c) * buf[rr, xp.asarray(c0 + dc)]
+                    row_term = term if row_term is None else row_term + term
+                contrib = xp.asarray(weight_r) * row_term
+                out = contrib if out is None else out + contrib
+            total = out if total is None else total + out
+        return total.astype(self.dtype, copy=False)
 
     def _integrate_cpu_fused(self, thx: float, thy: float) -> Any:
         """Fused Numba readout on CPU (one parallel pass, no temps).
