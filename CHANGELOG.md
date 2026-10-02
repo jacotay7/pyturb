@@ -6,6 +6,21 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Fourteen traceable Paranal profiles**, `paranal-p01` ... `paranal-p14`,
+  from Garcia-Rissmann et al. (2015), MNRAS 448, 2594 (Tables 2-3): seeing
+  classes 0.4"-1.4", each good/median/bad, with their published r0, tau0, mean
+  height and probability of occurrence in the new
+  `ProfileInfo.conditions`. Tests recompute the paper's mean height and tau0
+  from the stored layers (#18).
+
+### Fixed
+
+- A layer with `cn2_fraction=0` no longer crashes `Atmosphere` (its Fried
+  parameter would be infinite); zero-weight layers are left out of the
+  simulation, with a per-layer `tau_boil` kept aligned.
+
 ## [1.1.0] - 2026-10-02
 
 Highlights: an opt-in fix for pupil-sized periodic screens (`oversample`),

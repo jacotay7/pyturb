@@ -20,8 +20,10 @@ lands with a docs page.
       each is a genuine physics extension, not a bug, and would need its own
       theory-referenced validation the way `tau_boil` did.
 - [ ] **ESO 35-layer reference profiles** (median + Q1–Q4, Sarazin et al.
-      2013 / ESO-258292) — blocked on a verbatim copy of the published tables
-      (#18); add with a provenance test once available.
+      2013 / ESO-258292, superseded for the VLT by ESO-399284) — not public;
+      add with a provenance test if a verbatim copy becomes available. Paranal
+      is covered by the published Garcia-Rissmann et al. (2015) set
+      (`paranal-p01`...`p14`).
 
 ## Performance
 

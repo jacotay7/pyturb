@@ -23,7 +23,7 @@ References
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -62,7 +62,9 @@ class Layer:
     cn2_fraction : float
         Fraction of the total integrated turbulence (:math:`C_n^2\\,dh`) in
         this layer. Fractions across a profile are normalised to sum to 1 by
-        :class:`pyturb.Atmosphere`; relative values are what matter.
+        :class:`pyturb.Atmosphere`; relative values are what matter. A layer
+        with fraction 0 is allowed and contributes nothing (``Atmosphere``
+        leaves it out of the simulated layers).
     wind_speed : float
         Wind speed [m/s].
     wind_direction : float
@@ -211,6 +213,67 @@ def _hv57(n_layers: int = 10) -> List[Layer]:
     return discretize_cn2(heights, cn2, n_layers=n_layers, wind="bufton")
 
 
+# Garcia-Rissmann A., Guesalaga A., Kolb J., Le Louarn M., Madec P.-Y. &
+# Neichel B. (2015), "Validation through simulations of a Cn2 profiler for the
+# ESO/VLT Adaptive Optics Facility", MNRAS 448, 2594-2607,
+# doi:10.1093/mnras/stv169 (arXiv:1502.05525). Table 3: fourteen typical
+# Paranal profiles on ten layers (percent of the integrated Cn2, heights above
+# the telescope at zenith) with a common reference wind profile v_ref; Table 2:
+# for each, the wind scaling beta (layer speed = beta * v_ref), r0 at 0.5 um,
+# tau0, mean turbulence height, probability of occurrence and turbulence
+# quality. Compiled by the authors from SLODAR, MASS-DIMM and SCIDAR data
+# (Sarazin et al. 2013); the simulations use L0 = 25 m. Transcribed verbatim
+# (values below are exactly as printed); tests/test_profiles.py recomputes
+# Table 2's mean height and tau0 from these layers. P01/P03 and P12/P14 share
+# their Cn2 columns in the source; they differ in r0 and wind scaling.
+_GR2015_ALTITUDES = (30.0, 140.0, 281.0, 562.0, 1125.0, 2250.0, 4500.0, 7750.0,
+                     11000.0, 14000.0)
+_GR2015_VREF = (5.7, 5.1, 4.4, 3.9, 4.4, 7.2, 14.2, 26.3, 29.8, 15.2)
+# ID: (Table 3 percentages, (seeing class ["], r0 [m], tau0 [ms], beta,
+#      mean height [km], probability [%], quality))
+_GR2015 = {
+    "P01": ((70, 1, 3, 5, 0, 2, 5, 4, 4, 6),
+            (0.4, 0.186, 4.6, 1.29, 3.73, 7.0, "median")),
+    "P02": ((83, 1, 3, 5, 0, 0, 1, 2, 2, 3),
+            (0.6, 0.136, 3.9, 1.44, 2.39, 6.0, "good")),
+    "P03": ((70, 1, 3, 5, 0, 2, 5, 4, 4, 6),
+            (0.6, 0.136, 3.8, 1.14, 3.73, 12.0, "median")),
+    "P04": ((53, 1, 2, 5, 0, 7, 11, 6, 6, 9),
+            (0.6, 0.136, 3.9, 0.92, 4.88, 6.0, "bad")),
+    "P05": ((77, 2, 4, 5, 0, 1, 3, 2, 3, 3),
+            (0.8, 0.116, 3.0, 1.44, 2.66, 6.5, "good")),
+    "P06": ((59, 2, 4, 6, 1, 5, 9, 4, 5, 5),
+            (0.8, 0.116, 3.0, 1.15, 3.82, 13.0, "median")),
+    "P07": ((41, 1, 4, 8, 1, 13, 15, 5, 6, 6),
+            (0.8, 0.116, 3.1, 1.00, 4.45, 6.5, "bad")),
+    "P08": ((65, 5, 7, 7, 0, 1, 4, 4, 4, 3),
+            (1.0, 0.101, 2.4, 1.44, 3.05, 4.5, "good")),
+    "P09": ((45, 4, 7, 9, 3, 6, 12, 5, 5, 4),
+            (1.0, 0.101, 2.5, 1.19, 3.81, 9.0, "median")),
+    "P10": ((16, 2, 5, 12, 11, 21, 16, 6, 6, 5),
+            (1.0, 0.101, 2.4, 1.12, 4.47, 4.5, "bad")),
+    "P11": ((46, 10, 12, 15, 1, 1, 6, 4, 3, 2),
+            (1.2, 0.089, 2.0, 1.55, 2.73, 3.0, "good")),
+    "P12": ((26, 8, 11, 16, 6, 10, 10, 6, 4, 3),
+            (1.2, 0.089, 2.1, 1.27, 3.53, 6.0, "median")),
+    "P13": ((0, 3, 6, 23, 28, 14, 14, 5, 4, 3),
+            (1.2, 0.089, 2.0, 1.36, 3.69, 3.0, "bad")),
+    "P14": ((26, 8, 11, 16, 6, 10, 10, 6, 4, 3),
+            (1.4, 0.074, 1.4, 1.64, 3.53, 13.0, "median")),
+}
+
+
+def _paranal_gr2015(profile_id: str) -> List[Layer]:
+    # Layers as tabulated: zero-percent layers are kept so every profile has the
+    # same ten altitudes. Wind direction is not in the source (0 deg throughout).
+    percents, (_s, _r0, _tau0, beta, _hbar, _prob, _quality) = _GR2015[profile_id]
+    return [
+        Layer(altitude=h, cn2_fraction=pct / 100.0, wind_speed=beta * v,
+              wind_direction=0.0, L0=25.0)
+        for h, pct, v in zip(_GR2015_ALTITUDES, percents, _GR2015_VREF)
+    ]
+
+
 _PROFILES = {
     "single-layer": _single_layer,
     "two-layer": _two_layer,
@@ -222,6 +285,10 @@ _PROFILES = {
     "armazones": _armazones,
     "hv57": _hv57,
 }
+for _gr_id in _GR2015:
+    _PROFILES[f"paranal-{_gr_id.lower()}"] = (
+        lambda _id=_gr_id: _paranal_gr2015(_id)
+    )
 
 
 @dataclass(frozen=True)
@@ -254,6 +321,11 @@ class ProfileInfo:
     caveat : str
         One-line summary of the representativeness/uncertainty to carry with
         results.
+    conditions : mapping or None
+        Observing conditions the source publishes with the profile, when it
+        does (e.g. ``r0`` [m, 0.5 um], ``tau0`` [s], ``seeing_class``
+        [arcsec], ``probability``, ``quality``); ``None`` otherwise. Pass
+        ``r0=info.conditions["r0"]`` to reproduce the published case.
     """
 
     name: str
@@ -263,6 +335,7 @@ class ProfileInfo:
     outer_scale: Union[float, None]
     wind_direction_measured: bool
     caveat: str
+    conditions: Optional[Mapping[str, Any]] = None
 
 
 _REPRESENTATIVE = ("representative discretisation (general shape of the site's "
@@ -307,6 +380,31 @@ _PROFILE_INFO = {
 }
 
 
+_GR2015_SOURCE = ("Garcia-Rissmann et al. (2015) MNRAS 448, 2594, doi:10.1093/"
+                  "mnras/stv169, Tables 2-3 (Paranal SLODAR/MASS-DIMM/SCIDAR "
+                  "compilation, Sarazin et al. 2013)")
+
+
+def _gr2015_info(profile_id: str) -> ProfileInfo:
+    _pct, (seeing, r0, tau0, beta, hbar, prob, quality) = _GR2015[profile_id]
+    conditions: Dict[str, Any] = {
+        "r0": r0, "tau0": tau0 * 1e-3, "seeing_class": seeing, "wind_scale": beta,
+        "mean_height": hbar * 1e3, "probability": prob / 100.0, "quality": quality,
+    }
+    return ProfileInfo(
+        f"paranal-{profile_id.lower()}", True, _GR2015_SOURCE, "Paranal (VLT)",
+        25.0, False,
+        f"{quality} turbulence at the {seeing:.1f}\" seeing class "
+        f"({prob:.1f}% of the time); published r0={r0} m at 0.5 um. Fractions are "
+        "whole percents; wind direction not in the source (0 deg throughout).",
+        conditions,
+    )
+
+
+for _gr_id in _GR2015:
+    _PROFILE_INFO[f"paranal-{_gr_id.lower()}"] = _gr2015_info(_gr_id)
+
+
 def profile_info(name: str) -> ProfileInfo:
     """Return the :class:`ProfileInfo` provenance record for a named profile.
 
@@ -333,11 +431,15 @@ def get_profile(name: str) -> List[Layer]:
 
     Names: ``"single-layer"``, ``"two-layer"``, ``"paranal-median"``,
     ``"mauna-kea"``, ``"keck"``, ``"las-campanas"``, ``"cerro-pachon"``,
-    ``"armazones"``, ``"hv57"``. See :func:`list_profiles`.
+    ``"armazones"``, ``"hv57"``, and ``"paranal-p01"`` ... ``"paranal-p14"``.
+    See :func:`list_profiles`.
 
-    ``"mauna-kea"``, ``"keck"`` and ``"las-campanas"`` are traceable to a
-    specific published table (see each profile-building function's source
-    comment for the citation); ``"paranal-median"``, ``"cerro-pachon"``,
+    ``"mauna-kea"``, ``"keck"``, ``"las-campanas"`` and the fourteen
+    ``"paranal-pNN"`` profiles (Garcia-Rissmann et al. 2015: Paranal seeing
+    classes 0.4"-1.4", each "good", "median" or "bad", with their published
+    r0, tau0 and probability in ``profile_info(name).conditions``) are
+    traceable to a specific published table (see the source comments for the
+    citations); ``"paranal-median"``, ``"cerro-pachon"``,
     ``"armazones"``, ``"single-layer"`` and ``"two-layer"`` are
     representative/illustrative rather than a specific cited site survey. Wind
     *direction* is illustrative in every profile — none of the cited sources

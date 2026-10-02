@@ -1153,3 +1153,21 @@ def test_gpu_index_selects_the_device_and_restores_the_current_one():
         assert cupy.cuda.Device().id == before
     screen = pyturb.PhaseScreen(32, 0.1, 0.15, device=f"gpu:{index}")
     assert screen.generate().device.id == index
+
+
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_zero_fraction_layers_are_left_out(engine):
+    # Published profiles can tabulate a layer at 0%; it must not break the
+    # build (its r0 would be infinite) and must not change the result.
+    with_zero = [pyturb.Layer(0.0, 0.7, 8.0, 0.0, 25.0),
+                 pyturb.Layer(5000.0, 0.0, 20.0),
+                 pyturb.Layer(10000.0, 0.3, 30.0, 90.0, 25.0)]
+    without = [with_zero[0], with_zero[2]]
+    kw = dict(r0=0.15, n=24, diameter=4.0, seed=6, engine=engine, dtype="float64")
+    a = pyturb.Atmosphere(with_zero, tau_boil=[0.1, 0.5, 0.2], **kw)
+    b = pyturb.Atmosphere(without, tau_boil=[0.1, 0.2], **kw)
+    assert len(a.layers) == 2
+    np.testing.assert_array_equal(a.tau_boil, b.tau_boil)
+    np.testing.assert_array_equal(pyturb.to_numpy(a.opd(0.01)),
+                                  pyturb.to_numpy(b.opd(0.01)))
+    assert a.theta0 == pytest.approx(b.theta0)
