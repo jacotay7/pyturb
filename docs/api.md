@@ -56,6 +56,10 @@ Generated from the source docstrings.
 
 ::: pyturb.analysis
 
+## Theory
+
+::: pyturb.theory
+
 ## I/O
 
 ::: pyturb.save

@@ -19,7 +19,7 @@ unless a ``wavelength`` is given.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-from . import analysis
+from . import analysis, theory
 from .analysis import zernike_basis, zernike_decompose
 from .atmosphere import Atmosphere, ExtrudeBoilingPerformanceWarning, PeriodicWrapWarning
 from .backend import get_array_module, get_fft_workers, set_fft_workers, to_numpy
@@ -91,6 +91,7 @@ __all__ = [
     "save",
     "load",
     "analysis",
+    "theory",
     "zernike_basis",
     "zernike_decompose",
     "benchmark",

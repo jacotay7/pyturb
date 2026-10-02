@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyturb.theory`**: reference curves for checking any simulation, at
+  finite outer scale as well as Kolmogorov — `structure_function`,
+  `zernike_variance` (any Noll mode, any `L0`; reproduces Noll's table for
+  `L0=inf`), `image_motion_variance` (one-axis tilt, arcsec²),
+  `seeing_fwhm` (Tokovinin 2002 outer-scale correction), `pixel_temporal_psd`
+  and `zernike_temporal_psd` (Conan, Rousset & Madec 1995; along- vs
+  across-wind aware), and `differential_phase_variance` through a profile.
+  Each is tested against Noll's table or an exact identity and against
+  pyturb's own simulations; `validation/validate.py` uses them (#17).
 - **`opd(t=array)`** returns a stack of frames for many times (and
   directions) at once; on the GPU the spectral engine evaluates them in one
   batched transform (~26,000 frames/s at 256² and ~6,700 at 512² on an RTX 4060
