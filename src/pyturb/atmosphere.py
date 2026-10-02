@@ -20,6 +20,7 @@ wavelength instead.
 
 from __future__ import annotations
 
+import json
 import warnings
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
@@ -27,7 +28,7 @@ import numpy as np
 
 from . import _accel
 from . import profiles as _profiles
-from .backend import get_array_module
+from .backend import device_context, get_array_module, on_device
 from .config import AtmosphereConfig
 from .extrude import ExtrudedAtmosphere, _catmull_rom_weights
 from .flow import FourierFlowScreen
@@ -326,6 +327,7 @@ class Atmosphere:
     >>> ensemble = atm.sample(16)          # (16, 256, 256) independent OPDs
     """
 
+    @on_device
     def __init__(
         self,
         layers: Sequence[Layer],
@@ -809,6 +811,71 @@ class Atmosphere:
         atm._profile_source = source or "Atmosphere.from_cn2"
         return atm
 
+    def to_config(self) -> Dict[str, Any]:
+        """Every constructor input as a JSON-serialisable dict (see :meth:`from_config`).
+
+        Includes the full layer table (altitudes, normalised ``cn2_fraction``,
+        winds, per-layer ``L0``), so ``Atmosphere.from_config(atm.to_config())``
+        rebuilds the same atmosphere; with an integer ``seed`` it reproduces the
+        same realisation and frames. Evolved state (time, boiling) is not
+        included: replay by stepping the rebuilt atmosphere the same way.
+        :attr:`metadata` carries this as a JSON string under ``"config"``, so a
+        saved OPD records how to regenerate it.
+        """
+        c = self.config
+        return {
+            "pyturb_config_version": 1,
+            "layers": [
+                {"altitude": layer.altitude, "cn2_fraction": layer.cn2_fraction,
+                 "wind_speed": layer.wind_speed, "wind_direction": layer.wind_direction,
+                 "L0": layer.L0}
+                for layer in c.layers
+            ],
+            "r0": c.r0_zenith,
+            "wavelength": c.wavelength,
+            "zenith_angle": c.zenith_angle,
+            "diameter": c.diameter,
+            "n": c.grid.n,
+            "power_law": c.power_law,
+            "inner_scale": c.inner_scale,
+            "subharmonics": c.subharmonics,
+            "field_of_view": c.field_of_view,
+            "tau_boil": list(c.tau_boil) if c.has_tau_boil else None,
+            "engine": c.engine,
+            "interp": c.interp,
+            "lgs_altitude": c.lgs_altitude,
+            "dispersion": c.dispersion,
+            "wet_fraction": c.wet_fraction,
+            "device": c.grid.device,
+            "dtype": c.grid.dtype.name,
+            "seed": None if c.seed is None else int(c.seed),
+            "oversample": c.oversample,
+            "cuda_graph": self.cuda_graph,
+            "profile": self._profile_name,
+        }
+
+    @classmethod
+    def from_config(cls, config: Union[Dict[str, Any], str], **overrides: Any
+                    ) -> "Atmosphere":
+        """Rebuild an atmosphere from :meth:`to_config` output (a dict or JSON string).
+
+        ``overrides`` replace individual inputs, e.g. ``device="gpu"`` to
+        replay a CPU run on the GPU (the same seed draws a different
+        realisation on a different backend).
+        """
+        if isinstance(config, str):
+            config = json.loads(config)
+        kwargs = dict(config)
+        version = kwargs.pop("pyturb_config_version", None)
+        if version != 1:
+            raise ValueError(f"unsupported pyturb config version {version!r}")
+        profile = kwargs.pop("profile", None)
+        layers = [Layer(**layer) for layer in kwargs.pop("layers")]
+        kwargs.update(overrides)
+        atm = cls(layers, **kwargs)
+        atm._profile_name = profile
+        return atm
+
     # ------------------------------------------------------------------
     # integrated quantities
     # ------------------------------------------------------------------
@@ -935,6 +1002,7 @@ class Atmosphere:
         w = self.wet_fraction
         return (1.0 - w) * dry + w * wet
 
+    @on_device
     def opd(
         self,
         t: Union[float, Sequence[float]] = 0.0,
@@ -1014,6 +1082,7 @@ class Atmosphere:
             )
         return self._to_opd(stacked, wavelength)
 
+    @on_device
     def opd_at(
         self,
         x: Any,
@@ -1513,14 +1582,17 @@ class Atmosphere:
             raise ValueError("steps must be an integer >= 1")
         for _ in range(int(steps)):
             t = self._t
-            phase = self._phase(t, 0.0, 0.0)
-            yield t, self._to_opd(phase, wavelength)
+            with device_context(self.device):
+                frame = self._to_opd(self._phase(t, 0.0, 0.0), wavelength)
+            yield t, frame
             self._t += float(dt)
-            if self.engine == "spectral":
-                self._boil_step(float(dt))  # no-op unless tau_boil is finite
-            else:
-                self._ext.boil_step(float(dt))  # no-op unless tau_boil is finite
+            with device_context(self.device):
+                if self.engine == "spectral":
+                    self._boil_step(float(dt))  # no-op unless tau_boil is finite
+                else:
+                    self._ext.boil_step(float(dt))  # no-op unless tau_boil is finite
 
+    @on_device
     def evolve(self, dt: float, wavelength: Optional[float] = None) -> Any:
         """Advance the wind by ``dt`` seconds and return the new pupil OPD.
 
@@ -1556,6 +1628,7 @@ class Atmosphere:
             self._ext.boil_step(float(dt))
         return self._to_opd(self._phase(self._t, 0.0, 0.0), wavelength)
 
+    @on_device
     def sample(
         self, count: Optional[int] = None, wavelength: Optional[float] = None
     ) -> Any:
@@ -1586,6 +1659,7 @@ class Atmosphere:
         total = total[..., self._crop, self._crop]
         return self._to_opd(total, wavelength)
 
+    @on_device
     def reset(self) -> "Atmosphere":
         """Reset to ``t = 0`` and restore the initial turbulence. Returns ``self``.
 
@@ -1627,12 +1701,12 @@ class Atmosphere:
         :meth:`from_profile` it also records the profile name and its
         :func:`pyturb.profile_info` provenance (source, whether it is traceable
         to a published table, site, and the representativeness caveat). This is
-        a **descriptive summary, not a full replayable checkpoint**: the
-        per-layer arrays (altitudes, Cn2 fractions, winds) and any evolved/boiled
-        stochastic state are not serialised here, so it cannot by itself
-        reconstruct a specific evolved frame. ``L0``/``tau_boil`` are reported
-        only when every layer shares one value (otherwise ``None``, which
-        :func:`pyturb.save` drops).
+        a descriptive summary plus, under ``"config"``, the JSON of
+        :meth:`to_config` (every constructor input and the layer table), from
+        which :meth:`from_config` rebuilds the atmosphere; evolved state (time,
+        boiling) is not stored, so replay a run by stepping it the same way.
+        ``L0``/``tau_boil`` are reported only when every layer shares one value
+        (otherwise ``None``, which :func:`pyturb.save` drops).
         """
         l0_values = {round(float(layer.L0), 9) for layer in self.layers}
         uniform_l0 = float(self.layers[0].L0) if len(l0_values) == 1 else None
@@ -1677,6 +1751,7 @@ class Atmosphere:
             "profile_traceable": None if prof is None else prof.traceable,
             "profile_site": None if prof is None else prof.site,
             "profile_caveat": None if prof is None else prof.caveat,
+            "config": json.dumps(self.to_config()),
         }
 
     def __repr__(self) -> str:

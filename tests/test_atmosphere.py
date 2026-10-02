@@ -1093,3 +1093,63 @@ def test_extrude_mixed_sources_and_footprint_guard():
     lgs_built = pyturb.Atmosphere.from_profile("paranal-median", lgs_altitude=90e3, **kw)
     with pytest.raises(ValueError, match="footprint"):
         lgs_built.opd(0.0, directions=[(0.0, 0.0, None)])
+
+
+@pytest.mark.parametrize("engine, kw", [
+    ("spectral", {"tau_boil": 0.05, "lgs_altitude": 90e3, "oversample": 1.5}),
+    ("extrude", {"interp": "lanczos"}),
+])
+@pytest.mark.parametrize("suffix", ["npz", "fits"])
+def test_saved_metadata_config_replays_the_run(tmp_path, engine, kw, suffix):
+    if suffix == "fits":
+        pytest.importorskip("astropy")
+    layers = [pyturb.Layer(0.0, 3.0, 7.0, 10.0, 30.0),
+              pyturb.Layer(8000.0, 1.0, 25.0, 200.0, 20.0)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", pyturb.ExtrudeBoilingPerformanceWarning)
+        atm = pyturb.Atmosphere(layers, seeing=0.7, n=24, seed=3, field_of_view=5.0,
+                                engine=engine, **kw)
+    frames = [atm.evolve(1e-3) for _ in range(4)]
+    path = tmp_path / f"run.{suffix}"
+    pyturb.save(path, frames[-1], **atm.metadata)
+    data, meta = pyturb.load(path)
+    rebuilt = pyturb.Atmosphere.from_config(meta["config"])
+    replay = [rebuilt.evolve(1e-3) for _ in range(4)]
+    np.testing.assert_array_equal(replay[-1], data)
+    assert rebuilt.to_config() == atm.to_config()
+
+
+def test_from_config_overrides_and_versioning():
+    atm = pyturb.Atmosphere.from_profile("keck", seeing=0.6, n=16, seed=1)
+    cfg = atm.to_config()
+    assert cfg["profile"] == "keck" and len(cfg["layers"]) == 7
+    bigger = pyturb.Atmosphere.from_config(cfg, n=32)
+    assert bigger.n == 32 and bigger.r0 == pytest.approx(atm.r0)
+    with pytest.raises(ValueError, match="version"):
+        pyturb.Atmosphere.from_config({**cfg, "pyturb_config_version": 99})
+
+
+@pytest.mark.parametrize("bad", ["cpu:1", "gpu:x", "tpu:0"])
+def test_device_names_are_validated(bad):
+    with pytest.raises(ValueError, match="device"):
+        pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=16, device=bad)
+
+
+@pytest.mark.gpu
+def test_gpu_index_selects_the_device_and_restores_the_current_one():
+    import cupy
+
+    count = cupy.cuda.runtime.getDeviceCount()
+    index = count - 1
+    with pytest.raises(ValueError, match=f"GPU {count}"):
+        pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=16, device=f"gpu:{count}")
+    before = cupy.cuda.Device().id
+    for engine in ("spectral", "extrude"):
+        atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=32, seed=1,
+                                             device=f"gpu:{index}", engine=engine)
+        arrays = [o for _, o in atm.frames(1e-3, 3)]
+        arrays += [atm.evolve(1e-3), atm.sample(2), atm.opd_at([0.0], [0.0], atm.time)]
+        assert {a.device.id for a in arrays} == {index}
+        assert cupy.cuda.Device().id == before
+    screen = pyturb.PhaseScreen(32, 0.1, 0.15, device=f"gpu:{index}")
+    assert screen.generate().device.id == index

@@ -8,6 +8,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`device="gpu:N"`** picks a GPU on multi-GPU machines; every public
+  method of `Atmosphere`, `PhaseScreen`, `FourierFlowScreen` and
+  `InfinitePhaseScreen` runs with that GPU current and leaves the caller's
+  current device unchanged (#20).
+- **Replayable configuration**: `Atmosphere.to_config()` /
+  `Atmosphere.from_config()`, and `metadata["config"]` (written by
+  `pyturb.save`) holds every constructor input and the layer table, so a saved
+  OPD made with an integer seed can be regenerated exactly (#20).
+- **`pyturb.interop.HCIPyLayer`**: an Atmosphere presented as an HCIPy
+  atmospheric layer (`t`, `layer(wavefront)`, `evolve_until`, `phase_for`,
+  `reset`), e.g. for pyRTC's HCIPy simulator; plus a DLPack (PyTorch/JAX)
+  recipe in the interop docs (#20).
 - **Per-direction sources**: `opd(directions=[(thx, thy, altitude), ...])`
   gives each direction its own source range — a laser guide star at
   `altitude` or `None` for a star at infinity — so an LGS asterism, NGS and

@@ -44,7 +44,7 @@ from numpy.typing import ArrayLike
 from scipy import linalg
 from scipy.special import gamma, kv
 
-from .backend import blas_single_thread, get_array_module
+from .backend import blas_single_thread, get_array_module, on_device
 from .config import ScreenConfig
 from .fourier import PhaseScreen
 from .ring import compact_row_ring
@@ -165,6 +165,7 @@ class InfinitePhaseScreen:
     >>> phase = layer.advance(0.37)     # ...and by 0.37 of a pixel (sub-pixel)
     """
 
+    @on_device
     def __init__(
         self,
         n: int,
@@ -359,6 +360,7 @@ class InfinitePhaseScreen:
         """Current ``(n, n)`` phase screen in radians (device array)."""
         return self._current
 
+    @on_device
     def step(self, steps: int = 1) -> Any:
         """Advance the wind by ``steps`` whole pixels and return the screen.
 
@@ -372,6 +374,7 @@ class InfinitePhaseScreen:
         self._advance_to(self._travel + steps)
         return self._current
 
+    @on_device
     def advance(self, pixels: float) -> Any:
         """Advance the wind by ``pixels`` (any non-negative float) and return it.
 

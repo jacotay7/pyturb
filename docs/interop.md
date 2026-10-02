@@ -28,6 +28,20 @@ for t, opd in atm.frames(dt=1e-3, steps=1000):
     # ... propagate wf through your optical system
 ```
 
+Or let HCIPy drive it as a layer: `pyturb.interop.HCIPyLayer` follows HCIPy's
+atmospheric-layer interface (`layer.t`, `layer(wavefront)`, `evolve_until`,
+`phase_for`, `reset`), so code written around `hcipy.InfiniteAtmosphericLayer`
+can take a multi-layer (optionally GPU) pyturb atmosphere instead:
+
+```python
+layer = pyturb.interop.HCIPyLayer(atm.reset(), pupil_grid)   # start at t = 0
+layer.t += 1e-3                                   # advance the wind
+wf = layer(hcipy.Wavefront(aperture, wavelength)) # apply the turbulence
+```
+
+The OPD for each time is computed once and reused for every wavelength (WFS
+and science), with the atmosphere's `dispersion` model.
+
 pyturb complements HCIPy: HCIPy owns diffraction propagation and scintillation;
 pyturb gives you fast, non-periodic, GPU turbulence to drive it. (HCIPy's own
 `InfiniteAtmosphericLayer` is fine too — use pyturb when you want the GPU/batched
@@ -87,6 +101,20 @@ For a real DM, replace `basis` with your influence-function matrix and use the
 same least-squares projection (`numpy.linalg.lstsq`) that `zernike_decompose`
 uses internally. `analysis.noll_residual_variance(n_modes, D, r0)` gives the
 theoretical fitting-error floor to check against.
+
+## PyTorch / JAX (zero copy)
+
+On the GPU, frames are CuPy arrays; hand them to PyTorch (or JAX) without a
+copy through DLPack, which keeps training-data or RL pipelines on the device:
+
+```python
+import torch
+
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
+                                     device="gpu")
+opd = atm.opd(t=0.0)
+tensor = torch.from_dlpack(opd)                   # shares GPU memory with opd
+```
 
 ## General notes
 

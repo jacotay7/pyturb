@@ -88,7 +88,9 @@ values = atm.opd_at(x, np.zeros(3), t=0.0)        # OPD [m] at those points
 ## GPU
 
 Everything above takes `device="gpu"` (requires CuPy); arrays come back as CuPy
-and stay on the device until you call `pyturb.to_numpy(...)`.
+and stay on the device until you call `pyturb.to_numpy(...)`. On a machine with
+several GPUs, pick one with `device="gpu:1"` (CUDA numbering; set
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` for the order `nvidia-smi` shows).
 
 ```python
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, device="gpu")
@@ -135,6 +137,19 @@ batch = gen.generate(32)                       # (32, 256, 256) independent scre
 
 layer = pyturb.InfinitePhaseScreen(n=128, pixel_scale=0.05, r0=0.15, seed=0)
 phase = layer.advance(0.37)                    # blow 0.37 px along axis 0; never repeats
+```
+
+## Reproducing a run
+
+`atm.metadata` (written into FITS/npz headers by `pyturb.save`) carries the full
+configuration as JSON under `"config"`, layer table included, so a saved OPD
+can be regenerated exactly when it was made with an integer `seed`:
+
+```python
+atm = pyturb.Atmosphere.from_profile("keck", seeing=0.7, n=128, seed=7)
+pyturb.save("frame.npz", atm.opd(0.01), **atm.metadata)
+data, meta = pyturb.load("frame.npz")
+again = pyturb.Atmosphere.from_config(meta["config"]).opd(0.01)   # == data
 ```
 
 ## Wavelengths and OPD
