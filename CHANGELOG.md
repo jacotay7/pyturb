@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **GPU extras work in a clean environment.** `pyturb[cuda12]` now installs
+  `cupy-cuda12x[ctk]`: CuPy 14 compiles every kernel at runtime and fails with
+  "Failed to find CUDA headers" unless the CUDA headers are present, which a
+  fresh environment without a system CUDA toolkit does not have. Added a
+  `pyturb[cuda13]` extra (`cupy-cuda13x[ctk]`) for CUDA 13 drivers, and a
+  troubleshooting note to the install docs (#9).
+
 ## [1.0.0] - 2026-07-09
 
 ### Added
