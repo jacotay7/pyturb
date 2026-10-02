@@ -101,8 +101,8 @@ class PhaseScreen:
         config = ScreenConfig.create(
             n, pixel_scale, r0, L0, device, dtype, finite_outer_scale=False
         )
-        if subharmonics < 0:
-            raise ValueError("subharmonics must be >= 0")
+        if not isinstance(subharmonics, (int, np.integer)) or subharmonics < 0:
+            raise ValueError("subharmonics must be an integer >= 0")
         if not np.isfinite(power_law) or power_law <= 2.0:
             raise ValueError("power_law must be > 2 and finite (Kolmogorov is 11/3)")
         if not np.isfinite(inner_scale) or inner_scale < 0:

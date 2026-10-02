@@ -19,7 +19,7 @@ for the reductions). Reference: Noll, R. J. (1976), JOSA 66, 207.
 from __future__ import annotations
 
 from math import factorial
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -180,7 +180,11 @@ def noll_residual_variance(j: int, diameter: float, r0: float) -> float:
     return _noll_residual_coeff(j) * (diameter / r0) ** (5.0 / 3.0)
 
 
-def temporal_psd(series: ArrayLike, dt: float) -> Tuple[np.ndarray, np.ndarray]:
+def temporal_psd(
+    series: ArrayLike,
+    dt: float,
+    window: Union[str, ArrayLike, None] = "hann",
+) -> Tuple[np.ndarray, np.ndarray]:
     """One-sided temporal power spectral density of a time series.
 
     Parameters
@@ -191,18 +195,41 @@ def temporal_psd(series: ArrayLike, dt: float) -> Tuple[np.ndarray, np.ndarray]:
         series and averaged.
     dt : float
         Sample spacing [s].
+    window : str, array_like or None, optional
+        Taper applied to each (mean-removed) series before the transform.
+        ``"hann"`` (default) or any :func:`scipy.signal.get_window` name, an
+        explicit array of length ``n``, or ``None`` for the untapered
+        periodogram. Frozen-flow spectra are steep (``f^{-8/3}`` for one pupil
+        point, steeper for low-order modes), and an untapered periodogram of a
+        finite, non-periodic record leaks power from low to high frequencies:
+        it flattens the measured slope and raises the level. Use ``None`` only
+        for records that are exactly periodic.
 
     Returns
     -------
     freq, psd : ndarray
         Positive frequencies [Hz] (excluding DC) and the averaged PSD, scaled
-        so that ``sum(psd) * df`` approximates the series variance.
+        by the window's power so that ``sum(psd) * df`` approximates the series
+        variance for any window.
     """
     series = to_numpy(series).astype(np.float64)
     series = series - series.mean(axis=-1, keepdims=True)
     n = series.shape[-1]
-    spectrum = np.fft.rfft(series, axis=-1)
-    psd = (np.abs(spectrum) ** 2) * (2.0 * dt / n)
+    if window is None:
+        taper = np.ones(n)
+    elif isinstance(window, str):
+        from scipy.signal import get_window
+
+        taper = get_window(window, n, fftbins=True)
+    else:
+        taper = np.asarray(window, dtype=np.float64)
+        if taper.shape != (n,):
+            raise ValueError(
+                f"window array must have length {n} (the series length), "
+                f"got shape {taper.shape}"
+            )
+    spectrum = np.fft.rfft(series * taper, axis=-1)
+    psd = (np.abs(spectrum) ** 2) * (2.0 * dt / np.sum(taper**2))
     psd = psd.reshape(-1, psd.shape[-1]).mean(axis=0)
     freq = np.fft.rfftfreq(n, d=dt)
     return freq[1:], psd[1:]

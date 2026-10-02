@@ -6,8 +6,27 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`Atmosphere(oversample=...)`**: FFT screens for `sample()` and the spectral
+  engine can be made larger than the pupil (default 1, unchanged). On a
+  pupil-sized screen the FFT periodicity puts opposite pupil edges next to each
+  other, so separations beyond ~D/4 come out low (structure function about
+  −13% at D/2, ~0.65x near 0.9 D; tilt ~10-15% low; astigmatisms split
+  ~0.6x/1.6x Noll). `oversample=4` matches von Kármán to ~2% rms out to 0.9 D.
+  It also multiplies `time_to_wrap`, at the cost of a larger FFT (2x roughly
+  halves the spectral frame rate). Validation gains a large-scale structure
+  function check out to 0.9 D (#3).
+
 ### Changed
 
+- **`analysis.temporal_psd` tapers with a Hann window by default**
+  (`window="hann"`; `window=None` gives the previous untapered periodogram, and
+  any `scipy.signal.get_window` name or an explicit array also works). The
+  untapered periodogram leaks power upward on steep frozen-flow spectra: on a
+  single pupil pixel it read slope −2.47 and 1.7x the theoretical level
+  (−2.18 and 5.9x on the extruder) against −8/3 and 1x; with the taper,
+  −2.63/1.2x and −2.81/0.8x. PSD values from this function change (#6).
 - **Python 3.10 is the minimum**; CI tests 3.10, 3.12, 3.13 and 3.14, and the
   package declares per-version classifiers plus Documentation/Source/Changelog
   URLs (#13).
@@ -20,6 +39,20 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Per-layer inputs are validated.** A NaN or infinite wind speed produced
+  all-NaN OPD frames and a negative altitude a NaN `theta0`; non-finite layer
+  values, negative altitudes or wind speeds, and non-positive per-layer `L0`
+  now raise a `ValueError` naming the layer. Non-integer `subharmonics`
+  (`PhaseScreen`) and `steps` (`frames`, `InfinitePhaseScreen.step`) are
+  rejected instead of truncated, and asking an `engine="extrude"` atmosphere
+  for an earlier time than it has reached explains the streaming clock and
+  `reset()` (#7).
+- **Long spectral runs keep float32 accuracy.** Shift-theorem displacements
+  are reduced modulo the screen period in float64 before the float32 phasors
+  are formed (and subharmonic phasors built in float64), on every spectral
+  path and in `FourierFlowScreen.translate`. A frame 9,000 periods later now
+  reproduces to round-off; before, the error grew to ~0.7% after 40 minutes of
+  wind and ~8% after 7 hours (#8).
 - **GPU extras work in a clean environment.** `pyturb[cuda12]` now installs
   `cupy-cuda12x[ctk]`: CuPy 14 compiles every kernel at runtime and fails with
   "Failed to find CUDA headers" unless the CUDA headers are present, which a
@@ -43,6 +76,11 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
+- Validation: the structure-function band, the Zernike check (now per mode,
+  tip/tilt included) and the temporal-PSD check (now both engines, tolerance
+  0.6-1.6x instead of 1-3x) are documented with what they actually measure;
+  the astigmatism split and the shallow PSD are explained as periodicity and
+  spectral leakage rather than "sampling" and "finite screen" effects (#12).
 - The wind convention is stated: `wind_direction`/`wind_vector` point where
   the wind blows *from* and the pattern moves along `-wind_vector`, on every
   engine; a test pins it. A new Conventions section in Concepts covers axes,

@@ -362,9 +362,9 @@ class InfinitePhaseScreen:
         statistically consistent row at ``screen[-1]``. For fractional (wind
         ``v*dt``) motion use :meth:`advance`.
         """
+        if not isinstance(steps, (int, np.integer)) or steps < 1:
+            raise ValueError("steps must be an integer >= 1")
         steps = int(steps)
-        if steps < 1:
-            raise ValueError("steps must be >= 1")
         self._advance_to(self._travel + steps)
         return self._current
 

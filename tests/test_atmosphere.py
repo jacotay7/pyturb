@@ -71,6 +71,85 @@ def test_frozen_flow_shifts_screen_by_wind():
     assert np.allclose(shifted, np.roll(base, -5, axis=0), atol=1e-6)
 
 
+@pytest.mark.parametrize("engine_dirs", [None, [(0.0, 0.0), (3.0, 0.0)]])
+def test_float32_spectral_frames_stay_accurate_over_long_runs(engine_dirs):
+    # With 2 subharmonic levels the whole screen (main grid + subharmonics)
+    # repeats exactly every 3**2 = 9 screen periods of travel. A float32 run
+    # must reproduce a frame 9,000 periods (~40 min of 32 m/s wind) later to
+    # float32 round-off; casting the raw displacement to float32 before the
+    # phasors loses ~1e-3 of the signal there.
+    # Axis-aligned wind, so the displacement is a whole number of periods.
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=32.0, wind_direction=0.0, L0=25.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", pyturb.PeriodicWrapWarning)
+        atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, subharmonics=2,
+                                field_of_view=5.0 if engine_dirs else 0.0, seed=1)
+        full_period = 9 * atm.n_screen * atm.pixel_scale / layer.wind_speed
+        a = pyturb.to_numpy(atm.opd(0.0123, directions=engine_dirs)).astype(np.float64)
+        b = pyturb.to_numpy(
+            atm.opd(0.0123 + 1000 * full_period, directions=engine_dirs)
+        ).astype(np.float64)
+    assert np.std(b - a) / np.std(a) < 1e-5
+
+
+def _large_scale_sf_ratio(oversample, count=300):
+    """Ensemble structure function / von Karman theory at 0.25 D and 0.75 D."""
+    n, D, r0, L0 = 64, 8.0, 0.15, 25.0
+    layer = pyturb.Layer(0.0, 1.0, 10.0, 0.0, L0=L0)
+    atm = pyturb.Atmosphere([layer], r0=r0, diameter=D, n=n, dtype="float64",
+                            seed=11, oversample=oversample)
+    phase = atm.sample(count, wavelength=atm.wavelength)
+    dx = D / n
+    ratios = []
+    for sep in (n // 4, 3 * n // 4):
+        a = phase[:, sep:, :] - phase[:, :-sep, :]
+        b = phase[:, :, sep:] - phase[:, :, :-sep]
+        measured = 0.5 * (np.mean(a ** 2) + np.mean(b ** 2))
+        theory = 2 * (pyturb.phase_covariance(0.0, r0, L0)
+                      - pyturb.phase_covariance(sep * dx, r0, L0))
+        ratios.append(measured / theory)
+    return ratios
+
+
+def test_pupil_sized_screens_underestimate_large_scales():
+    # Documented behaviour of the default (oversample=1): the FFT screen is
+    # periodic across the pupil, so 0.75 D separations come out well low.
+    quarter, three_quarter = _large_scale_sf_ratio(1)
+    assert 0.9 < quarter < 1.1
+    assert three_quarter < 0.85
+
+
+def test_oversampled_screens_match_von_karman_at_large_scales():
+    # 300-screen ensemble noise is a few percent at these separations.
+    quarter, three_quarter = _large_scale_sf_ratio(4)
+    assert abs(quarter - 1) < 0.08
+    assert abs(three_quarter - 1) < 0.08
+
+
+def test_oversample_keeps_the_pupil_centred():
+    # A ground layer has LGS cone magnification exactly 1, so the LGS readout
+    # (zoom about the screen centre) must equal the plain crop -- only true if
+    # the oversampled pupil sits exactly in the middle of the screen.
+    layers = [pyturb.Layer(0.0, 1.0, 10.0, 30.0, L0=25.0)]
+    for oversample in (1.0, 1.5, 2.0, 3.3):
+        kw = dict(r0=0.15, diameter=8.0, n=33, dtype="float64", seed=2,
+                  oversample=oversample)
+        plain = pyturb.Atmosphere(layers, **kw)
+        lgs = pyturb.Atmosphere(layers, lgs_altitude=90e3, **kw)
+        np.testing.assert_allclose(lgs.opd(0.01), plain.opd(0.01), atol=1e-15)
+
+
+def test_oversample_scales_time_to_wrap_and_is_validated():
+    base = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=64)
+    doubled = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=64, oversample=2)
+    assert doubled.n_screen == 2 * base.n_screen
+    assert doubled.time_to_wrap == pytest.approx(2 * base.time_to_wrap)
+    assert doubled.metadata["oversample"] == 2.0
+    for bad in (0.5, np.nan, "two"):
+        with pytest.raises(ValueError, match="oversample"):
+            pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=64, oversample=bad)
+
+
 def _pattern_shift(a, b):
     """Integer (axis0, axis1) displacement d with b(x) ~ a(x - d).
 
@@ -748,6 +827,52 @@ def test_nonfinite_physical_inputs_are_rejected():
         pyturb.PhaseScreen(n=16, pixel_scale=0.1, r0=0.15, L0=np.nan)
     with pytest.raises(ValueError):
         pyturb.InfinitePhaseScreen(n=16, pixel_scale=0.1, r0=np.nan, L0=25.0)
+
+
+@pytest.mark.parametrize("field, value, match", [
+    ("wind_speed", np.nan, "layer 1: wind_speed"),
+    ("wind_speed", np.inf, "layer 1: wind_speed"),
+    ("wind_speed", -5.0, "add 180 degrees"),
+    ("altitude", -500.0, "layer 1: altitude"),
+    ("altitude", np.nan, "layer 1: altitude"),
+    ("wind_direction", np.inf, "layer 1: wind_direction"),
+    ("cn2_fraction", np.nan, "layer 1: cn2_fraction"),
+    ("L0", 0.0, "layer 1: L0"),
+])
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_invalid_layer_values_are_rejected_with_the_layer_named(field, value, match,
+                                                                 engine):
+    good = pyturb.Layer(0.0, 0.5, 10.0, 0.0, 25.0)
+    bad = pyturb.Layer(5000.0, 0.5, 20.0, 90.0, 25.0)
+    setattr(bad, field, value)
+    with pytest.raises(ValueError, match=match):
+        pyturb.Atmosphere([good, bad], r0=0.15, n=16, diameter=4.0, engine=engine)
+
+
+def test_integer_arguments_are_not_silently_truncated():
+    with pytest.raises(ValueError, match="integer"):
+        pyturb.PhaseScreen(n=16, pixel_scale=0.1, r0=0.15, subharmonics=2.5)
+    atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=16, diameter=4.0)
+    with pytest.raises(ValueError, match="integer"):
+        next(atm.frames(dt=1e-3, steps=2.7))
+    screen = pyturb.InfinitePhaseScreen(n=16, pixel_scale=0.1, r0=0.15)
+    with pytest.raises(ValueError, match="integer"):
+        screen.step(1.5)
+
+
+def test_extrude_going_back_in_time_explains_reset():
+    atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=16, diameter=4.0,
+                                         engine="extrude", seed=4)
+    for _ in atm.frames(dt=1e-3, steps=3):
+        pass
+    with pytest.raises(ValueError, match=r"reset\(\)"):
+        atm.opd()  # default t=0 is behind the streaming clock
+    first = pyturb.to_numpy(atm.reset().opd())
+    again = pyturb.to_numpy(
+        pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=16, diameter=4.0,
+                                       engine="extrude", seed=4).opd()
+    )
+    np.testing.assert_array_equal(first, again)
 
 
 def test_direction_radius_beyond_fov_is_rejected():

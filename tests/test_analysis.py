@@ -98,6 +98,47 @@ def test_temporal_psd_frozen_flow_slope():
     assert -3.3 < slope < -2.2                          # brackets -8/3
 
 
+def _power_law_record(n, slope, seed):
+    """A stationary, non-periodic record with PSD ~ f**slope.
+
+    Synthesised on a 16x longer periodic grid and cropped, so the record's ends
+    do not match -- the realistic case in which an untapered periodogram leaks.
+    """
+    rng = np.random.default_rng(seed)
+    m = 16 * n
+    f = np.fft.rfftfreq(m, d=1.0)
+    amp = np.zeros_like(f)
+    amp[1:] = f[1:] ** (slope / 2.0)
+    spec = amp * (rng.standard_normal(f.size) + 1j * rng.standard_normal(f.size))
+    return np.fft.irfft(spec, n=m)[:n]
+
+
+def test_temporal_psd_window_recovers_steep_power_law():
+    # A steep f^{-8/3} record: the default Hann taper recovers the slope, the
+    # untapered periodogram is flattened by leakage (the bias #6 describes).
+    records = np.stack([_power_law_record(1024, -8.0 / 3.0, seed) for seed in range(16)])
+    freq, hann = A.temporal_psd(records, 1e-3)
+    _, rect = A.temporal_psd(records, 1e-3, window=None)
+    slope_hann, _ = A.fit_power_law(freq, hann, fmin=20, fmax=300)
+    slope_rect, _ = A.fit_power_law(freq, rect, fmin=20, fmax=300)
+    assert abs(slope_hann - (-8.0 / 3.0)) < 0.15
+    assert slope_rect > slope_hann + 0.3
+
+
+@pytest.mark.parametrize("window", ["hann", None, "blackman"])
+def test_temporal_psd_integrates_to_the_variance(window):
+    rng = np.random.default_rng(0)
+    series = rng.standard_normal((64, 2048)) * 3.0           # white, variance 9
+    freq, psd = A.temporal_psd(series, 1e-3, window=window)
+    df = freq[1] - freq[0]
+    assert np.sum(psd) * df == pytest.approx(9.0, rel=0.03)
+
+
+def test_temporal_psd_rejects_wrong_length_window():
+    with pytest.raises(ValueError, match="length 100"):
+        A.temporal_psd(np.zeros(100), 1e-3, window=np.ones(50))
+
+
 def test_differential_variance_grows_with_angle():
     atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=64,
                                          field_of_view=30, seed=1)

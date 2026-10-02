@@ -260,6 +260,19 @@ class Atmosphere:
     seed : int, optional
         Master seed. Per-layer streams are spawned from it so results are
         reproducible and independent of layer count.
+    oversample : float, optional
+        Size of the FFT screens used by :meth:`sample` and the spectral engine,
+        as a multiple of the pupil (``>= 1``, before the ``field_of_view``
+        margin). Default ``1``: screens exactly the pupil's size, the fastest
+        choice. An FFT screen is periodic, so on a pupil-sized screen opposite
+        pupil edges are neighbours: large-separation statistics come out low
+        (structure function about -13% at ``D/2`` and -40% edge to edge, tilt
+        ~10-15% low, the two astigmatisms split ~0.6x/1.6x Noll; see the
+        Validation docs) and new turbulence entering the pupil is what is
+        leaving it. ``oversample=2`` roughly halves the frame rate and leaves
+        ~-10% at ``r = D``; ``4`` keeps statistics within ~2% out to ``D``.
+        It also multiplies :attr:`time_to_wrap`. No effect on
+        ``engine="extrude"`` frames, which are non-periodic.
 
     Feature compatibility
     ----------------------
@@ -325,12 +338,13 @@ class Atmosphere:
         device: str = "cpu",
         dtype: str = "float32",
         seed: Optional[int] = None,
+        oversample: float = 1.0,
     ) -> None:
         config = AtmosphereConfig.create(
             layers, r0, seeing, wavelength, zenith_angle, diameter, n, L0,
             power_law, inner_scale, subharmonics, field_of_view, tau_boil,
             engine, interp, lgs_altitude, dispersion, wet_fraction, device,
-            dtype, seed,
+            dtype, seed, oversample=oversample,
         )
         if config.engine == "extrude" and config.has_tau_boil:
             warnings.warn(
@@ -377,8 +391,15 @@ class Atmosphere:
         margin_m = max_alt_los * np.tan(self.field_of_view * _ARCSEC_TO_RAD)
         margin_pix = int(np.ceil(margin_m / self.pixel_scale))
         self.margin_pix = margin_pix
-        self.n_screen = self.n + 2 * margin_pix
-        self._crop = slice(margin_pix, margin_pix + self.n)
+        # ``oversample`` widens the pupil part of the screen as well, so the
+        # pupil spans only part of one FFT period (see the parameter docs). The
+        # extra width is kept even so the pupil stays exactly centred, which the
+        # LGS zoom (sampling about the screen centre) relies on.
+        self.oversample = config.oversample
+        extra = 2 * int(np.ceil((self.oversample - 1.0) * self.n / 2.0))
+        self.n_screen = self.n + extra + 2 * margin_pix
+        start = margin_pix + extra // 2
+        self._crop = slice(start, start + self.n)
         # The spectral engine's screen is periodic with this many metres of
         # wind travel; used to warn once a run's cumulative travel wraps it.
         self._screen_period_m = self.n_screen * self.pixel_scale
@@ -498,6 +519,7 @@ class Atmosphere:
                 self._lgs_mag = mag
 
         self._t = 0.0
+        self._ext_time = 0.0  # furthest time the streaming extruder has reached
         if self.engine == "spectral":
             self._build_batched()
         else:
@@ -574,9 +596,41 @@ class Atmosphere:
             self._sh_freqs = xp.stack(
                 [template._sh_freqs[level] for level in range(self._n_sh)]
             )  # (P, 3)
+            # The same frequencies, exact in float64 on the host, for the
+            # per-frame subharmonic phasors (see _sh_phasors).
+            df = 1.0 / (self.n_screen * self.pixel_scale)
+            self._sh_freqs_host = np.stack(
+                [np.array([-1.0, 0.0, 1.0]) * df / 3.0 ** p
+                 for p in range(1, self._n_sh + 1)]
+            )  # (P, 3) float64
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
         if self._lgs_mag is not None:
             self._build_lgs_zoom()
+
+    def _main_shift(self, disp: np.ndarray) -> Any:
+        """Main-grid displacements on the device, reduced modulo the screen period.
+
+        Every main FFT-grid mode is periodic in its shift with period
+        ``n_screen * pixel_scale``, so reducing in float64 first is exact and
+        keeps the float32 shift-theorem phasors accurate however far the wind
+        has blown (an unreduced float32 displacement loses phase precision as
+        the run gets longer).
+        """
+        reduced = np.mod(np.asarray(disp, dtype=np.float64), self._screen_period_m)
+        return self.xp.asarray(reduced, dtype=self._spectra.real.dtype)
+
+    def _sh_phasors(self, disp: np.ndarray) -> Any:
+        """Subharmonic shift phasors ``exp(2 pi i f_p s)``, shape ``(..., P, L, 3)``.
+
+        ``disp`` is the float64 per-layer displacement with shape ``(..., L)``.
+        Subharmonic level ``p`` repeats only every ``3**p`` screen periods, so
+        the phase is formed in float64 cycles on the host, reduced modulo one,
+        and only the unit phasors are moved to the device.
+        """
+        disp = np.asarray(disp, dtype=np.float64)
+        cycles = disp[..., None, :, None] * self._sh_freqs_host[:, None, :]
+        phasor = np.exp((2j * np.pi) * np.mod(cycles, 1.0))
+        return self.xp.asarray(phasor, dtype=self._cdtype)
 
     def _build_lgs_zoom(self):
         """Precompute the stacked per-layer LGS cone zoom taps (fixed magnification).
@@ -876,6 +930,15 @@ class Atmosphere:
         """
         if self.engine == "spectral":
             return self._integrate(t, ox, oy)
+        if t < self._ext_time:
+            raise ValueError(
+                f"engine='extrude' is streaming: requested t={t:g} s is earlier "
+                f"than the {self._ext_time:g} s it has already reached (via "
+                "opd/frames/evolve). Its row extrusion only moves forward, so "
+                "call atm.reset() to restart at t=0, or use engine='spectral' "
+                "for random-access times."
+            )
+        self._ext_time = t
         self._ext.set_time(t)
         return self._ext.integrate(ox, oy)
 
@@ -901,8 +964,8 @@ class Atmosphere:
         disp_y = self._vy * t + self._alt * oy
         if not self._wrap_warned:
             self._check_wrap(disp_x, disp_y)
-        sx = xp.asarray(disp_x, dtype=self._spectra.real.dtype)
-        sy = xp.asarray(disp_y, dtype=self._spectra.real.dtype)
+        sx = self._main_shift(disp_x)
+        sy = self._main_shift(disp_y)
         f = self._grid_f
         # Separable shift-theorem phasors, shape (L, n_screen) each.
         phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
@@ -922,9 +985,8 @@ class Atmosphere:
             # All subharmonic levels at once: shift each level's per-layer 3x3
             # coefficients, sum over layers, then evaluate the shared sinusoid
             # bases as two batched matmuls collapsed to one (ns, 3P) @ (3P, ns).
-            fp = self._sh_freqs  # (P, 3)
-            px = xp.exp((2j * np.pi) * sx[None, :, None] * fp[:, None, :]).astype(cdtype)
-            py = xp.exp((2j * np.pi) * sy[None, :, None] * fp[:, None, :]).astype(cdtype)
+            px = self._sh_phasors(disp_x)  # (P, L, 3)
+            py = self._sh_phasors(disp_y)
             shifted = (
                 self._sh_coeffs * px[:, :, :, None] * py[:, :, None, :]
             ).sum(axis=1)  # (P, 3, 3)
@@ -952,7 +1014,6 @@ class Atmosphere:
         xp = self.xp
         cdtype = self._cdtype
         ns = self.n_screen
-        rdtype = self._spectra.real.dtype
         oxs = np.asarray(oxs, dtype=np.float64)
         oys = np.asarray(oys, dtype=np.float64)
         D = oxs.shape[0]
@@ -961,8 +1022,8 @@ class Atmosphere:
         if not self._wrap_warned:
             self._check_wrap(disp_x, disp_y)
         f = self._grid_f
-        sx_all = xp.asarray(disp_x, dtype=rdtype)  # (D, L)
-        sy_all = xp.asarray(disp_y, dtype=rdtype)
+        sx_all = self._main_shift(disp_x)  # (D, L)
+        sy_all = self._main_shift(disp_y)
         specs = xp.empty((D, ns, ns), dtype=cdtype)
         for d in range(D):
             phx = xp.exp((2j * np.pi) * sx_all[d][:, None] * f[None, :]).astype(cdtype)
@@ -978,13 +1039,8 @@ class Atmosphere:
         total = (self._fft.ifft2(specs, axes=(-2, -1)) * (ns * ns)).real  # (D, ns, ns)
 
         if self._n_sh:
-            fp = self._sh_freqs  # (P, 3)
-            px = xp.exp(
-                (2j * np.pi) * sx_all[:, None, :, None] * fp[None, :, None, :]
-            ).astype(cdtype)  # (D, P, L, 3)
-            py = xp.exp(
-                (2j * np.pi) * sy_all[:, None, :, None] * fp[None, :, None, :]
-            ).astype(cdtype)
+            px = self._sh_phasors(disp_x)  # (D, P, L, 3)
+            py = self._sh_phasors(disp_y)
             # (D, P, 3, 3): shift each level's per-layer 3x3 coeffs, sum layers.
             shifted = (
                 self._sh_coeffs[None] * px[:, :, :, :, None] * py[:, :, :, None, :]
@@ -1014,8 +1070,8 @@ class Atmosphere:
         disp_y = self._vy * t + self._alt * oy
         if not self._wrap_warned:
             self._check_wrap(disp_x, disp_y)
-        sx = xp.asarray(disp_x, dtype=self._spectra.real.dtype)
-        sy = xp.asarray(disp_y, dtype=self._spectra.real.dtype)
+        sx = self._main_shift(disp_x)
+        sy = self._main_shift(disp_y)
         f = self._grid_f
         phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
         phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
@@ -1026,9 +1082,8 @@ class Atmosphere:
             # Batch the phasor/shift across levels (small), but keep the layer
             # axis through the basis matmul: each layer's low-frequency screen
             # is zoomed differently below, so it cannot be collapsed here.
-            fp = self._sh_freqs  # (P, 3)
-            pxs = xp.exp((2j * np.pi) * sx[None, :, None] * fp[:, None, :]).astype(cdtype)
-            pys = xp.exp((2j * np.pi) * sy[None, :, None] * fp[:, None, :]).astype(cdtype)
+            pxs = self._sh_phasors(disp_x)  # (P, L, 3)
+            pys = self._sh_phasors(disp_y)
             # (P, L, 3, 3): per level, per layer, shifted 3x3 coefficients.
             shifted = self._sh_coeffs * pxs[:, :, :, None] * pys[:, :, None, :]
             low = None
@@ -1141,8 +1196,8 @@ class Atmosphere:
         """
         if dt <= 0:
             raise ValueError("dt must be positive")
-        if steps < 1:
-            raise ValueError("steps must be >= 1")
+        if not isinstance(steps, (int, np.integer)) or steps < 1:
+            raise ValueError("steps must be an integer >= 1")
         for _ in range(int(steps)):
             t = self._t
             phase = self._phase(t, 0.0, 0.0)
@@ -1231,6 +1286,7 @@ class Atmosphere:
         realisations.
         """
         self._t = 0.0
+        self._ext_time = 0.0
         self._wrap_warned = False
         if self.engine == "extrude":
             self._ext = ExtrudedAtmosphere(**self._ext_kwargs)
@@ -1293,6 +1349,7 @@ class Atmosphere:
             "inner_scale": self.inner_scale,
             "subharmonics": self.subharmonics,
             "field_of_view": self.field_of_view,
+            "oversample": self.oversample,
             "tau_boil": uniform_tau,
             "dispersion": self.dispersion,
             "wet_fraction": self.wet_fraction,

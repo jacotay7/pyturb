@@ -97,7 +97,9 @@ head-to-head against aotools, soapy and HCIPy lives in
   sub-pixel shift-theorem translation, all layers in one FFT, periodic.
   `engine="extrude"`: Assémat–Wilson row extrusion, unbounded and
   non-periodic, read out by a fused CUDA kernel (GPU) or Numba kernel (CPU,
-  with `[accel]`).
+  with `[accel]`). FFT screens default to the pupil's size (fastest); pass
+  `oversample=2`–`4` when statistics across the whole pupil matter (tilt,
+  low-order modes), since a pupil-sized periodic screen underestimates them.
 - **Off-axis / tomography** — `atm.opd(t, directions=[...])` batches several
   guide-star directions through one call.
 - **Boiling** — temporal decorrelation on top of frozen flow (`tau_boil`).
