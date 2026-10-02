@@ -6,6 +6,12 @@ Generated from the source docstrings.
 
 ::: pyturb.Atmosphere
 
+### Warnings
+
+::: pyturb.PeriodicWrapWarning
+
+::: pyturb.ExtrudeBoilingPerformanceWarning
+
 ## Phase screens
 
 ::: pyturb.PhaseScreen
@@ -14,6 +20,8 @@ Generated from the source docstrings.
 
 ::: pyturb.FourierFlowScreen
 
+::: pyturb.phase_covariance
+
 ## Profiles
 
 ::: pyturb.profiles.Layer
@@ -21,6 +29,10 @@ Generated from the source docstrings.
 ::: pyturb.get_profile
 
 ::: pyturb.list_profiles
+
+::: pyturb.profile_info
+
+::: pyturb.ProfileInfo
 
 ::: pyturb.discretize_cn2
 
@@ -69,5 +81,13 @@ Generated from the source docstrings.
 ::: pyturb.structure_function
 
 ::: pyturb.set_fft_workers
+
+::: pyturb.get_fft_workers
+
+## Backend
+
+::: pyturb.to_numpy
+
+::: pyturb.get_array_module
 
 ::: pyturb.benchmark

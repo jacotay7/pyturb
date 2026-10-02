@@ -161,10 +161,11 @@ def structure_function(
     pixel_scale: float = 1.0,
     max_separation: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Azimuthally averaged (along both axes) phase structure function.
+    """Phase structure function averaged over the two array axes.
 
     ``D(r) = <[phase(x) - phase(x + r)]^2>``, estimated from pixel pairs
-    separated along each image axis and averaged. For Kolmogorov turbulence
+    separated along axis 0 and along axis 1 and averaged (not a full azimuthal
+    average: diagonal separations are not used). For Kolmogorov turbulence
     the expectation is ``D(r) = 6.88 (r / r0)^(5/3)``.
 
     Parameters

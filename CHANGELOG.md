@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Python 3.10 is the minimum**; CI tests 3.10, 3.12, 3.13 and 3.14, and the
+  package declares per-version classifiers plus Documentation/Source/Changelog
+  URLs (#13).
+- **Release tags are bare versions** (`1.1.0`), and the release workflow
+  checks the tag matches `pyproject.toml` before publishing (#1).
+- The self-hosted GPU workflow is removed: no runner exists, so it queued on
+  every pull request until GitHub cancelled it. GPU paths are checked with a
+  local `pytest --run-gpu`, as `CONTRIBUTING.md` now describes (#11).
+- New `interop` extra (HCIPy, poppy) used to exercise the interop recipes.
+
 ### Fixed
 
 - **GPU extras work in a clean environment.** `pyturb[cuda12]` now installs
@@ -14,6 +26,34 @@ to [Semantic Versioning](https://semver.org/).
   fresh environment without a system CUDA toolkit does not have. Added a
   `pyturb[cuda13]` extra (`cupy-cuda13x[ctk]`) for CUDA 13 drivers, and a
   troubleshooting note to the install docs (#9).
+- `pyturb.benchmark()` no longer emits `PeriodicWrapWarning`: its timing loop
+  runs past the spectral screen period by design, which says nothing about
+  the throughput being measured.
+- `examples/02_closed_loop.py` runs on `engine="extrude"` (its 0.5 s run is
+  longer than the spectral engine's `time_to_wrap`), and its "last frame"
+  panel shows the last frame (it matched frame times by float equality, so it
+  showed `t = 0` twice). The README/docs quickstart loops stay within
+  `time_to_wrap` and explain why (#4).
+- `examples/05_gpu_benchmark.py` skips the GPU rows when CuPy is installed but
+  no CUDA device is usable.
+- `docs/interop.md`: the poppy recipe passes an astropy-unit pixel scale
+  (poppy 1.2 rejects a bare float), and the DM-fitting residual is restricted
+  to the pupil. Every README/docs code block and `examples/01`–`05` now run in
+  CI (`tests/test_docs.py`) (#10).
+
+### Documentation
+
+- The wind convention is stated: `wind_direction`/`wind_vector` point where
+  the wind blows *from* and the pattern moves along `-wind_vector`, on every
+  engine; a test pins it. A new Conventions section in Concepts covers axes,
+  wind, directions, line-of-sight quantities and units (#5).
+- Quickstart sections for boiling, the LGS cone, dispersion and the
+  `PhaseScreen`/`InfinitePhaseScreen` building blocks; the API reference lists
+  the warning classes, `phase_covariance`, `profile_info`/`ProfileInfo`,
+  `to_numpy`, `get_array_module` and `get_fft_workers` (#13).
+- Corrected stale or inaccurate claims in the README, docs index,
+  `RESULTS.md`, `ROADMAP.md`, `CONTRIBUTING.md` and the `structure_function`
+  docstring (#12).
 
 ## [1.0.0] - 2026-07-09
 
@@ -77,7 +117,7 @@ to [Semantic Versioning](https://semver.org/).
   CPU, and for large `(L, n, n_screen)` working sets on the GPU (≳1024²), the
   cache-friendlier per-layer loop is kept.
 
-## [0.2.0] 
+## [0.2.0] - 2026-07-05
 
 The "atmosphere" release: pyturb goes from a phase-screen library to a complete,
 benchmarked, GPU-native AO atmosphere.

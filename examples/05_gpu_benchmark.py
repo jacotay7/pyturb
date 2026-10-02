@@ -7,10 +7,15 @@ import pyturb
 
 devices = ["cpu"]
 try:
-    pyturb.get_array_module("gpu")
-    devices.append("gpu")
+    cupy = pyturb.get_array_module("gpu")
+    if cupy.cuda.runtime.getDeviceCount() > 0:
+        devices.append("gpu")
+    else:
+        print("(no CUDA device visible — GPU row skipped)\n")
 except ImportError:
     print("(CuPy not installed — GPU row skipped)\n")
+except Exception as exc:  # CUDA driver/runtime missing or broken
+    print(f"(CUDA unavailable: {exc} — GPU row skipped)\n")
 
 for device in devices:
     for n in (256, 512):

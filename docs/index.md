@@ -16,16 +16,20 @@ atm = pyturb.Atmosphere.from_profile(
 )
 print(atm.r0, atm.theta0, atm.tau0)          # Fried param, iso angle, tau0
 
-for t, opd in atm.frames(dt=1e-3, steps=2000):
+for t, opd in atm.frames(dt=1e-3, steps=200):
     ...                                      # (512, 512) OPD in metres
+# periodic default engine: stay under atm.time_to_wrap, or use engine="extrude"
 ```
 
 ## Why pyturb
 
-- **Fast.** 30,629 independent 512² screens/s and a full 9-layer 512²
-  atmosphere at 3,133 fps on a consumer GPU — see [Comparison](comparison.md).
+- **Fast.** 29,789 full 9-layer 512² Monte-Carlo OPDs/s and a 9-layer 512²
+  atmosphere at 3,133 fps on an RTX 5090 (host-bound at ~850 fps on slower
+  CPUs) — see [Comparison](comparison.md).
 - **Correct.** The spatial statistics match von Kármán/Kolmogorov theory to a
-  couple of percent, enforced by tests — see [Validation](validation.md).
+  few percent at separations from a few pixels up to a quarter of the screen,
+  enforced by tests — see [Validation](validation.md) for the details and
+  limits.
 - **Complete.** Named site profiles, off-axis tomography, boiling, LGS cone,
   OPD-native output, and a diagnostics toolkit (`pyturb.analysis`).
 

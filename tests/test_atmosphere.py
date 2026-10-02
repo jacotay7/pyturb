@@ -71,6 +71,44 @@ def test_frozen_flow_shifts_screen_by_wind():
     assert np.allclose(shifted, np.roll(base, -5, axis=0), atol=1e-6)
 
 
+def _pattern_shift(a, b):
+    """Integer (axis0, axis1) displacement d with b(x) ~ a(x - d).
+
+    Phase correlation of the gradient fields: the raw screens are dominated by
+    their largest scales, which would swamp the peak.
+    """
+    def grad(z):
+        return np.diff(z, axis=0)[:, :-1] + np.diff(z, axis=1)[:-1, :]
+    cross = np.fft.fft2(grad(b)) * np.conj(np.fft.fft2(grad(a)))
+    corr = np.fft.ifft2(cross / (np.abs(cross) + 1e-30)).real
+    i, j = np.unravel_index(np.argmax(corr), corr.shape)
+    m = corr.shape[0]
+    return ((i + m // 2) % m - m // 2, (j + m // 2) % m - m // 2)
+
+
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+@pytest.mark.parametrize("direction, expected", [(0.0, (-10, 0)), (90.0, (0, -10))])
+def test_pattern_moves_against_wind_vector(engine, direction, expected):
+    # The documented convention: wind_direction is where the wind blows *from*,
+    # so the pattern moves along -wind_vector (phi(x, t) = phi0(x + v t)).
+    # Pinned on both engines so the sign cannot change silently.
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=direction, L0=25.0)
+    atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=128, engine=engine,
+                            dtype="float64", seed=3)
+    travel_t = 10 * atm.pixel_scale / 10.0  # 10 pixels of wind travel
+    a = pyturb.to_numpy(atm.opd(0.0))
+    b = pyturb.to_numpy(atm.opd(travel_t))
+    assert _pattern_shift(a, b) == expected
+
+
+def test_infinite_screen_pattern_moves_toward_lower_rows():
+    screen = pyturb.InfinitePhaseScreen(n=128, pixel_scale=0.05, r0=0.15, seed=0,
+                                        dtype="float64")
+    a = pyturb.to_numpy(screen.screen).copy()
+    b = pyturb.to_numpy(screen.step(5)).copy()
+    assert _pattern_shift(a, b) == (-5, 0)
+
+
 def test_time_to_wrap_matches_screen_period_over_wind_speed():
     layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0)
     atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, seed=0)

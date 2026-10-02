@@ -107,6 +107,18 @@ def test_discretize_conserves_total_turbulence():
     assert abs(h_bar_disc - h_bar_cont) / h_bar_cont < 0.25
 
 
+def test_discretize_assigns_per_output_layer_wind_array():
+    # A wind array whose length is the number of output layers (not the input
+    # grid) is assigned to the layers in order, without moment averaging.
+    h = np.geomspace(10.0, 20000.0, 500)
+    cn2 = pyturb.hufnagel_valley(h)
+    speeds = [5.0, 12.0, 30.0, 18.0]
+    layers = pyturb.discretize_cn2(h, cn2, n_layers=4, wind=speeds)
+    assert [layer.wind_speed for layer in layers] == speeds
+    altitudes = [layer.altitude for layer in layers]
+    assert altitudes == sorted(altitudes)
+
+
 def test_integrated_quantities_two_layer_by_hand():
     layers = [
         pyturb.Layer(0.0, 0.5, wind_speed=10.0),

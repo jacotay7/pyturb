@@ -13,8 +13,18 @@ pip install -e ".[test]"          # add ",fits" for the FITS I/O tests
 pytest -q
 ```
 
-For GPU work, install a CuPy build matching your CUDA toolkit
-(`pip install "cupy-cuda12x[ctk]"`, or the `cuda13` variant); the suite skips GPU tests when CuPy is absent.
+For GPU work, install a CuPy build matching your CUDA driver
+(`pip install -e ".[test,cuda12]"`, or `cuda13`). GPU tests are marked
+`@pytest.mark.gpu` and are skipped unless you pass `--run-gpu`:
+
+```bash
+pytest -q --run-gpu          # full suite, CPU + GPU
+```
+
+CI has no GPU, so the CuPy paths (fused CUDA readout kernels, batched GPU
+boiling, LGS zoom, multi-direction spectral) only run when someone runs
+`--run-gpu` locally. Any change that touches GPU code must be checked that way
+before merging; say so in the pull request, with the GPU and CuPy version.
 
 ## The bar for a change
 
@@ -52,3 +62,9 @@ phase/OPD and hand those effects to the tools that own them — see
 Small, focused PRs with tests are easiest to review. Note in the description
 which of the three habits above your change satisfies. Update `CHANGELOG.md`
 under *unreleased*.
+
+## Releases
+
+Tags are bare versions (`1.1.0`, not `v1.1.0`) and must match
+`pyproject.toml`; pushing one builds and publishes to PyPI via
+`.github/workflows/release.yml`.

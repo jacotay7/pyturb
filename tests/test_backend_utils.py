@@ -56,6 +56,17 @@ def test_r0_wavelength_scaling():
     assert r0_k_band > 0.15
 
 
+def test_opd_phase_conversions_round_trip_and_scale_with_wavelength():
+    opd = np.array([0.0, 250e-9, -1e-6])
+    phase_h = pyturb.opd_to_phase(opd, 1.65e-6)
+    # 2 pi rad per wavelength of path; OPD is achromatic, phase is not.
+    np.testing.assert_allclose(phase_h, opd * 2 * np.pi / 1.65e-6)
+    np.testing.assert_allclose(pyturb.opd_to_phase(1.65e-6, 1.65e-6), 2 * np.pi)
+    np.testing.assert_allclose(pyturb.phase_to_opd(phase_h, 1.65e-6), opd, atol=1e-21)
+    # The same OPD is half the phase at twice the wavelength.
+    np.testing.assert_allclose(pyturb.opd_to_phase(opd, 3.3e-6), phase_h / 2)
+
+
 def test_structure_function_input_validation():
     screen = np.zeros((16, 16))
     with pytest.raises(ValueError):

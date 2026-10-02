@@ -66,8 +66,12 @@ class Layer:
     wind_speed : float
         Wind speed [m/s].
     wind_direction : float
-        Wind direction [deg], measured from axis 0 toward axis 1. Arbitrary
-        (need not be axis-aligned).
+        Direction the wind blows **from** [deg], measured from axis 0 toward
+        axis 1 (the meteorological convention). Arbitrary (need not be
+        axis-aligned). The turbulence pattern therefore moves across the pupil
+        along ``-wind_vector``: with ``wind_direction=0`` it travels toward
+        decreasing axis-0 index, and new turbulence enters at the high-index
+        edge. Every engine uses this convention.
     L0 : float
         Outer scale [m] for this layer. Default 25 m.
     """
@@ -80,7 +84,11 @@ class Layer:
 
     @property
     def wind_vector(self) -> Tuple[float, float]:
-        """``(vx, vy)`` wind components [m/s] along axes 0 and 1."""
+        """``(vx, vy)`` [m/s] along axes 0 and 1, pointing where the wind comes from.
+
+        The frozen-flow pattern moves along ``-wind_vector``: the phase at time
+        ``t`` is ``phi(x, t) = phi_0(x + wind_vector * t)``.
+        """
         theta = np.deg2rad(self.wind_direction)
         return self.wind_speed * np.cos(theta), self.wind_speed * np.sin(theta)
 

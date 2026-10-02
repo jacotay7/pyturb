@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Dict
 
-from .atmosphere import Atmosphere
+from .atmosphere import Atmosphere, PeriodicWrapWarning
 from .backend import get_array_module
 
 
@@ -49,15 +50,19 @@ def benchmark(
                                   engine=engine)
 
     gen = iter(atm.frames(dt=1e-3, steps=10 ** 9))
-    for _ in range(3):
-        next(gen)
-    _sync(device)
-    t0 = time.perf_counter()
-    frames = 0
-    while time.perf_counter() - t0 < seconds:
-        next(gen)
-        frames += 1
-    _sync(device)
+    # A timing loop runs far past the spectral screen's period; the wrap only
+    # matters for the statistics of a run, not for its throughput.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", PeriodicWrapWarning)
+        for _ in range(3):
+            next(gen)
+        _sync(device)
+        t0 = time.perf_counter()
+        frames = 0
+        while time.perf_counter() - t0 < seconds:
+            next(gen)
+            frames += 1
+        _sync(device)
     fps = frames / (time.perf_counter() - t0)
 
     batch = max(1, min(64, (2 ** 22) // (n * n)))
