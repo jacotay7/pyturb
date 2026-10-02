@@ -30,10 +30,21 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Concepts: concepts.md
+  - Guides:
+      - Choosing an engine: engines.md
+      - Turbulence profiles: profiles.md
+      - Boiling, LGS and dispersion: physics.md
+      - Performance: performance.md
+      - Troubleshooting: troubleshooting.md
+      - Tutorial notebooks: tutorials.md
   - Validation: validation.md
   - Comparison: comparison.md
   - Interop: interop.md
   - API reference: api.md
+  - Project:
+      - Changelog: changelog.md
+      - Roadmap: roadmap.md
+      - Contributing: contributing.md
 
 plugins:
   - search
@@ -49,6 +60,9 @@ plugins:
 
 markdown_extensions:
   - admonition
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
   - pymdownx.superfences
   - pymdownx.highlight
   - toc:

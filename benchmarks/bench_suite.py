@@ -57,6 +57,15 @@ def _package_version(name: str):
         return None
 
 
+def _cupy_version():
+    """CuPy's version; it ships as cupy-cuda12x / cupy-cuda13x, not "cupy"."""
+    try:
+        import cupy
+    except ImportError:
+        return None
+    return cupy.__version__
+
+
 def _revision():
     """Return the CI revision or local Git commit, when available."""
     revision = os.environ.get("GITHUB_SHA")
@@ -100,7 +109,7 @@ def _provenance():
             "numpy": _package_version("numpy"),
             "scipy": _package_version("scipy"),
             "numba": _package_version("numba"),
-            "cupy": _package_version("cupy"),
+            "cupy": _cupy_version(),
         },
     }
 

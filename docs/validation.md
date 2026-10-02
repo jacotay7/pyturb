@@ -28,7 +28,8 @@ near `0.9 D`, tilt is ~10-15% low, and the two astigmatisms split (~0.6x and
 ~1.6x Noll). `Atmosphere(oversample=4)` puts the pupil inside a 4x screen and
 matches von Kármán `2[C(0) − C(r)]` to ~2% rms out to `0.9 D`, which is what
 the check asserts; the default curve is plotted for comparison. Use
-`oversample` (2 roughly halves the spectral frame rate; 4 costs more) when
+`oversample` (it grows the FFT as `oversample**2`; see
+[Choosing an engine](engines.md)) when
 statistics across the whole pupil matter: tip/tilt and low-order error
 budgets, long-baseline correlations.
 

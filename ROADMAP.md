@@ -19,6 +19,15 @@ lands with a docs page.
       global) `inner_scale`/`power_law`. All are currently static-per-run;
       each is a genuine physics extension, not a bug, and would need its own
       theory-referenced validation the way `tau_boil` did.
+- [ ] **ESO 35-layer reference profiles** (median + Q1–Q4, Sarazin et al.
+      2013 / ESO-258292) — blocked on a verbatim copy of the published tables
+      (#18); add with a provenance test once available.
+
+## Performance
+
+- [ ] **Graph-capture the remaining host-bound GPU paths**: spectral boiling
+      (its random draws), the LGS cone readout and the extruder still issue
+      per-frame kernels and run at a few hundred frames/s on modest hosts.
 
 ## Non-goals — deliberately out of scope
 

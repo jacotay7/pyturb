@@ -54,8 +54,7 @@ ensemble = atm.sample(256)                # (256, 512, 512) Monte-Carlo OPDs
 
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, device="gpu")
 for t, opd in atm.frames(dt=1e-3, steps=200):
-    ...                                   # cupy arrays; ~850-3,200 fps at 512^2
-                                          # depending on GPU and host CPU
+    ...                                   # cupy arrays; ~4,600 fps at 512^2 on an RTX 4060
 ```
 
 See **[Quickstart](https://jacotay7.github.io/pyturb/quickstart/)** for
@@ -66,9 +65,24 @@ lower-level `PhaseScreen`/`InfinitePhaseScreen` building blocks; and
 
 ## Benchmarks
 
-Full 9-layer Paranal atmosphere, closed-loop OPD frames/s, on an RTX 5090
-(GPU) and a 32-core CPU (`pyturb[accel]`). The exact raw artifact and invocation
-are [versioned with the benchmarks](benchmarks/artifacts/v1.0.0-reference.json):
+Full 9-layer Paranal atmosphere, frames/s (Monte-Carlo: screens/s).
+
+**pyturb 1.1** on an RTX 4060 with an Arm (Neoverse-N1) host
+([artifact](benchmarks/artifacts/v1.1.0-arm-rtx4060.json)):
+
+| screen | GPU spectral | GPU `opd(t=times)` | GPU extrude | GPU Monte-Carlo |
+|---|---|---|---|---|
+| 256² | 6,451 | 27,510 | 1,174 | 33,292 |
+| 512² | 4,591 | 6,653 | 482 | 6,993 |
+| 1024² | 1,304 | 1,166 | 120 | 1,715 |
+
+Spectral frames replay a captured CUDA graph, so they no longer depend on the
+host CPU's speed; `opd(t=times)` evaluates an offline time series in one
+batched transform.
+
+**pyturb 1.0.0** on an RTX 5090 and a 32-core x86 CPU (`pyturb[accel]`;
+before the 1.1 CUDA-graph and batching work,
+[artifact](benchmarks/artifacts/v1.0.0-reference.json)):
 
 | screen | GPU spectral | GPU extrude | GPU Monte-Carlo screens/s | CPU spectral | CPU extrude |
 |---|---|---|---|---|---|
@@ -76,16 +90,16 @@ are [versioned with the benchmarks](benchmarks/artifacts/v1.0.0-reference.json):
 | 512² | 3,133 | 1,733 | 29,789 | 283 | 324 |
 | 1024² | 1,492 | 602 | 5,970 | 70 | 62 |
 
-The Monte-Carlo column is `Atmosphere.sample()` — the full 9-layer atmosphere.
+The Monte-Carlo column is `Atmosphere.sample()`, the full 9-layer atmosphere.
 Layers that share an outer scale are drawn as one aggregate screen (their PSDs
-add exactly), so a uniform-`L0` profile costs one FFT, not nine: `sample()`
-runs at nearly the single-layer `PhaseScreen.generate` rate (30,629 512²
-screens/s on the GPU, 108,054 at 256²). All Monte-Carlo figures are batched,
-device-resident throughput (a batch of 64 kept on the GPU); a single default
-call, or one that copies its result back to the host, is lower. Run
-`python -c "import pyturb; pyturb.benchmark()"` on your own machine, or
-`python benchmarks/bench_suite.py` for the full per-use-case sweep. A
-head-to-head against aotools, soapy and HCIPy lives in
+add exactly), so a uniform-`L0` profile costs one FFT, not nine. All
+Monte-Carlo figures are batched, device-resident throughput (a batch of up to
+64 kept on the GPU); a single call, or one that copies its result to the host,
+is lower. Measure your own machine with
+`python -c "import pyturb; pyturb.benchmark()"`, or `python
+benchmarks/bench_suite.py` for the full per-use-case sweep. More hardware and
+the head-to-head against aotools, soapy and HCIPy:
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) and
 **[Comparison](https://jacotay7.github.io/pyturb/comparison/)**.
 
 ## Features
