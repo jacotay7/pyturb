@@ -294,6 +294,10 @@ class AtmosphereConfig:
         for index, layer in enumerate(model_layers):
             _validate_layer(index, layer)
         fractions = _fractions(model_layers)
+        # A layer carrying none of the turbulence (as published profiles
+        # sometimes tabulate) contributes nothing and would have an infinite
+        # Fried parameter, so it is left out of the simulated layers.
+        keep = fractions > 0
         configured_layers = tuple(
             LayerConfig(
                 altitude=layer.altitude,
@@ -302,7 +306,8 @@ class AtmosphereConfig:
                 wind_direction=layer.wind_direction,
                 L0=layer.L0 if L0 is None else float(L0),
             )
-            for layer, fraction in zip(model_layers, fractions)
+            for layer, fraction, kept in zip(model_layers, fractions, keep)
+            if kept
         )
         if engine == "extrude" and any(
             not np.isfinite(layer.L0) for layer in configured_layers
@@ -317,9 +322,11 @@ class AtmosphereConfig:
         if tau_boil is None:
             tau = np.full(len(configured_layers), np.inf)
         else:
+            # One value per *given* layer (or a scalar), then the same
+            # zero-fraction layers dropped.
             tau = np.broadcast_to(
-                np.asarray(tau_boil, dtype=np.float64), (len(configured_layers),)
-            ).astype(np.float64)
+                np.asarray(tau_boil, dtype=np.float64), (len(model_layers),)
+            ).astype(np.float64)[keep]
         if np.any(~np.isfinite(tau) & ~np.isinf(tau)) or np.any(tau <= 0):
             raise ValueError("tau_boil must be positive (or None for frozen flow)")
         return cls(

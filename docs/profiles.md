@@ -20,6 +20,58 @@ r0 = 0.15 m at zenith for the θ0/τ0 columns (both scale with r0):
 | `single-layer` | 1 | teaching case | — | 25 | ∞ | 4.7 ms |
 | `two-layer` | 2 | teaching case | — | 25 | 2.00" | 2.8 ms |
 
+### Paranal reference profiles (Garcia-Rissmann et al. 2015)
+
+Fourteen typical Paranal profiles from [Garcia-Rissmann et al. 2015, MNRAS
+448, 2594 (doi:10.1093/mnras/stv169)](https://doi.org/10.1093/mnras/stv169),
+Tables 2–3, compiled by ESO from SLODAR, MASS-DIMM and SCIDAR measurements
+(Sarazin et al. 2013). Each sits in a seeing class and is "good", "median" or
+"bad" according to how much of its turbulence is near the ground (good = more
+ground layer, easier to correct). Ten layers from 30 m to 14 km, whole-percent
+fractions, layer speeds `beta * v_ref`, L0 = 25 m; wind directions are not in
+the source and are all 0°. The published r0, τ0 (quoted for z = 30°),
+mean height h̄ and probability of occurrence are in
+`profile_info(name).conditions`; pyturb's tests recompute the paper's h̄ and τ0
+from the stored layers.
+
+| name | seeing class | quality | r0 [m] | τ0 [ms] | h̄ [km] | θ0 (at the published r0) | probability |
+|---|---:|---|---:|---:|---:|---:|---:|
+| `paranal-p01` | 0.4" | median | 0.186 | 4.6 | 3.73 | 3.23" | 7.0% |
+| `paranal-p02` | 0.6" | good | 0.136 | 3.9 | 2.39 | 3.68" | 6.0% |
+| `paranal-p03` | 0.6" | median | 0.136 | 3.8 | 3.73 | 2.36" | 12.0% |
+| `paranal-p04` | 0.6" | bad | 0.136 | 3.9 | 4.88 | 1.80" | 6.0% |
+| `paranal-p05` | 0.8" | good | 0.116 | 3.0 | 2.66 | 2.82" | 6.5% |
+| `paranal-p06` | 0.8" | median | 0.116 | 3.0 | 3.82 | 1.97" | 13.0% |
+| `paranal-p07` | 0.8" | bad | 0.116 | 3.1 | 4.45 | 1.69" | 6.5% |
+| `paranal-p08` | 1.0" | good | 0.101 | 2.4 | 3.05 | 2.15" | 4.5% |
+| `paranal-p09` | 1.0" | median | 0.101 | 2.5 | 3.81 | 1.72" | 9.0% |
+| `paranal-p10` | 1.0" | bad | 0.101 | 2.4 | 4.47 | 1.46" | 4.5% |
+| `paranal-p11` | 1.2" | good | 0.089 | 2.0 | 2.73 | 2.11" | 3.0% |
+| `paranal-p12` | 1.2" | median | 0.089 | 2.1 | 3.53 | 1.63" | 6.0% |
+| `paranal-p13` | 1.2" | bad | 0.089 | 2.0 | 3.69 | 1.56" | 3.0% |
+| `paranal-p14` | 1.4" | median | 0.074 | 1.4 | 3.53 | 1.36" | 13.0% |
+
+Reproduce a published case with its r0 (Table 2's τ0 equals `0.314 r0 / v̄`
+with these winds and the tabulated r0, i.e. at the line of sight the paper
+quotes); for a Monte-Carlo over Paranal conditions, draw profiles with the
+listed probabilities (they sum to 100%):
+
+```python
+import numpy as np
+import pyturb
+
+info = pyturb.profile_info("paranal-p06")
+atm = pyturb.Atmosphere.from_profile("paranal-p06", r0=info.conditions["r0"], n=128)
+print(atm.tau0, info.conditions["tau0"])         # ~3.05 ms vs 3.0 ms published
+
+names = [f"paranal-p{i:02d}" for i in range(1, 15)]
+weights = [pyturb.profile_info(n).conditions["probability"] for n in names]
+pick = np.random.default_rng(0).choice(names, p=weights)
+```
+
+`paranal-median` (below) predates these and is a representative profile, not
+a published table; prefer the `paranal-pNN` set for Paranal work.
+
 "No" means a representative discretisation in the general shape of the site's
 published statistics, not a reproduction of one table. **Wind directions are
 illustrative in every profile** — none of the sources tabulate them.

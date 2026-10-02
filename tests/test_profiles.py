@@ -163,3 +163,36 @@ def test_discretize_cn2_wind_direction():
     assert all(layer.wind_direction == 45.0 for layer in scalar)
     with pytest.raises(ValueError, match="wind_direction"):
         pyturb.discretize_cn2(h, cn2, n_layers=3, wind_direction=[1.0, 2.0])
+
+
+GR2015_IDS = [f"paranal-p{i:02d}" for i in range(1, 15)]
+
+
+@pytest.mark.parametrize("name", GR2015_IDS)
+def test_paranal_gr2015_profiles_reproduce_their_published_table(name):
+    # Garcia-Rissmann et al. (2015), MNRAS 448, 2594: Table 3 gives the layer
+    # percentages, Table 2 the mean turbulence height and tau0 those layers
+    # imply (with layer speeds beta * v_ref and the tabulated r0). Recomputing
+    # both pins the transcription to the printed rounding.
+    info = pyturb.profile_info(name)
+    layers = pyturb.get_profile(name)
+    assert info.traceable and "10.1093/mnras/stv169" in info.source
+    assert info.outer_scale == 25.0 and all(layer.L0 == 25.0 for layer in layers)
+    fractions = np.array([layer.cn2_fraction for layer in layers])
+    assert fractions.sum() == pytest.approx(1.0)                 # whole percents
+    assert profiles.mean_turbulence_height(layers) == pytest.approx(
+        info.conditions["mean_height"], abs=6.0)                 # 0.01 km print
+    tau0 = profiles.coherence_time(layers, info.conditions["r0"])
+    assert tau0 == pytest.approx(info.conditions["tau0"], abs=0.06e-3)  # 0.1 ms
+    atm = pyturb.Atmosphere.from_profile(name, r0=info.conditions["r0"], n=16)
+    assert atm.metadata["profile_source"] == info.source
+
+
+def test_paranal_gr2015_classes_and_probabilities():
+    infos = [pyturb.profile_info(name) for name in GR2015_IDS]
+    # The fourteen profiles cover the Paranal statistics they were drawn from.
+    assert sum(i.conditions["probability"] for i in infos) == pytest.approx(1.0)
+    assert {i.conditions["quality"] for i in infos} == {"good", "median", "bad"}
+    seeing = [i.conditions["seeing_class"] for i in infos]
+    r0 = [i.conditions["r0"] for i in infos]
+    assert np.all(np.diff(seeing) >= 0) and np.all(np.diff(r0) <= 0)
