@@ -45,6 +45,45 @@ class GridConfig:
         return cls(int(n), float(pixel_scale), device, float_dtype)
 
 
+def _validate_layer(index: int, layer: Layer) -> None:
+    """Reject a layer whose values would silently yield NaN screens or metrics."""
+    values = {
+        "altitude": layer.altitude,
+        "cn2_fraction": layer.cn2_fraction,
+        "wind_speed": layer.wind_speed,
+        "wind_direction": layer.wind_direction,
+    }
+    for name, value in values.items():
+        try:
+            finite = bool(np.isfinite(float(value)))
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            raise ValueError(
+                f"layer {index}: {name}={value!r} must be a finite number; a "
+                "non-finite value propagates into every OPD frame (NaN screens) "
+                "and into theta0/tau0."
+            )
+    if layer.altitude < 0:
+        raise ValueError(
+            f"layer {index}: altitude={layer.altitude!r} m must be >= 0 (height "
+            "above the telescope); a negative height has no line-of-sight "
+            "meaning and makes theta0 (which uses h**(5/3)) NaN."
+        )
+    if layer.wind_speed < 0:
+        raise ValueError(
+            f"layer {index}: wind_speed={layer.wind_speed!r} m/s must be >= 0; "
+            "give the direction with wind_direction (add 180 degrees to reverse "
+            "it) so the speed and the direction stay unambiguous."
+        )
+    L0 = layer.L0
+    if L0 is None or np.isnan(L0) or L0 <= 0:
+        raise ValueError(
+            f"layer {index}: L0={L0!r} m must be positive (numpy.inf for "
+            "Kolmogorov turbulence)."
+        )
+
+
 @dataclass(frozen=True)
 class LayerConfig:
     """Immutable layer model stored inside :class:`AtmosphereConfig`."""
@@ -144,6 +183,7 @@ class AtmosphereConfig:
     dispersion: Optional[str]
     wet_fraction: float
     seed: Optional[int]
+    oversample: float = 1.0
 
     @classmethod
     def create(
@@ -169,6 +209,7 @@ class AtmosphereConfig:
         device: str,
         dtype: Any,
         seed: Optional[int],
+        oversample: float = 1.0,
     ) -> "AtmosphereConfig":
         """Validate model inputs and normalise values shared by both engines."""
         model_layers = list(layers)
@@ -187,6 +228,15 @@ class AtmosphereConfig:
         grid = GridConfig.create(n, float(diameter) / n, device, dtype)
         if not np.isfinite(field_of_view) or field_of_view < 0:
             raise ValueError("field_of_view must be finite and >= 0 arcsec")
+        try:
+            oversample = float(oversample)
+        except (TypeError, ValueError):
+            oversample = float("nan")
+        if not np.isfinite(oversample) or oversample < 1.0:
+            raise ValueError(
+                "oversample must be a finite number >= 1: it is the spectral "
+                "screen size as a multiple of the pupil (1 = pupil-sized)"
+            )
         if engine not in ("spectral", "extrude"):
             raise ValueError("engine must be 'spectral' or 'extrude'")
         if interp not in ("cubic", "linear", "lanczos"):
@@ -241,6 +291,8 @@ class AtmosphereConfig:
             raise ValueError(
                 "r0 (or the r0 implied by seeing) must be positive and finite [m]"
             )
+        for index, layer in enumerate(model_layers):
+            _validate_layer(index, layer)
         fractions = _fractions(model_layers)
         configured_layers = tuple(
             LayerConfig(
@@ -290,6 +342,7 @@ class AtmosphereConfig:
             dispersion=dispersion,
             wet_fraction=float(wet_fraction),
             seed=seed,
+            oversample=oversample,
         )
 
 

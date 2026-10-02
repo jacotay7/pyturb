@@ -103,9 +103,15 @@ class FourierFlowScreen:
         xp, n = self.xp, self.n
         f = self._f
         # Shift theorem on the periodic FFT grid: multiply each mode by its
-        # translation phasor, then inverse-FFT. Separable in x and y.
-        phasor_x = xp.exp((2j * np.pi * sx) * f).astype(self._cdtype)
-        phasor_y = xp.exp((2j * np.pi * sy) * f).astype(self._cdtype)
+        # translation phasor, then inverse-FFT. Separable in x and y. Every
+        # main-grid mode repeats with period n * pixel_scale, so the shift is
+        # reduced modulo that period in float64 first; otherwise a float32
+        # phasor loses precision as the displacement grows.
+        period = n * self.pixel_scale
+        rx = float(np.mod(float(sx), period))
+        ry = float(np.mod(float(sy), period))
+        phasor_x = xp.exp((2j * np.pi * rx) * f).astype(self._cdtype)
+        phasor_y = xp.exp((2j * np.pi * ry) * f).astype(self._cdtype)
         spectrum = self._spectrum * phasor_x[:, None] * phasor_y[None, :]
         field = self._fft.ifft2(spectrum, axes=(-2, -1)) * (n * n)
         screen = field.real
@@ -116,9 +122,15 @@ class FourierFlowScreen:
             # matmuls collapsed to one (n, 3P) @ (3P, n) (see PhaseScreen.generate).
             tmpl = self.template
             n_sh = tmpl._n_sh
-            fp = tmpl._sh_freqs_stack  # (P, 3)
-            px = xp.exp((2j * np.pi * sx) * fp).astype(self._cdtype)  # (P, 3)
-            py = xp.exp((2j * np.pi * sy) * fp).astype(self._cdtype)
+            # Subharmonic level p repeats every 3**p periods: form its phase in
+            # float64 cycles on the host and move only the unit phasors over.
+            df = 1.0 / period
+            fp = np.stack([np.array([-1.0, 0.0, 1.0]) * df / 3.0 ** level
+                           for level in range(1, n_sh + 1)])  # (P, 3) float64
+            px = xp.asarray(np.exp((2j * np.pi) * np.mod(float(sx) * fp, 1.0)),
+                            dtype=self._cdtype)  # (P, 3)
+            py = xp.asarray(np.exp((2j * np.pi) * np.mod(float(sy) * fp, 1.0)),
+                            dtype=self._cdtype)
             shifted = self._sh_coeffs_stack * px[:, :, None] * py[:, None, :]  # (P,3,3)
             m = xp.matmul(shifted, tmpl._sh_basis_stack).reshape(n_sh * 3, n)
             basis_flat = tmpl._sh_basis_stack.reshape(n_sh * 3, n)

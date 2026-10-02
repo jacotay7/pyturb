@@ -61,81 +61,136 @@ def structure_function(ax):
     check("structure function vs Kolmogorov", err < 0.08, f"{err*100:.1f}% rms error")
 
 
+def large_scale_structure_function(ax):
+    """Von Karman structure function out to 0.9 D, pupil-sized vs oversampled.
+
+    An FFT screen is periodic, so on the default pupil-sized screen
+    (``oversample=1``) opposite pupil edges are neighbours and separations
+    beyond ~D/4 come out low. ``oversample=4`` puts the pupil inside a 4x
+    screen and must match ``2 [C(0) - C(r)]`` from :func:`pyturb.phase_covariance`
+    out to 0.9 D; the default curve is plotted for comparison, not asserted.
+    """
+    n, D, r0, L0 = 64, 8.0, 0.15, 25.0
+    layer = [pyturb.Layer(0.0, 1.0, 10.0, 0.0, L0=L0)]
+    seps = np.arange(4, int(0.9 * n) + 1, 4)
+    dx = D / n
+    theory = 2 * (pyturb.phase_covariance(0.0, r0, L0)
+                  - pyturb.phase_covariance(seps * dx, r0, L0))
+    ratios = {}
+    for oversample in (1, 4):
+        atm = pyturb.Atmosphere(layer, r0=r0, diameter=D, n=n, dtype="float64",
+                                seed=21, oversample=oversample)
+        phase = atm.sample(1200, wavelength=atm.wavelength)
+        measured = np.array([
+            0.5 * (np.mean((phase[:, k:] - phase[:, :-k]) ** 2)
+                   + np.mean((phase[:, :, k:] - phase[:, :, :-k]) ** 2))
+            for k in seps
+        ])
+        ratios[oversample] = measured / theory
+        ax.plot(seps / n, ratios[oversample], "o-", ms=3,
+                label=f"oversample={oversample}")
+    ax.axhline(1.0, color="k", ls="--", lw=0.8)
+    ax.set(xlabel="separation / D", ylabel="D(r) / von Karman",
+           title="Large-scale structure function", ylim=(0.4, 1.2))
+    ax.legend(fontsize=7)
+    err = np.sqrt(np.mean((ratios[4] - 1) ** 2))
+    check("large-scale structure function to 0.9 D (oversample=4)", err < 0.05,
+          f"{err*100:.1f}% rms error (pupil-sized default: "
+          f"{ratios[1][-1]:.2f}x theory at {seps[-1] / n:.2f} D)")
+
+
 def zernike_spectrum(ax):
-    """Zernike-mode variances vs Noll (1976) for a Kolmogorov screen."""
-    n, D, r0 = 128, 4.0, 0.4
-    gen = pyturb.PhaseScreen(n=n, pixel_scale=D / n, r0=r0, L0=np.inf, seed=7,
-                             dtype="float64")
+    """Per-mode Zernike variances vs Noll (1976), tip/tilt included.
+
+    Kolmogorov screens on a 4x oversampled grid (``Atmosphere(oversample=4)``,
+    ``L0=inf``). Every mode j = 2..20 must sit within 0.8-1.25x of Noll; a
+    pupil-sized periodic screen fails this (tilt low, the two astigmatisms
+    split ~0.6x/1.6x).
+    """
+    n, D, r0 = 64, 4.0, 0.4
+    layer = [pyturb.Layer(0.0, 1.0, 10.0, 0.0, L0=np.inf)]
+    atm = pyturb.Atmosphere(layer, r0=r0, diameter=D, n=n, dtype="float64",
+                            seed=7, oversample=4)
     basis = analysis.zernike_basis(20, n)
-    coeffs = analysis.zernike_decompose(gen.generate(800), 20, basis=basis)
-    measured = coeffs.var(axis=0)
+    phase = atm.sample(1200, wavelength=atm.wavelength)
+    measured = analysis.zernike_decompose(phase, 20, basis=basis).var(axis=0)
     j = np.arange(2, 21)
     noll = np.array([analysis.noll_variance(int(k), D, r0) for k in j])
     ax.semilogy(j, noll, "k--", marker="_", label="Noll (1976)")
-    ax.semilogy(j, measured[1:20], "o", ms=3, label="pyturb")
+    ax.semilogy(j, measured[1:20], "o", ms=3, label="pyturb (oversample=4)")
     ax.set(xlabel="Noll index j", ylabel="mode variance [rad$^2$]",
            title="Zernike spectrum")
     ax.legend(fontsize=7)
-    ratio = measured[3:20].sum() / noll[2:].sum()  # aggregate j=4..20
-    check("Zernike variances vs Noll", 0.85 < ratio < 1.2,
-          f"aggregate ratio {ratio:.2f}")
+    per_mode = measured[1:20] / noll
+    ok = bool(np.all((per_mode > 0.8) & (per_mode < 1.25)))
+    check("Zernike variances vs Noll, per mode j=2..20", ok,
+          f"ratios {per_mode.min():.2f}-{per_mode.max():.2f} "
+          f"(tip {per_mode[0]:.2f}, tilt {per_mode[1]:.2f})")
 
 
 def temporal_psd(ax):
     """Single pupil point under frozen flow: temporal PSD slope **and** amplitude.
 
-    The point-wise frozen-flow temporal PSD approaches ``f^{-8/3}`` at high
-    frequency; measured over a finite screen and a realistic AO band the slope
-    sits a little shallower (~ -2.3 to -2.5). This check runs a **non-wrapping**
-    case (screen period ``n*pixel_scale = 8 m`` exceeds the 7 m of wind travel,
-    so nothing repeats and no ``PeriodicWrapWarning`` fires), averages 8 seeds to
-    stabilise the single-point periodogram, and reports:
+    The point-wise frozen-flow temporal PSD follows ``f^{-8/3}``, with level
+    ``W1(f) = 0.0774 r0^{-5/3} V^{5/3} f^{-8/3}`` (rad^2/Hz, one-sided). The
+    check runs a **non-wrapping** case on **both** engines (screen period
+    ``n*pixel_scale = 8 m`` exceeds the 7 m of wind travel, so nothing repeats
+    and no ``PeriodicWrapWarning`` fires), averages 8 seeds to stabilise the
+    single-point periodogram (Hann-tapered, :func:`analysis.temporal_psd`'s
+    default; an untapered periodogram of this steep spectrum leaks and reads
+    shallower and ~2-6x too high), and reports per engine:
 
-    - the power-law **slope** with a bootstrap 95% CI over seeds, and
-    - the **amplitude** relative to the analytic Kolmogorov frozen-flow
-      single-point PSD ``W1(f) = 0.0774 r0^{-5/3} V^{5/3} f^{-8/3}`` (rad^2/Hz,
-      one-sided). The ``r0^{-5/3}`` scaling is exact; the measured level sits
-      within a factor of ~2 of theory for this band (the residual is the same
-      finite-screen effect that shallows the slope).
+    - the power-law **slope** over 5-40 Hz with a bootstrap 95% CI over seeds;
+    - the **amplitude** relative to ``W1``.
+
+    The extruder sits a little steeper and lower at the top of the band: its
+    sub-pixel interpolation low-passes the finest scales (see the ``engine``
+    notes on :class:`pyturb.Atmosphere`).
 
     Phase (rad at 500 nm) is used, not OPD, so the amplitude is physical.
     """
     v, dt, steps, lam, r0 = 10.0, 1e-3, 700, 500e-9, 0.15
     layers = [pyturb.Layer(0.0, 1.0, wind_speed=v, wind_direction=0.0, L0=25.0)]
-    freq, psds = None, []
-    for seed in range(8):
-        atm = pyturb.Atmosphere(layers, r0=r0, n=96, diameter=8.0, seed=seed,
-                                subharmonics=8)
-        assert atm.time_to_wrap > steps * dt  # non-wrapping by construction
-        series = np.array([np.array(o)[48, 48]
-                           for _, o in atm.frames(dt=dt, steps=steps, wavelength=lam)])
-        f, p = analysis.temporal_psd(series, dt)
-        freq = f
-        psds.append(p)
-    psds = np.array(psds)
-    psd = psds.mean(axis=0)
-    slope, amp = analysis.fit_power_law(freq, psd, fmin=5, fmax=40)
-    # Bootstrap the ensemble slope over seeds (resample seeds -> mean PSD -> refit).
     rng = np.random.default_rng(0)
-    boot = [analysis.fit_power_law(
-                freq, psds[rng.integers(0, len(psds), len(psds))].mean(axis=0),
-                fmin=5, fmax=40)[0]
-            for _ in range(1000)]
-    lo, hi = np.percentile(boot, [2.5, 97.5])
-    # Amplitude vs analytic frozen-flow single-point PSD (median over the band).
-    analytic = 0.0774 * r0 ** (-5.0 / 3.0) * v ** (5.0 / 3.0) * freq ** (-8.0 / 3.0)
-    band = (freq >= 5) & (freq <= 40)
-    amp_ratio = float(np.median(psd[band] / analytic[band]))
-    ax.loglog(freq, psd, lw=0.7, label="pyturb (8-seed mean)")
-    ax.loglog(freq, amp * freq ** slope, "k--", label=f"fit f$^{{{slope:.2f}}}$")
+    results = {}
+    for engine, style in (("spectral", "-"), ("extrude", "--")):
+        freq, psds = None, []
+        for seed in range(8):
+            atm = pyturb.Atmosphere(layers, r0=r0, n=96, diameter=8.0, seed=seed,
+                                    subharmonics=8, engine=engine)
+            assert atm.time_to_wrap > steps * dt  # non-wrapping by construction
+            series = np.array([pyturb.to_numpy(o)[48, 48]
+                               for _, o in atm.frames(dt=dt, steps=steps,
+                                                      wavelength=lam)])
+            freq, p = analysis.temporal_psd(series, dt)
+            psds.append(p)
+        psds = np.array(psds)
+        psd = psds.mean(axis=0)
+        slope, amp = analysis.fit_power_law(freq, psd, fmin=5, fmax=40)
+        # Bootstrap the ensemble slope over seeds (resample -> mean PSD -> refit).
+        boot = [analysis.fit_power_law(
+                    freq, psds[rng.integers(0, len(psds), len(psds))].mean(axis=0),
+                    fmin=5, fmax=40)[0]
+                for _ in range(1000)]
+        lo, hi = np.percentile(boot, [2.5, 97.5])
+        analytic = 0.0774 * r0 ** (-5.0 / 3.0) * v ** (5.0 / 3.0) * freq ** (-8.0 / 3.0)
+        band = (freq >= 5) & (freq <= 40)
+        amp_ratio = float(np.median(psd[band] / analytic[band]))
+        results[engine] = (slope, lo, hi, amp_ratio)
+        ax.loglog(freq, psd, style, lw=0.7, label=f"{engine} (8-seed mean)")
     ax.loglog(freq, analytic, "r:", label="frozen-flow f$^{-8/3}$")
     ax.set(xlabel="frequency [Hz]", ylabel="PSD [rad$^2$/Hz]",
            title="Temporal PSD (1 pixel)")
     ax.legend(fontsize=7)
-    ok = (-3.0 < slope < -2.0) and (1.0 < amp_ratio < 3.0)
-    check("temporal PSD slope + amplitude (non-wrapping, 8-seed)", ok,
-          f"slope {slope:.2f} (95% CI [{lo:.2f}, {hi:.2f}]), "
-          f"amplitude {amp_ratio:.1f}x frozen-flow theory")
+    ok = all(-3.0 < slope < -2.4 and 0.6 < amp_ratio < 1.6
+             for slope, _, _, amp_ratio in results.values())
+    detail = "; ".join(
+        f"{engine}: slope {slope:.2f} (95% CI [{lo:.2f}, {hi:.2f}]), "
+        f"amplitude {amp_ratio:.2f}x theory"
+        for engine, (slope, lo, hi, amp_ratio) in results.items()
+    )
+    check("temporal PSD slope + amplitude, both engines (non-wrapping, 8-seed)",
+          ok, detail)
 
 
 def angular_decorrelation(ax):
@@ -305,14 +360,14 @@ def main(argv: Optional[Sequence[str]] = None):
     extruder_stationarity(axes[1, 1])
     finite_resolution(axes[1, 2])
     zenith_projection(axes[2, 0])
-    axes[2, 1].axis("off")
+    large_scale_structure_function(axes[2, 1])
     axes[2, 2].axis("off")
     summary = "\n".join(
         f"{'PASS' if result['passed'] else 'FAIL'}  {result['name']}"
         for result in RESULTS
     )
-    axes[2, 1].text(0.02, 0.95, "pyturb validation\n\n" + summary, va="top",
-                    family="monospace", fontsize=9, transform=axes[2, 1].transAxes)
+    axes[2, 2].text(0.02, 0.95, "pyturb validation\n\n" + summary, va="top",
+                    family="monospace", fontsize=8, transform=axes[2, 2].transAxes)
     fig.suptitle(f"pyturb {pyturb.__version__} — turbulence validated against theory",
                  fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
