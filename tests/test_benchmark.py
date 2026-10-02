@@ -3,9 +3,12 @@ import pytest
 import pyturb
 
 
-@pytest.mark.filterwarnings("ignore::pyturb.PeriodicWrapWarning")
+@pytest.mark.filterwarnings("error::pyturb.PeriodicWrapWarning")
 def test_benchmark_returns_positive_rates():
-    result = pyturb.benchmark(n=32, profile="two-layer", seconds=0.05)
+    # The timing loop runs well past the spectral screen period (n=32 at 8 m
+    # wraps in 0.8 s of 10 m/s wind); that is irrelevant to throughput, so
+    # benchmark() must not surface PeriodicWrapWarning to the caller.
+    result = pyturb.benchmark(n=32, profile="two-layer", seconds=0.3)
     assert set(result) == {"frames_per_s", "screens_per_s"}
     assert result["frames_per_s"] > 0
     assert result["screens_per_s"] > 0

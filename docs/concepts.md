@@ -61,3 +61,28 @@ Turbulence is assumed to blow across the pupil frozen in shape at the layer's
 wind velocity, so evolution in time is translation in space. pyturb offers two
 engines for this — a fast periodic spectral one and an unbounded extruder — plus
 optional **boiling** (`tau_boil`) for the residual non-frozen decorrelation.
+
+## Conventions
+
+- **Array axes.** Every output is an `(n, n)` array indexed `[axis 0, axis 1]`
+  with pixel pitch `diameter / n`. When you flatten a pyturb OPD onto an
+  HCIPy pupil grid with `.ravel()` (as in [Interop](interop.md)), axis 0
+  becomes HCIPy's **y** and axis 1 its **x**.
+- **Wind direction.** `Layer.wind_direction` is the direction the wind blows
+  **from**, in degrees from axis 0 toward axis 1, and `Layer.wind_vector`
+  points the same way. The turbulence pattern moves along `-wind_vector`:
+  `phi(x, t) = phi_0(x + wind_vector * t)`. With `wind_direction=0` the
+  pattern travels toward decreasing axis-0 index. All engines, and
+  `InfinitePhaseScreen`, follow this. If you compare against a tool that
+  treats velocity as the pattern's motion (HCIPy does), negate the vector,
+  and swap axes as above.
+- **Off-axis directions.** `directions=[(thx, thy)]` are angles in arcsec
+  along axis 0 and axis 1. A layer at line-of-sight range `h` is sampled at
+  `x + h * tan(theta)`.
+- **Line of sight vs zenith.** `seeing`/`r0` passed to the constructor are at
+  zenith; `atm.r0`, `atm.seeing`, `atm.theta0` and `atm.tau0` are along the
+  line of sight at `zenith_angle`. So `seeing=0.8` at 30° reports
+  `atm.seeing ≈ 0.87`.
+- **Units.** `Atmosphere` returns OPD in metres; pass `wavelength=` for phase in
+  radians. `PhaseScreen`, `InfinitePhaseScreen` and `FourierFlowScreen` return
+  phase in radians at the wavelength their `r0` is quoted at.

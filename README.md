@@ -45,14 +45,17 @@ atm = pyturb.Atmosphere.from_profile(
 )
 print(atm.r0, atm.theta0, atm.tau0)      # Fried param, isoplanatic angle, tau0
 
-for t, opd in atm.frames(dt=1e-3, steps=2000):
+for t, opd in atm.frames(dt=1e-3, steps=200):
     ...                                   # (512, 512) OPD [m], frozen flow
+# The default spectral engine is periodic: keep runs under atm.time_to_wrap
+# (0.25 s here) or pass engine="extrude" for unbounded, non-periodic flow.
 
 ensemble = atm.sample(256)                # (256, 512, 512) Monte-Carlo OPDs
 
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, device="gpu")
-for t, opd in atm.frames(dt=1e-3, steps=2000):
-    ...                                   # cupy arrays, ~3,200 fps at 512^2
+for t, opd in atm.frames(dt=1e-3, steps=200):
+    ...                                   # cupy arrays; ~850-3,200 fps at 512^2
+                                          # depending on GPU and host CPU
 ```
 
 See **[Quickstart](https://jacotay7.github.io/pyturb/quickstart/)** for
@@ -75,7 +78,7 @@ are [versioned with the benchmarks](benchmarks/artifacts/v1.0.0-reference.json):
 
 The Monte-Carlo column is `Atmosphere.sample()` — the full 9-layer atmosphere.
 Layers that share an outer scale are drawn as one aggregate screen (their PSDs
-add exactly), so a uniform-`L0` profile costs one FFT, not nine: `sample()` now
+add exactly), so a uniform-`L0` profile costs one FFT, not nine: `sample()`
 runs at nearly the single-layer `PhaseScreen.generate` rate (30,629 512²
 screens/s on the GPU, 108,054 at 256²). All Monte-Carlo figures are batched,
 device-resident throughput (a batch of 64 kept on the GPU); a single default
@@ -93,7 +96,8 @@ head-to-head against aotools, soapy and HCIPy lives in
 - **Two frozen-flow engines** — `engine="spectral"` (default): exact
   sub-pixel shift-theorem translation, all layers in one FFT, periodic.
   `engine="extrude"`: Assémat–Wilson row extrusion, unbounded and
-  non-periodic. Both use fused CUDA/Numba kernels on the hot path.
+  non-periodic, read out by a fused CUDA kernel (GPU) or Numba kernel (CPU,
+  with `[accel]`).
 - **Off-axis / tomography** — `atm.opd(t, directions=[...])` batches several
   guide-star directions through one call.
 - **Boiling** — temporal decorrelation on top of frozen flow (`tau_boil`).

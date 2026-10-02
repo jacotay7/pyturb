@@ -16,7 +16,13 @@ print(f"generated {screens.shape}  rms = {screens.std():.2f} rad")
 
 r, measured = pyturb.structure_function(screens, PIXEL_SCALE)
 theory = 6.88 * (r / R0) ** (5.0 / 3.0)         # Kolmogorov
-print(f"structure function / theory = {np.mean(measured / theory):.3f} (want ~1)")
+# Skip the 1-3 px near-Nyquist deficit. For Kolmogorov turbulence a large share
+# of D(r) comes from the few screen-scale modes, so a 50-screen ensemble
+# scatters by roughly +/-10% from seed to seed; more screens tighten it.
+band = r >= 4 * PIXEL_SCALE
+ratio = np.mean(measured[band] / theory[band])
+print(f"structure function / theory = {ratio:.3f} "
+      "(expect 1 within ~10% for 50 screens)")
 
 try:
     import matplotlib.pyplot as plt

@@ -69,8 +69,8 @@ This axis is **not apples-to-apples**, and that is the interesting part:
   sub-pixel translation in an arbitrary direction* — more work per step, but
   the general operation an AO loop actually needs, and it is flat in n on the
   GPU (~5,700 fps at 256²–512²).
-- **pyturb GPU, 9-layer** is the real product: a full ESO Paranal-median
-  atmosphere summed to pupil OPD, **~3,160 fps at 512²**. Building the same
+- **pyturb GPU, 9-layer** is the real product: a full 9-layer
+  `paranal-median` atmosphere (representative, not a published ESO table) summed to pupil OPD, **~3,160 fps at 512²**. Building the same
   9-layer atmosphere from `aotools`/`soapy` means nine `add_row` calls + sum
   per frame on CPU, with no sub-pixel motion.
 - **HCIPy `InfiniteAtmosphericLayer`** interpolates a stored screen (sub-pixel,
@@ -98,7 +98,10 @@ CPU rows use the optional `pyturb[accel]` (Numba) extra.
 
 pyturb rows are recorded in
 [`artifacts/v1.0.0-reference.json`](artifacts/v1.0.0-reference.json), generated
-by `bench_suite.py` on the machine of record;
+by `bench_suite.py` on the machine of record (its provenance records
+`source_dirty: true`: it was captured from a working tree with uncommitted
+changes on top of the recorded revision, so treat it as indicative of 1.0.0
+rather than bit-reproducible from that commit);
 the aotools/HCIPy rows (†) are from the separate `bench_compare.py` harness and
 are indicative cross-references, not part of the same run.
 

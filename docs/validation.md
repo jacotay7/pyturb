@@ -36,8 +36,11 @@ wind-crossing harmonics of the finite aperture. Fit with
 **Angular decorrelation.** The residual variance between the on-axis and an
 off-axis line of sight grows as `(θ/θ0)^{5/3}` near the isoplanatic angle
 (`analysis.differential_variance`), confirming the geometry of the off-axis
-`directions=` path. Well beyond θ0 the curve saturates as the two footprints
-fully decorrelate.
+`directions=` path. The check asserts the **slope**; the measured level sits
+below the infinite-outer-scale `(θ/θ0)^{5/3}` (about ×0.6 here), as expected
+for a finite `L0 = 25 m`, which removes large-scale power from the
+differential wavefront. Well beyond θ0 the curve saturates as the two
+footprints fully decorrelate.
 
 **Extruder stationarity.** The variance of an `InfinitePhaseScreen` shows no
 secular drift over thousands of steps (guarding against conditional-covariance

@@ -33,12 +33,18 @@ pyturb gives you fast, non-periodic, GPU turbulence to drive it. (HCIPy's own
 `InfiniteAtmosphericLayer` is fine too — use pyturb when you want the GPU/batched
 speed or the extra profiles/analysis.)
 
+Two conventions to keep straight (see [Concepts](concepts.md#conventions)):
+`.ravel()` puts pyturb's axis 0 on HCIPy's **y** axis, and pyturb's
+`wind_vector` points where the wind comes *from* (the pattern moves along
+`-wind_vector`), while HCIPy layer velocities are the pattern's motion.
+
 ## poppy
 
 poppy consumes wavefront-error maps directly (OPD in metres), so a pyturb screen
 is a drop-in `ArrayOpticalElement` / OPD:
 
 ```python
+import astropy.units as u
 import numpy as np, poppy, pyturb
 
 atm = pyturb.Atmosphere.from_profile("mauna-kea", seeing=0.7, diameter=8.0, n=512)
@@ -47,7 +53,7 @@ opd = pyturb.to_numpy(atm.opd())                    # metres
 osys = poppy.OpticalSystem()
 osys.add_pupil(poppy.CircularAperture(radius=4.0))
 osys.add_pupil(poppy.ArrayOpticalElement(
-    opd=opd, pixelscale=atm.pixel_scale, name="atmosphere"))
+    opd=opd, pixelscale=atm.pixel_scale * u.m / u.pixel, name="atmosphere"))
 psf = osys.calc_psf(1.65e-6)
 ```
 
@@ -72,7 +78,9 @@ opd = atm.opd()
 basis = analysis.zernike_basis(n_modes=50, n_pixels=256)     # build once
 coeffs = analysis.zernike_decompose(opd, 50, basis=basis)    # metres per mode
 correction = (coeffs[:, None, None] * basis).sum(axis=0)     # fitted wavefront
-residual = pyturb.to_numpy(opd) - correction                 # post-DM residual
+pupil = basis[0] != 0                                        # inscribed disc
+residual = (pyturb.to_numpy(opd) - correction)[pupil]        # post-DM residual
+print(f"fitting residual: {residual.std() * 1e9:.0f} nm rms")
 ```
 
 For a real DM, replace `basis` with your influence-function matrix and use the

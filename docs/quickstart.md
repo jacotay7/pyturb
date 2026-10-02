@@ -20,9 +20,14 @@ atm = pyturb.Atmosphere.from_profile(
 `frames()` yields `(time, opd)` where `opd` is `(n, n)` **in metres**:
 
 ```python
-for t, opd in atm.frames(dt=1e-3, steps=2000):
+for t, opd in atm.frames(dt=1e-3, steps=200):
     ...                 # opd is a device array; pyturb.to_numpy(opd) to copy back
 ```
+
+The default `engine="spectral"` is exact and fast but **periodic**: each layer's
+screen repeats after `n * pixel_scale` metres of wind travel, so a run longer
+than `atm.time_to_wrap` (0.25 s for this profile's 32 m/s layer on an 8 m
+pupil) reuses turbulence and raises `PeriodicWrapWarning`.
 
 For long runs where a repeating screen would bias the statistics, use the
 non-periodic extruder engine:
@@ -55,6 +60,49 @@ and stay on the device until you call `pyturb.to_numpy(...)`.
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, device="gpu")
 ```
 
+## Boiling
+
+Real turbulence is not perfectly frozen. `tau_boil` (seconds, scalar or one
+per layer) adds temporal decorrelation on top of the wind while keeping the
+spatial statistics; it acts while stepping with `frames()`/`evolve()`:
+
+```python
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
+                                     tau_boil=0.05, seed=1)
+for t, opd in atm.frames(dt=1e-3, steps=100):
+    ...
+```
+
+The spectral engine boils each Fourier mode at its own rate (fine structure
+faster); the extruder decorrelates all scales at `tau_boil` and is markedly
+slower (it warns).
+
+## Laser guide star cone effect
+
+A beacon at finite altitude sees each layer through a cone, shrinking that
+layer's footprint by `1 - h / lgs_altitude`:
+
+```python
+lgs = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
+                                     lgs_altitude=90e3, seed=1)
+ngs = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
+                                     seed=1)
+cone_error = pyturb.to_numpy(lgs.opd() - ngs.opd())   # same seed, same turbulence
+```
+
+## Single screens and layers
+
+The building blocks are usable on their own; they return phase in radians at
+the wavelength `r0` is quoted at:
+
+```python
+gen = pyturb.PhaseScreen(n=256, pixel_scale=0.02, r0=0.15, L0=25.0, seed=0)
+batch = gen.generate(32)                       # (32, 256, 256) independent screens
+
+layer = pyturb.InfinitePhaseScreen(n=128, pixel_scale=0.05, r0=0.15, seed=0)
+phase = layer.advance(0.37)                    # blow 0.37 px along axis 0; never repeats
+```
+
 ## Wavelengths and OPD
 
 OPD is achromatic and returned in metres. Ask any output method for phase at a
@@ -63,6 +111,17 @@ wavelength, or convert with the helpers:
 ```python
 phase = atm.opd(wavelength=1.65e-6)                    # radians at H band
 phase = pyturb.opd_to_phase(atm.opd(), 1.65e-6)        # equivalently
+```
+
+OPD is achromatic by default. For the small chromatic term from air
+dispersion, build with `dispersion="edlen"` (dry air) or `dispersion="ciddor"`
+plus a `wet_fraction` (water vapour, for the mid-IR and interferometry); it
+only changes outputs requested with `wavelength=`:
+
+```python
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
+                                     dispersion="ciddor", wet_fraction=0.2)
+phase_k = atm.opd(wavelength=2.2e-6)
 ```
 
 Print your machine's throughput:

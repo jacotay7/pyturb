@@ -16,19 +16,23 @@ python -m build --wheel && python -m pip install --force-reinstall dist/*.whl
 python validation/validate.py --output /tmp/validation.png --metrics /tmp/validation.json
 mkdocs build --strict                           # docs (only if you touched README/docs/mkdocs.yml)
 python -c "import pyturb"                       # sanity import after any src/ change
+python -m pytest -q --run-gpu                   # if you touched GPU code (needs CuPy + a GPU)
 ```
 
-CI additionally runs the test suite on Python 3.9, 3.11, 3.12, and 3.13. If
+CI has no GPU runner, so `--run-gpu` locally is the only check of the CuPy
+paths; record the GPU/CuPy versions in the PR when you run it.
+
+CI additionally runs the test suite on Python 3.10, 3.12, 3.13, and 3.14. If
 you only have one interpreter available, at minimum grep your diff for
-anything that needs Python >=3.10 (`match` statements, `X | Y` type unions
-used at runtime, etc.) — the project floor is `>=3.9`, and code should not
+anything that needs Python >=3.11 (`tomllib`, `ExceptionGroup`/`except*`,
+`typing.Self`, etc.) — the project floor is `>=3.10`, and code should not
 silently assume a newer numpy either (e.g. `np.trapezoid` requires NumPy
 >= 2.0 and `np.trapz` was removed in a later release; the `numpy>=1.22` floor
 needs a `np.trapezoid if hasattr(np, "trapezoid") else np.trapz` fallback,
 already used in `profiles.py` — note `hasattr`, not `getattr`'s default,
 since `getattr(np, "trapezoid", np.trapz)` still evaluates `np.trapz` eagerly
 and breaks on NumPy releases that no longer have it). If in doubt, spin up a throwaway
-`conda create -n py39check python=3.9` and run the suite there — this has
+`conda create -n py310check python=3.10` and run the suite there — this has
 caught real bugs before.
 
 ## What "done" means here, beyond green tests
@@ -70,7 +74,6 @@ caught real bugs before.
   state what the code does now. (`CHANGELOG.md` is the one place that's
   supposed to narrate change over time.)
 - Type annotations use `from __future__ import annotations` +
-  `typing.Optional`/`Union` (not bare `X | Y`), to stay valid on the
-  `>=3.9` floor.
+  `typing.Optional`/`Union` (not bare `X | Y`), matching the existing code.
 - `ruff` line length is 90 (`pyproject.toml`); wrap before that, don't
   disable the rule.

@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Jacob Taylor", email = "jacobataylor7@gmail.com" }]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.22",
     "scipy>=1.8",
@@ -28,12 +28,23 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Astronomy",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 
 [project.urls]
 Homepage = "https://github.com/jacotay7/pyturb"
+Documentation = "https://jacotay7.github.io/pyturb/"
+Source = "https://github.com/jacotay7/pyturb"
+Changelog = "https://github.com/jacotay7/pyturb/blob/main/CHANGELOG.md"
 Issues = "https://github.com/jacotay7/pyturb/issues"
 
 [project.optional-dependencies]
@@ -51,6 +62,9 @@ test = ["pytest>=7", "pytest-cov"]
 fits = ["astropy>=5"]
 plot = ["matplotlib>=3.5"]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]
+# Optical-propagation packages exercised by the docs/interop.md recipes
+# (tests/test_docs.py runs them when installed).
+interop = ["hcipy", "poppy"]
 # Third-party libraries used only by benchmarks/bench_compare.py for the
 # head-to-head comparison; not needed to use pyturb.
 compare = ["aotools", "soapy", "hcipy"]
@@ -66,12 +80,14 @@ markers = [
 
 [tool.ruff]
 line-length = 90
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 # pycodestyle, pyflakes, isort, flake8-bugbear.
 select = ["E", "F", "I", "B"]
-ignore = ["B008"]
+# B905 (zip without strict=) only applies from the py310 target; the existing
+# zips pair equal-length per-layer sequences by construction.
+ignore = ["B008", "B905"]
 
 [tool.ruff.lint.per-file-ignores]
 "examples/*" = ["E402"]
