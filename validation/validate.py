@@ -50,7 +50,7 @@ def structure_function(ax):
         r, d = pyturb.structure_function(gen.generate(), D / n)
         acc = d if acc is None else acc + d
     measured = acc / 120
-    theory = 6.88 * (r / r0) ** (5.0 / 3.0)
+    theory = pyturb.theory.structure_function(r, r0)
     band = (r >= 4 * D / n) & (r <= D / 4)
     err = np.sqrt(np.mean((measured[band] / theory[band] - 1) ** 2))
     ax.loglog(r, theory, "k--", label="Kolmogorov 6.88 (r/r0)$^{5/3}$")
@@ -74,8 +74,7 @@ def large_scale_structure_function(ax):
     layer = [pyturb.Layer(0.0, 1.0, 10.0, 0.0, L0=L0)]
     seps = np.arange(4, int(0.9 * n) + 1, 4)
     dx = D / n
-    theory = 2 * (pyturb.phase_covariance(0.0, r0, L0)
-                  - pyturb.phase_covariance(seps * dx, r0, L0))
+    theory = pyturb.theory.structure_function(seps * dx, r0, L0)
     ratios = {}
     for oversample in (1, 4):
         atm = pyturb.Atmosphere(layer, r0=r0, diameter=D, n=n, dtype="float64",
@@ -173,7 +172,7 @@ def temporal_psd(ax):
                     fmin=5, fmax=40)[0]
                 for _ in range(1000)]
         lo, hi = np.percentile(boot, [2.5, 97.5])
-        analytic = 0.0774 * r0 ** (-5.0 / 3.0) * v ** (5.0 / 3.0) * freq ** (-8.0 / 3.0)
+        analytic = pyturb.theory.pixel_temporal_psd(freq, r0, v)
         band = (freq >= 5) & (freq <= 40)
         amp_ratio = float(np.median(psd[band] / analytic[band]))
         results[engine] = (slope, lo, hi, amp_ratio)

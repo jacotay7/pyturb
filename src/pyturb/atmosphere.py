@@ -765,7 +765,12 @@ class Atmosphere:
 
     @property
     def seeing(self) -> float:
-        """Line-of-sight seeing FWHM [arcsec] at the reference wavelength."""
+        """Line-of-sight seeing FWHM [arcsec] at the reference wavelength.
+
+        The Kolmogorov value ``0.98 lambda / r0``. A finite outer scale makes
+        the delivered long-exposure FWHM smaller (~17% at ``r0 = 0.1 m``,
+        ``L0 = 25 m``); see :func:`pyturb.theory.seeing_fwhm`.
+        """
         return seeing_from_r0(self.r0_los, self.wavelength)
 
     @property
