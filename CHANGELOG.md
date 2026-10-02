@@ -8,6 +8,16 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Per-direction sources**: `opd(directions=[(thx, thy, altitude), ...])`
+  gives each direction its own source range — a laser guide star at
+  `altitude` or `None` for a star at infinity — so an LGS asterism, NGS and
+  science directions read one turbulence realisation in one call, on both
+  engines (#19).
+- **`Atmosphere.opd_at(x, y, t, direction, altitude)`** samples the
+  atmosphere at arbitrary pupil-plane coordinates (DM actuators,
+  sub-apertures, sparse or multi-aperture layouts); on the pupil grid it
+  reproduces `opd()` exactly. Reach beyond the pupil with `oversample`
+  (spectral) or `field_of_view` (extrude) (#19).
 - **`Atmosphere.from_cn2(heights, cn2, ...)`** builds an atmosphere straight
   from a measured or model Cn²(h) profile (compressed with `discretize_cn2`),
   taking the profile's own `r0` unless `r0`/`seeing` is given and recording a

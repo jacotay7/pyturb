@@ -61,6 +61,30 @@ atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
 opds = atm.opd(t=0.0, directions=[(0, 0), (10, 0), (0, 10)])   # arcsec offsets
 ```
 
+Each direction can carry its own source: `(thx, thy, altitude)` with a laser
+guide star's altitude [m], or `None` for a natural star or science target. An
+LTAO/MCAO case (LGS asterism, NGS and science) then reads one turbulence
+realisation in one call:
+
+```python
+lgs = [(30 * np.cos(a), 30 * np.sin(a), 90e3) for a in np.linspace(0, 2 * np.pi, 4)[:-1]]
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
+                                     field_of_view=40, n=256, seed=1)
+opds = atm.opd(t=0.0, directions=lgs + [(20, 0, None), (0, 0, None)])
+```
+
+To sample arbitrary points instead of the pupil grid — DM actuators,
+sub-apertures, a sparse or multi-aperture layout — use `opd_at` with
+coordinates in metres from the pupil centre (grow the screen with
+`oversample` to reach beyond the pupil):
+
+```python
+atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
+                                     oversample=4, seed=1)
+x = np.array([-12.0, 0.0, 12.0])                  # three apertures on a 24 m baseline
+values = atm.opd_at(x, np.zeros(3), t=0.0)        # OPD [m] at those points
+```
+
 ## GPU
 
 Everything above takes `device="gpu"` (requires CuPy); arrays come back as CuPy
