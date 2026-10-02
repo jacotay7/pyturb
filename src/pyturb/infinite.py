@@ -36,6 +36,7 @@ Reference: Assémat, Wilson & Gendron (2006), Optics Express 14, 988.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Union
 
 import numpy as np
@@ -43,7 +44,7 @@ from numpy.typing import ArrayLike
 from scipy import linalg
 from scipy.special import gamma, kv
 
-from .backend import get_array_module
+from .backend import blas_single_thread, get_array_module
 from .config import ScreenConfig
 from .fourier import PhaseScreen
 from .ring import compact_row_ring
@@ -302,8 +303,11 @@ class InfinitePhaseScreen:
 
     def _ensure(self, top_virtual_index):
         """Extrude until virtual row ``top_virtual_index`` exists."""
-        while self._base + self._fill - 1 < top_virtual_index:
-            self._extrude_one()
+        if self._base + self._fill - 1 >= top_virtual_index:
+            return
+        with blas_single_thread() if self.xp is np else nullcontext():
+            while self._base + self._fill - 1 < top_virtual_index:
+                self._extrude_one()
 
     def _sample(self, travel):
         """Interpolate the ``(n, n)`` pupil at continuous offset ``travel``."""

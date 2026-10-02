@@ -34,6 +34,7 @@ import shlex
 import subprocess
 import sys
 import time
+import warnings
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from typing import Callable, Dict
@@ -158,6 +159,13 @@ def bench_device(n: int, device: str, seconds: float) -> Dict[str, float]:
     ):
         it = iter(atm(**kw).frames(dt=1e-3, steps=10 ** 9))
         out[label] = 1.0 / _time(lambda it=it: next(it), seconds, device)
+    # Offline time series: many random-access times in one call (one batched
+    # transform on the GPU spectral engine).
+    a_times = atm()
+    times = np.arange(batch) * 1e-3
+    out["opd(times) frames/s"] = batch / _time(
+        lambda: a_times.opd(t=times), seconds, device
+    )
 
     # --- Off-axis / tomography ------------------------------------------
     a_fov = atm(field_of_view=20.0)
@@ -213,6 +221,8 @@ def _print_table(results: Dict[str, Dict[str, Dict[str, float]]]) -> None:
 
 
 def main() -> None:
+    # Timing loops run far past the spectral screen period by design.
+    warnings.simplefilter("ignore", pyturb.PeriodicWrapWarning)
     p = argparse.ArgumentParser()
     p.add_argument("--n", type=int, nargs="+", default=[256, 512, 1024])
     p.add_argument("--device", nargs="+", default=["cpu", "gpu"],

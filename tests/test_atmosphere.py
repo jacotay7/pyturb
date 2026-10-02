@@ -951,3 +951,70 @@ def test_atmosphere_keeps_an_immutable_normalized_model_config():
     assert [layer.L0 for layer in atm.layers] == [20.0, 30.0]
     with pytest.raises(AttributeError):
         atm.config.layers[0].L0 = 99.0
+
+
+@pytest.mark.parametrize("engine", ["spectral", "extrude"])
+def test_opd_accepts_an_array_of_times(device, engine):
+    def make():
+        return pyturb.Atmosphere.from_profile(
+            "two-layer", r0=0.15, n=32, diameter=4.0, field_of_view=5.0,
+            device=device, dtype="float64", seed=5, engine=engine)
+
+    atm = make()
+    times = np.array([0.0, 2e-3, 7e-3, 0.03])
+    batch = pyturb.to_numpy(atm.opd(t=times))
+    atm = make()  # the extruder is streaming: replay the same times afresh
+    single = np.stack([pyturb.to_numpy(atm.opd(t)) for t in times])
+    assert batch.shape == (4, 32, 32)
+    np.testing.assert_allclose(batch, single, rtol=0, atol=1e-12)
+    dirs = [(0.0, 0.0), (3.0, -2.0)]
+    atm = make()
+    both = pyturb.to_numpy(atm.opd(t=times, directions=dirs))
+    assert both.shape == (4, 2, 32, 32)
+    atm = make()
+    for k, t in enumerate(times):
+        np.testing.assert_allclose(both[k], pyturb.to_numpy(atm.opd(t, directions=dirs)),
+                                   rtol=0, atol=1e-12)
+    with pytest.raises(ValueError, match="1-D"):
+        atm.opd(t=np.zeros((2, 2)))
+    with pytest.raises(ValueError, match="cuda_graph"):
+        pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=32, cuda_graph="yes")
+
+
+@pytest.mark.gpu
+@pytest.mark.filterwarnings("ignore::pyturb.PeriodicWrapWarning")  # t=3.2 s wraps
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_gpu_fused_spectral_path_matches_cpu_formula(dtype):
+    # The GPU fast path (fused layer-sum and subharmonic kernels, device-side
+    # float64 phasors) must reproduce the CPU spectral path exactly given the
+    # same stored realisation: copy the GPU spectra into a CPU atmosphere.
+    kw = dict(r0=0.15, n=48, diameter=8.0, dtype=dtype, seed=3, field_of_view=4.0)
+    gpu = pyturb.Atmosphere.from_profile("paranal-median", device="gpu", **kw)
+    cpu = pyturb.Atmosphere.from_profile("paranal-median", device="cpu", **kw)
+    cpu._spectra = pyturb.to_numpy(gpu._spectra)
+    cpu._sh_coeffs = pyturb.to_numpy(gpu._sh_coeffs)
+    tol = 2e-5 if dtype == "float32" else 1e-11
+    for t in (0.0, 0.0137, 3.2):
+        ref = cpu.opd(t)
+        got = pyturb.to_numpy(gpu.opd(t))
+        np.testing.assert_allclose(got, ref, rtol=0, atol=tol * np.abs(ref).max())
+    dirs = [(0.0, 0.0), (2.0, 3.0)]
+    np.testing.assert_allclose(pyturb.to_numpy(gpu.opd(0.01, directions=dirs)),
+                               cpu.opd(0.01, directions=dirs), rtol=0,
+                               atol=tol * np.abs(ref).max())
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("tau_boil", [None, 0.05])
+def test_gpu_cuda_graph_frames_match_eager(tau_boil):
+    kw = dict(seeing=0.8, n=64, device="gpu", seed=1, tau_boil=tau_boil)
+    graph = pyturb.Atmosphere.from_profile("paranal-median", cuda_graph=True, **kw)
+    eager = pyturb.Atmosphere.from_profile("paranal-median", cuda_graph=False, **kw)
+    a = [pyturb.to_numpy(f) for _, f in graph.frames(dt=1e-3, steps=20)]
+    b = [pyturb.to_numpy(f) for _, f in eager.frames(dt=1e-3, steps=20)]
+    assert graph._gpu._graph is not None            # the graph was captured
+    np.testing.assert_array_equal(np.stack(a), np.stack(b))
+    assert not np.array_equal(a[0], a[-1])          # frames are distinct copies
+    # reset() rebuilds the spectra; the replay must follow the new arrays.
+    first_again = pyturb.to_numpy(graph.reset().opd(0.0))
+    np.testing.assert_array_equal(first_again, a[0])
