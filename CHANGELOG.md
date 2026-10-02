@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-02
+
+Highlights: an opt-in fix for pupil-sized periodic screens (`oversample`),
+CUDA-graph GPU frames (5-8x on modest hosts), batched time series, per-source
+LGS/NGS directions, `opd_at`, a `pyturb.theory` module, `from_cn2`,
+replayable configurations, GPU selection, an HCIPy layer adapter, and tested
+guides. Behaviour changes to be aware of: Python 3.10 is the minimum,
+`analysis.temporal_psd` now tapers with a Hann window by default, invalid
+per-layer inputs now raise, and `threadpoolctl` is a new dependency.
+
 ### Added
 
 - **`device="gpu:N"`** picks a GPU on multi-GPU machines; every public
