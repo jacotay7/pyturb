@@ -302,7 +302,7 @@ _PROFILE_INFO = {
     "hv57": ProfileInfo(
         "hv57", True,
         "Hufnagel-Valley 5/7 analytic Cn2 model + Bufton wind profile",
-        "analytic model", None, False,
+        "analytic model", 25.0, False,
         "analytic HV 5/7 model discretised into layers, not a site survey"),
 }
 

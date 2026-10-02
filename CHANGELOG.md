@@ -66,8 +66,8 @@ to [Semantic Versioning](https://semver.org/).
   other, so separations beyond ~D/4 come out low (structure function about
   −13% at D/2, ~0.65x near 0.9 D; tilt ~10-15% low; astigmatisms split
   ~0.6x/1.6x Noll). `oversample=4` matches von Kármán to ~2% rms out to 0.9 D.
-  It also multiplies `time_to_wrap`, at the cost of a larger FFT (2x roughly
-  halves the spectral frame rate). Validation gains a large-scale structure
+  It also multiplies `time_to_wrap`, at the cost of an FFT `oversample**2`
+  larger (RTX 4060, 512²: ~5,300 to ~1,360 spectral fps at 2x). Validation gains a large-scale structure
   function check out to 0.9 D (#3).
 
 ### Changed
@@ -102,6 +102,9 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `profile_info("hv57").outer_scale` is 25 m (its layers' value) rather than
+  `None`; `bench_suite.py` records the installed CuPy version (it looked up a
+  non-existent "cupy" distribution).
 - **Per-layer inputs are validated.** A NaN or infinite wind speed produced
   all-NaN OPD frames and a negative altitude a NaN `theta0`; non-finite layer
   values, negative altitudes or wind speeds, and non-positive per-layer `L0`
@@ -139,6 +142,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
+- New guides: **Choosing an engine** (decision table and the
+  periodicity/oversample trade-offs), **Turbulence profiles** (named profiles
+  with provenance, custom layers, `from_cn2`, discretisation methods),
+  **Boiling, LGS and dispersion**, **Performance** and **Troubleshooting**;
+  the changelog, roadmap and contributing pages are in the site (#14).
+- **Tutorial notebook** `tutorials/01_atmosphere_to_psf.ipynb`: a layered
+  atmosphere drives a minimal modal AO loop, checked against Noll's
+  fitting-error floor and the Maréchal Strehl; committed executed and re-run
+  in CI (#14).
+- `benchmarks/RESULTS.md` adds pyturb 1.1 on an Arm workstation (RTX 4060,
+  RTX A400, 16 Neoverse-N1 cores) with versioned artifacts; the README shows
+  the 1.1 numbers next to the 1.0.0 RTX 5090 reference (#21).
 - Validation: the structure-function band, the Zernike check (now per mode,
   tip/tilt included) and the temporal-PSD check (now both engines, tolerance
   0.6-1.6x instead of 1-3x) are documented with what they actually measure;

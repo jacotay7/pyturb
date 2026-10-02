@@ -172,6 +172,45 @@ modest (~1-3%) systematic effect that needs a large ensemble to resolve.
 
 ✅ supported · ◐ partial · — not available
 
+## 5. pyturb 1.1 on an Arm workstation (RTX 4060, RTX A400, Neoverse-N1)
+
+`bench_suite.py` on a second machine, after the 1.1 performance work (CUDA-graph
+spectral frames, batched times, batched CPU extrusion). 9-layer
+`paranal-median`, D = 8 m, 1 s per cell. Python 3.13, NumPy 2.5.3, SciPy 1.18.1,
+CuPy 14.2.0 (the artifacts record it as `null`; the harness looked up the
+wrong distribution name, fixed since), Numba 0.67, driver 580 / CUDA 13.0,
+80-core Ampere Neoverse-N1 host with every run pinned to 16 idle cores.
+Artifacts: [`v1.1.0-arm-rtx4060.json`](artifacts/v1.1.0-arm-rtx4060.json),
+[`v1.1.0-arm-rtxa400.json`](artifacts/v1.1.0-arm-rtxa400.json),
+[`v1.1.0-arm-neoverse-n1-16core.json`](artifacts/v1.1.0-arm-neoverse-n1-16core.json)
+(revision `d38829e`, the pre-squash commit of #29; same tree as `main` at that
+merge; `source_dirty: false`).
+
+| metric | RTX 4060 256 / 512 / 1024 | RTX A400 256 / 512 / 1024 | 16× N1 CPU 256 / 512 / 1024 |
+|---|---|---|---|
+| `sample` screens/s | 33,292 / 6,993 / 1,715 | 9,309 / 2,466 / 615 | 704 / 173 / 43 |
+| frames, spectral | 6,451 / 4,591 / 1,304 | 4,832 / 1,290 / 327 | 334 / 32 / 8 |
+| `opd(times)` frames/s | 27,510 / 6,653 / 1,166 | 5,621 / 1,462 / 360 | 329 / 87 / 8 |
+| frames, extrude | 1,174 / 482 / 120 | 410 / 103 / 25 | 398 / 82 / 21 |
+| frames, spectral + boiling | 1,397 / 584 / 123 | 656 / 173 / 44 | 48 / 11 / 2 |
+| tomography (5 dirs), dirs/s | 4,737 / 2,491 / 540 | 2,720 / 682 / 160 | 189 / 47 / 10 |
+| frames, LGS cone | 208 / 168 / 49 | 139 / 36 / 11 | 25 / 6 / 0 |
+
+Reading this:
+
+- **Before/after 1.1 on the same RTX 4060:** spectral frames went from
+  831 / 822 / 457 to 6,451 / 4,591 / 1,304 fps (CUDA-graph replay of fused
+  kernels). Before, the frame rate was set by ~1.1 ms of host work per frame
+  regardless of GPU or size. The 4060 now outruns the 1.0.0 RTX 5090 figures in
+  §2b, which predate CUDA graphs (the 5090 was not re-measured).
+- **CPU rows are indicative only.** On this shared host the CPU frequency
+  governor ramps with load: the same 512² spectral loop measured anywhere from
+  32 to 81 fps within one process. Compare CPU numbers only at equal load. The
+  extruder's 512² CPU rate (82–98 fps in repeated runs) was ~40 before the
+  batched extrusion.
+- The LGS cone and boiling paths are not graph-captured, so they remain
+  host-bound on the GPU.
+
 ## Takeaways
 
 1. **Monte-Carlo generation is a rout** — pyturb is ~1000× the pure-Python FFT

@@ -281,8 +281,10 @@ class Atmosphere:
         (structure function about -13% at ``D/2`` and -40% edge to edge, tilt
         ~10-15% low, the two astigmatisms split ~0.6x/1.6x Noll; see the
         Validation docs) and new turbulence entering the pupil is what is
-        leaving it. ``oversample=2`` roughly halves the frame rate and leaves
-        ~-10% at ``r = D``; ``4`` keeps statistics within ~2% out to ``D``.
+        leaving it. ``oversample=2`` leaves ~-10% at ``r = D``; ``4`` keeps
+        statistics within ~2% out to ``D``. The FFT grows as ``oversample**2``:
+        on an RTX 4060 at n=512, 9 layers, frames drop from ~5,300 fps to
+        ~1,360 (x2) and ~300 (x4); at n=256, x2 is nearly free.
         It also multiplies :attr:`time_to_wrap`. No effect on
         ``engine="extrude"`` frames, which are non-periodic.
 

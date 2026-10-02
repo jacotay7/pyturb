@@ -23,9 +23,10 @@ for t, opd in atm.frames(dt=1e-3, steps=200):
 
 ## Why pyturb
 
-- **Fast.** 29,789 full 9-layer 512² Monte-Carlo OPDs/s and a 9-layer 512²
-  atmosphere at 3,133 fps on an RTX 5090 (host-bound at ~850 fps on slower
-  CPUs) — see [Comparison](comparison.md).
+- **Fast.** A 9-layer 512² atmosphere at ~4,600 frames/s on an RTX 4060
+  (CUDA-graph replay), ~6,700 frames/s as a batched time series, and ~30,000
+  independent 9-layer 512² OPDs/s on an RTX 5090 — see
+  [Performance](performance.md) and [Comparison](comparison.md).
 - **Correct.** The spatial statistics match von Kármán/Kolmogorov theory to a
   few percent at separations from a few pixels up to a quarter of the screen,
   enforced by tests — see [Validation](validation.md) for the details and
