@@ -37,8 +37,12 @@ Homepage = "https://github.com/jacotay7/pyturb"
 Issues = "https://github.com/jacotay7/pyturb/issues"
 
 [project.optional-dependencies]
+# CuPy 14 compiles its kernels at runtime and needs the CUDA headers; the
+# ``ctk`` extra pulls them in as wheels so no system CUDA toolkit is required.
+# CuPy for CUDA 11 stops at 13.x, which has no ``ctk`` extra.
 cuda11 = ["cupy-cuda11x"]
-cuda12 = ["cupy-cuda12x"]
+cuda12 = ["cupy-cuda12x[ctk]"]
+cuda13 = ["cupy-cuda13x[ctk]"]
 # Optional Numba JIT acceleration of the CPU frozen-flow hot paths (spectral
 # layer sum, extruder bicubic readout). pyturb runs without it (NumPy
 # fallback); with it the CPU frame rate is several times higher.

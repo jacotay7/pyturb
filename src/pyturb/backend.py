@@ -36,7 +36,8 @@ def get_array_module(device: str) -> ModuleType:
             raise ImportError(
                 f"device={device!r} requires CuPy, which is not installed. "
                 "Install the build matching your CUDA toolkit, e.g. "
-                "'pip install pyturb[cuda12]' or 'pip install cupy-cuda12x'."
+                "'pip install pyturb[cuda12]' or 'pip install \"cupy-cuda12x[ctk]\"' "
+                "(use cuda13 / cupy-cuda13x for CUDA 13 drivers)."
             ) from exc
         return cupy
     raise ValueError(

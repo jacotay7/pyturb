@@ -14,7 +14,7 @@ pytest -q
 ```
 
 For GPU work, install a CuPy build matching your CUDA toolkit
-(`pip install cupy-cuda12x`); the suite skips GPU tests when CuPy is absent.
+(`pip install "cupy-cuda12x[ctk]"`, or the `cuda13` variant); the suite skips GPU tests when CuPy is absent.
 
 ## The bar for a change
 

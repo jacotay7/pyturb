@@ -24,10 +24,16 @@ and switches to CUDA (via CuPy) with a single argument.
 
 ```bash
 pip install pyturb            # CPU (NumPy + SciPy)
-pip install pyturb[cuda12]    # + CuPy for CUDA 12.x
-pip install pyturb[cuda11]    # + CuPy for CUDA 11.x
+pip install pyturb[cuda13]    # + CuPy for CUDA 13.x (with CUDA headers)
+pip install pyturb[cuda12]    # + CuPy for CUDA 12.x (with CUDA headers)
+pip install pyturb[cuda11]    # + CuPy 13.x for CUDA 11.x
 pip install pyturb[accel]     # + Numba, faster CPU frozen flow
 ```
+
+Pick the extra matching your driver's CUDA version (`nvidia-smi` shows it). If
+you install CuPy yourself and the first GPU call fails with *"Failed to find
+CUDA headers"*, install the headers too (`pip install "cupy-cuda12x[ctk]"`, or
+`cupy-cuda13x[ctk]`) or point `CUDA_PATH` at a CUDA toolkit.
 
 ## Quickstart
 

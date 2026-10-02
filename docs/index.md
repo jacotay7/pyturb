@@ -33,9 +33,14 @@ for t, opd in atm.frames(dt=1e-3, steps=2000):
 
 ```bash
 pip install pyturb                 # CPU
-pip install pyturb[cuda12]         # + CuPy for CUDA 12 (or [cuda11])
+pip install pyturb[cuda12]         # + CuPy for CUDA 12 (or [cuda13], [cuda11])
 pip install pyturb[fits]           # + FITS I/O
 ```
+
+The `cuda12`/`cuda13` extras include CUDA header wheels (`cupy-cudaXXx[ctk]`),
+which CuPy 14 needs to compile its kernels. If you install CuPy on its own and
+the first GPU call fails with *"Failed to find CUDA headers"*, add the `[ctk]`
+extra or set `CUDA_PATH` to a CUDA toolkit.
 
 ## Where to next
 
