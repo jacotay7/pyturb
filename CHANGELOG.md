@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`Atmosphere.from_cn2(heights, cn2, ...)`** builds an atmosphere straight
+  from a measured or model Cn²(h) profile (compressed with `discretize_cn2`),
+  taking the profile's own `r0` unless `r0`/`seeing` is given and recording a
+  `source` in `metadata` (#18).
+- **`discretize_cn2(wind_direction=...)`**: a scalar, a per-input-grid array
+  (Cn²-weighted circular mean per bin) or one value per output layer, instead
+  of every layer at 0 degrees (#18).
 - **`pyturb.theory`**: reference curves for checking any simulation, at
   finite outer scale as well as Kolmogorov — `structure_function`,
   `zernike_variance` (any Noll mode, any `L0`; reproduces Noll's table for

@@ -131,3 +131,35 @@ def test_integrated_quantities_two_layer_by_hand():
     assert abs(profiles.effective_wind_speed(layers) - v_bar) < 1e-6
     assert abs(profiles.isoplanatic_angle(layers, r0) - 0.314 * r0 / h_bar) < 1e-9
     assert abs(profiles.coherence_time(layers, r0) - 0.314 * r0 / v_bar) < 1e-9
+
+
+def test_from_cn2_hv57_reproduces_r0_and_theta0():
+    # HV 5/7 is defined by r0 ~ 5 cm and theta0 ~ 7 urad at 500 nm; the
+    # moment-conserving discretisation must keep the profile's theta0.
+    h = np.geomspace(1.0, 30e3, 20000)
+    cn2 = pyturb.hufnagel_valley(h)
+    atm = pyturb.Atmosphere.from_cn2(h, cn2, n_layers=12, n=32, source="HV 5/7")
+    assert atm.r0 == pytest.approx(0.05, rel=0.1)
+    k = 2 * np.pi / 500e-9
+    theta0_cont = (2.914 * k**2 * _trapezoid(cn2 * h ** (5 / 3), h)) ** (-3 / 5)
+    assert atm.theta0 / 206264.8 == pytest.approx(theta0_cont, rel=0.02)
+    assert theta0_cont == pytest.approx(7e-6, rel=0.1)
+    assert atm.metadata["profile_source"] == "HV 5/7"
+    fixed = pyturb.Atmosphere.from_cn2(h, cn2, n_layers=12, n=32, r0=0.2)
+    assert fixed.r0 == pytest.approx(0.2)
+
+
+def test_discretize_cn2_wind_direction():
+    h = np.linspace(0.0, 20e3, 4001)
+    cn2 = pyturb.hufnagel_valley(h)
+    # Directions straddling north: the circular mean is ~0 deg, not ~180.
+    straddle = np.where(np.arange(h.size) % 2 == 0, 350.0, 10.0)
+    layers = pyturb.discretize_cn2(h, cn2, n_layers=4, wind_direction=straddle)
+    for layer in layers:
+        assert min(layer.wind_direction, 360 - layer.wind_direction) < 1.0
+    per_layer = pyturb.discretize_cn2(h, cn2, n_layers=3, wind_direction=[0, 90, 200])
+    assert [layer.wind_direction for layer in per_layer] == [0, 90, 200]
+    scalar = pyturb.discretize_cn2(h, cn2, n_layers=3, wind_direction=45.0)
+    assert all(layer.wind_direction == 45.0 for layer in scalar)
+    with pytest.raises(ValueError, match="wind_direction"):
+        pyturb.discretize_cn2(h, cn2, n_layers=3, wind_direction=[1.0, 2.0])

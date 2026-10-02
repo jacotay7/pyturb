@@ -465,6 +465,7 @@ def discretize_cn2(
     wind: Union[str, float, ArrayLike] = "bufton",
     L0: float = 25.0,
     method: str = "equivalent",
+    wind_direction: Union[float, ArrayLike] = 0.0,
 ) -> List[Layer]:
     r"""Bin a continuous :math:`C_n^2(h)` profile into equivalent layers.
 
@@ -514,6 +515,11 @@ def discretize_cn2(
         Outer scale assigned to every layer [m].
     method : {"equivalent", "centroid", "optimal_grouping"}
         Edge selection and height/wind assignment rule (see above).
+    wind_direction : float or array_like, optional
+        Wind direction [deg] (the from-direction, see :class:`Layer`): a
+        scalar for every layer (default 0), an array matching ``heights``
+        (each bin gets the :math:`C_n^2`-weighted circular mean, so 350 and 10
+        degrees average to 0, not 180), or one value per output layer.
     """
     heights = np.asarray(heights, dtype=np.float64)
     cn2 = np.asarray(cn2, dtype=np.float64)
@@ -525,6 +531,11 @@ def discretize_cn2(
         raise ValueError(
             "method must be 'equivalent', 'centroid', or 'optimal_grouping'"
         )
+    direction_arr = np.asarray(wind_direction, dtype=np.float64)
+    direction_grid = (
+        direction_arr if direction_arr.ndim == 1 and direction_arr.shape == heights.shape
+        else None
+    )
 
     # Resolve wind onto the input grid where possible; an array matching the
     # input heights enables the tau0-conserving v^{5/3} moment per bin.
@@ -561,7 +572,7 @@ def discretize_cn2(
         edges = np.geomspace(max(heights[0], 1.0), heights[-1], n_layers + 1)
         edges[0] = heights[0]
         edges[-1] = heights[-1]
-    weights, altitudes, bin_speeds = [], [], []
+    weights, altitudes, bin_speeds, bin_directions = [], [], [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
         if hi <= lo:
             continue
@@ -593,6 +604,16 @@ def discretize_cn2(
             speed = (cn2_average(v_bin, c_bin, h_bin) if method == "centroid"
                      else moment(v_bin, c_bin, h_bin))
             bin_speeds.append(speed)
+        if direction_grid is not None:
+            # Cn2-weighted circular mean: average unit vectors, not angles.
+            phase = np.exp(1j * np.deg2rad(np.concatenate((
+                [direction_grid[np.searchsorted(heights, lo, side="right") - 1]],
+                direction_grid[interior],
+                [direction_grid[min(np.searchsorted(heights, hi), heights.size - 1)]],
+            ))))
+            mean = (cn2_average(phase.real, c_bin, h_bin)
+                    + 1j * cn2_average(phase.imag, c_bin, h_bin))
+            bin_directions.append(float(np.rad2deg(np.angle(mean)) % 360.0))
 
     weights = np.asarray(weights)
     weights /= weights.sum()
@@ -604,9 +625,22 @@ def discretize_cn2(
         # wind was a per-output-layer array: assign directly.
         speeds = np.broadcast_to(np.asarray(wind, dtype=np.float64), weights.shape)
 
+    if direction_grid is not None:
+        directions = np.asarray(bin_directions)
+    elif direction_arr.ndim == 0:
+        directions = np.full(weights.shape, float(direction_arr))
+    elif direction_arr.shape == weights.shape:
+        directions = direction_arr  # one value per output layer
+    else:
+        raise ValueError(
+            "wind_direction must be a scalar, an array matching heights "
+            f"({heights.size}), or one value per output layer ({weights.size}); "
+            f"got shape {direction_arr.shape}"
+        )
+
     layers: List[Layer] = []
-    for h, f, v in zip(altitudes, weights, speeds):
-        layers.append(Layer(float(h), float(f), float(v), 0.0, L0=L0))
+    for h, f, v, d in zip(altitudes, weights, speeds, directions):
+        layers.append(Layer(float(h), float(f), float(v), float(d), L0=L0))
     return layers
 
 

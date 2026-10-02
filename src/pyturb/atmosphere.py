@@ -422,6 +422,8 @@ class Atmosphere:
         self.seed = config.seed
         # Set by from_profile() to the named profile; None for a direct build.
         self._profile_name: Optional[str] = None
+        # Set by from_cn2() to the caller's description of the profile.
+        self._profile_source: Optional[str] = None
         master = np.random.SeedSequence(self.seed)
         seeds = master.spawn(len(self.layers))
         self._boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
@@ -749,6 +751,53 @@ class Atmosphere:
         """
         atm = cls(_profiles.get_profile(name), **kwargs)
         atm._profile_name = str(name).lower()
+        return atm
+
+    @classmethod
+    def from_cn2(
+        cls,
+        heights: Any,
+        cn2: Any,
+        n_layers: int = 10,
+        wind: Any = "bufton",
+        wind_direction: Any = 0.0,
+        method: str = "equivalent",
+        layer_L0: float = 25.0,
+        source: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "Atmosphere":
+        """Build from a continuous or measured :math:`C_n^2(h)` profile.
+
+        The profile (``heights`` [m] above the telescope, at zenith, and
+        ``cn2`` [m^-2/3] on that grid — e.g. a MASS-DIMM, SCIDAR or
+        model profile) is compressed with :func:`pyturb.discretize_cn2`
+        (``n_layers``, ``wind``, ``wind_direction``, ``method``; every layer
+        gets outer scale ``layer_L0``), then passed to the constructor with
+        ``kwargs``. If neither ``r0`` nor ``seeing`` is given, ``r0`` is the
+        profile's own, ``(0.423 k^2 integral Cn2 dh)^(-3/5)`` at ``wavelength``
+        (default 500 nm). ``source`` is recorded in :attr:`metadata`.
+
+        >>> import numpy as np, pyturb
+        >>> h = np.geomspace(10, 25e3, 2000)
+        >>> atm = pyturb.Atmosphere.from_cn2(h, pyturb.hufnagel_valley(h),
+        ...                                  n_layers=8, n=64)
+        """
+        heights = np.asarray(heights, dtype=np.float64)
+        cn2 = np.asarray(cn2, dtype=np.float64)
+        layers = _profiles.discretize_cn2(
+            heights, cn2, n_layers=n_layers, wind=wind, L0=layer_L0,
+            method=method, wind_direction=wind_direction,
+        )
+        if kwargs.get("r0") is None and kwargs.get("seeing") is None:
+            wavelength = float(kwargs.get("wavelength", 500e-9))
+            k = 2.0 * np.pi / wavelength
+            integral = float(_profiles._trapezoid(cn2, heights))
+            if not np.isfinite(integral) or integral <= 0:
+                raise ValueError("the Cn2 profile must integrate to a positive value")
+            kwargs["r0"] = (0.423 * k * k * integral) ** (-3.0 / 5.0)
+        atm = cls(layers, **kwargs)
+        atm._profile_name = None
+        atm._profile_source = source or "Atmosphere.from_cn2"
         return atm
 
     # ------------------------------------------------------------------
@@ -1447,7 +1496,7 @@ class Atmosphere:
             "seed": self.seed,
             "time": self._t,
             "profile": self._profile_name,
-            "profile_source": None if prof is None else prof.source,
+            "profile_source": self._profile_source if prof is None else prof.source,
             "profile_traceable": None if prof is None else prof.traceable,
             "profile_site": None if prof is None else prof.site,
             "profile_caveat": None if prof is None else prof.caveat,
