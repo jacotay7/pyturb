@@ -8,14 +8,30 @@ backend. The only CPU-pinned work is the one-time covariance/matrix setup in
 
 from __future__ import annotations
 
+import functools
+import inspect
 from contextlib import AbstractContextManager, nullcontext
 from types import ModuleType
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Tuple, TypeVar
 
 import numpy as np
 
 _CPU_NAMES = frozenset({"cpu", "numpy"})
 _GPU_NAMES = frozenset({"gpu", "cuda", "cupy"})
+
+
+def _parse_device(device: str) -> Tuple[str, Optional[int]]:
+    """Split ``"gpu:1"`` into ``("gpu", 1)``; ``"gpu"`` gives ``("gpu", None)``."""
+    name = str(device).lower()
+    base, sep, index = name.partition(":")
+    if not sep:
+        return name, None
+    if base not in _GPU_NAMES or not index.isdigit():
+        raise ValueError(
+            f"Unknown device {device!r}. Expected one of "
+            f"{sorted(_CPU_NAMES | _GPU_NAMES)}, or 'gpu:N' for GPU number N."
+        )
+    return base, int(index)
 
 
 def get_array_module(device: str) -> ModuleType:
@@ -25,9 +41,10 @@ def get_array_module(device: str) -> ModuleType:
     ----------
     device : str
         ``"cpu"`` (alias ``"numpy"``) or ``"gpu"`` (aliases ``"cuda"``,
-        ``"cupy"``).
+        ``"cupy"``), optionally with a GPU number: ``"gpu:1"``. Without a
+        number the current CuPy device is used (normally GPU 0).
     """
-    name = str(device).lower()
+    name, _index = _parse_device(device)
     if name in _CPU_NAMES:
         return np
     if name in _GPU_NAMES:
@@ -45,6 +62,44 @@ def get_array_module(device: str) -> ModuleType:
         f"Unknown device {device!r}. Expected one of "
         f"{sorted(_CPU_NAMES | _GPU_NAMES)}."
     )
+
+
+def device_context(device: str) -> AbstractContextManager:
+    """Context making ``device``'s GPU current (no-op for CPU or a plain ``"gpu"``)."""
+    _name, index = _parse_device(device)
+    if index is None:
+        return nullcontext()
+    import cupy
+
+    count = cupy.cuda.runtime.getDeviceCount()
+    if index >= count:
+        raise ValueError(
+            f"device {device!r} asks for GPU {index}, but CuPy sees {count} "
+            f"GPU(s) (numbered 0-{count - 1}; CUDA_VISIBLE_DEVICES and "
+            "CUDA_DEVICE_ORDER control the numbering)."
+        )
+    return cupy.cuda.Device(index)
+
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def on_device(method: _F) -> _F:
+    """Run a method with its object's ``device`` GPU current (:func:`device_context`)."""
+
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        device = getattr(self, "device", None)
+        if device is None:  # a constructor, before self.device is set
+            bound = signature.bind_partial(self, *args, **kwargs).arguments
+            template = bound.get("template")
+            device = bound.get("device", getattr(template, "device", "cpu"))
+        with device_context(device):
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 # CPU FFT thread count: None -> scipy default (1 thread); -1 -> all cores.

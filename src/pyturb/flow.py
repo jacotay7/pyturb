@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from .backend import on_device
 from .fourier import PhaseScreen
 
 __all__ = ["FourierFlowScreen"]
@@ -54,6 +55,7 @@ class FourierFlowScreen:
     >>> b = layer.translate(1.3, -0.4)         # blown 1.3 m / -0.4 m
     """
 
+    @on_device
     def __init__(self, template: PhaseScreen, seed: Any = None) -> None:
         self.template = template
         self.xp = template.xp
@@ -68,6 +70,7 @@ class FourierFlowScreen:
         self._rng = self.xp.random.default_rng(seed)
         self.reseed()
 
+    @on_device
     def reseed(self, seed: Any = None) -> "FourierFlowScreen":
         """Draw a fresh fixed realisation of the layer's Fourier coefficients.
 
@@ -93,6 +96,7 @@ class FourierFlowScreen:
             self._sh_coeffs_stack = self.xp.stack(self._sh_coeffs)
         return self
 
+    @on_device
     def translate(self, sx: float, sy: float) -> Any:
         """Return the screen blown by ``(sx, sy)`` metres, shape ``(n, n)``.
 

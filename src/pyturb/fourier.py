@@ -22,7 +22,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
-from .backend import get_array_module, get_fft_module
+from .backend import get_array_module, get_fft_module, on_device
 from .config import ScreenConfig
 
 __all__ = ["PhaseScreen"]
@@ -85,6 +85,7 @@ class PhaseScreen:
     >>> batch = gen.generate(32)        # (32, 256, 256), one FFT batch
     """
 
+    @on_device
     def __init__(
         self,
         n: int,
@@ -230,6 +231,7 @@ class PhaseScreen:
     # ------------------------------------------------------------------
     # generation
     # ------------------------------------------------------------------
+    @on_device
     def generate(self, count: Optional[int] = None) -> Any:
         """Generate independent phase screens.
 

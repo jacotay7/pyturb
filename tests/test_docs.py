@@ -29,7 +29,7 @@ DOC_FILES = ["README.md"] + sorted(
 EXAMPLES = sorted(
     p.name for p in (ROOT / "examples").glob("0*.py") if not p.name.startswith("06")
 )
-OPTIONAL_MODULES = ("hcipy", "poppy", "matplotlib")
+OPTIONAL_MODULES = ("hcipy", "poppy", "matplotlib", "torch")
 
 
 def _gpu_available() -> bool:

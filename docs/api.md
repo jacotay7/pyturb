@@ -56,6 +56,10 @@ Generated from the source docstrings.
 
 ::: pyturb.analysis
 
+## Interop
+
+::: pyturb.interop.HCIPyLayer
+
 ## Theory
 
 ::: pyturb.theory
