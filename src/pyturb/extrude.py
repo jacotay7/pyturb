@@ -62,7 +62,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from . import _accel
-from .backend import get_array_module
+from .backend import blas_single_thread, get_array_module
 from .config import ExtrusionConfig
 from .fourier import PhaseScreen
 from .infinite import _lanczos_weights, _spd_solve, phase_covariance
@@ -358,6 +358,7 @@ class _ExtrudeLayer:
 
         self._a = a_matrix
         r0_scale = float(r0) ** (-5.0 / 6.0)
+        self._r0_scale = r0_scale
         self._b = (b_unit * r0_scale).astype(self.dtype)
 
         # Boiling (temporal decorrelation) state. ``tau_boil`` is infinite for
@@ -443,17 +444,27 @@ class _ExtrudeLayer:
             self._along_min - self._fov_margin + self._travel,
         )
 
-    def _ensure(self) -> None:
+    def rows_needed(self) -> int:
+        """Rows still to extrude before the readout window at ``_travel`` exists."""
         top = int(np.ceil(self._along_max + self._fov_margin + self._travel)) + 2
-        while self._base + self._fill - 1 < top:
+        return max(0, top - (self._base + self._fill - 1))
+
+    def _ensure(self) -> None:
+        for _ in range(self.rows_needed()):
             self._extrude_one()
 
     # -- readout geometry ---------------------------------------------
-    def set_travel(self, travel: float) -> None:
+    def set_travel(self, travel: float, extrude: bool = True) -> None:
+        """Move the readout to ``travel`` pixels; extrude now unless told not to.
+
+        :class:`ExtrudedAtmosphere` passes ``extrude=False`` and then extrudes
+        every layer's pending rows together (see ``_extrude_pending``).
+        """
         if travel < self._travel:
             raise ValueError("wind travel is monotonic; travel cannot decrease")
         self._travel = float(travel)
-        self._ensure()
+        if extrude:
+            self._ensure()
 
     def offsets_for_direction(self, thx: float, thy: float) -> Tuple[float, float]:
         """(along, perp) pixel shift of the footprint for an off-axis angle.
@@ -630,6 +641,18 @@ class ExtrudedAtmosphere:
                 )
             )
 
+        # Layers sharing L0 share A and B_unit, so their rows extrude together:
+        # one (k, mW) @ (mW, W) and one (k, W) @ (W, W) product per row step
+        # instead of 2k mat-vecs. The mat-vecs are memory-bound (A alone is
+        # W x mW, ~4 MB at n=512), so reading A and B once per step for all k
+        # layers, rather than once per layer, is the saving. Used on CPU; the
+        # GPU keeps per-layer extrusion (see _extrude_pending).
+        self._groups: List[Tuple[Any, Any, List[int]]] = []
+        for key, (a_matrix, b_unit, _s) in self._ab_cache.items():
+            members = [i for i, L0 in enumerate(layer_L0) if round(float(L0), 9) == key]
+            self._groups.append((a_matrix.T, b_unit.T, members))
+        self._stencil_offsets = np.arange(-self.m, 0)
+
         # Stack the (never-changing) rotated pupil grids once, so the readout
         # touches one (L, n, n) array instead of a Python list. Drop the
         # per-layer copies to keep only one on the device.
@@ -656,7 +679,61 @@ class ExtrudedAtmosphere:
     def set_time(self, t: float) -> None:
         """Advance every layer to simulation time ``t`` seconds."""
         for layer in self.layers:
-            layer.set_travel(layer.speed * t / self.dx)
+            layer.set_travel(layer.speed * t / self.dx, extrude=False)
+        self._extrude_pending()
+
+    def _extrude_pending(self) -> None:
+        """Extrude every layer's outstanding rows, batched across layers on CPU.
+
+        Each row step gathers the stencil rows of every layer (in one L0
+        group) that still needs a row, colours one white-noise row per layer
+        from that layer's own random stream (so each layer's draws match
+        extruding it alone), and evaluates ``A @ z + B @ beta`` for all of them
+        as two matrix products, scattering the new rows back in one write.
+        Layers that need fewer rows simply drop out of later steps.
+        """
+        if self.xp is not np:
+            # On the GPU the per-row index transfers and scatters cost more
+            # launches than batching saves at typical pupil sizes, so each
+            # layer extrudes its own rows (same draws, same result).
+            for layer in self.layers:
+                layer._ensure()
+            return
+        needed = [layer.rows_needed() for layer in self.layers]
+        if not any(needed):
+            return
+        with blas_single_thread():
+            self._extrude_rows(needed)
+
+    def _extrude_rows(self, needed: List[int]) -> None:
+        """The row-step loop of :meth:`_extrude_pending` (``needed`` is consumed)."""
+        xp = self.xp
+        layers = self.layers
+        W = self.width
+        while any(needed):
+            for a_t, b_unit_t, members in self._groups:
+                active = [i for i in members if needed[i] > 0]
+                if not active:
+                    continue
+                fills = np.empty(len(active), dtype=np.int64)
+                for j, i in enumerate(active):
+                    layer = layers[i]
+                    if layer._fill == layer._capacity:
+                        layer._compact()
+                    fills[j] = layer._fill
+                idx = xp.asarray(np.asarray(active, dtype=np.int64))
+                rows_idx = xp.asarray(fills[:, None] + self._stencil_offsets[None, :])
+                z = self._buf[idx[:, None], rows_idx].reshape(len(active), self.m * W)
+                beta = xp.stack([
+                    layers[i]._rng.standard_normal(W, dtype=self.dtype)
+                    * layers[i]._r0_scale
+                    for i in active
+                ])
+                new_rows = z @ a_t + beta @ b_unit_t  # (k, W)
+                self._buf[idx, xp.asarray(fills)] = new_rows
+                for i in active:
+                    layers[i]._fill += 1
+                    needed[i] -= 1
 
     def _batched_fresh_window(self, height: int) -> Any:
         """A fresh, independent ``(L, height, W)`` von Kármán window per layer.
@@ -730,6 +807,7 @@ class ExtrudedAtmosphere:
         """
         if not self.boiling:
             return
+        self._extrude_pending()
         regions = []
         height = 0
         for i, layer in enumerate(self.layers):
@@ -742,9 +820,10 @@ class ExtrudedAtmosphere:
         if not regions:
             return
         if self.xp is np:
-            for i, lo, hi, a, b in regions:
-                fresh = self._fresh_window_one(self.layers[i], hi - lo)
-                self._buf[i, lo:hi] = a * self._buf[i, lo:hi] + b * fresh
+            with blas_single_thread():
+                for i, lo, hi, a, b in regions:
+                    fresh = self._fresh_window_one(self.layers[i], hi - lo)
+                    self._buf[i, lo:hi] = a * self._buf[i, lo:hi] + b * fresh
             return
         fresh = self._batched_fresh_window(height)  # (L, height, W)
         for i, lo, hi, a, b in regions:

@@ -260,6 +260,13 @@ class Atmosphere:
     seed : int, optional
         Master seed. Per-layer streams are spawned from it so results are
         reproducible and independent of layer count.
+    cuda_graph : bool, optional
+        On the GPU, replay each spectral-engine frame (:meth:`frames`,
+        :meth:`evolve`, single-direction :meth:`opd`) as a captured CUDA graph:
+        one launch instead of a few dozen, which is what limits the frame rate
+        on hosts with a modest CPU. Falls back to ordinary execution if the
+        driver cannot capture. Default ``True``; no effect on the CPU or on
+        ``engine="extrude"``/``lgs_altitude`` frames.
     oversample : float, optional
         Size of the FFT screens used by :meth:`sample` and the spectral engine,
         as a multiple of the pupil (``>= 1``, before the ``field_of_view``
@@ -339,6 +346,7 @@ class Atmosphere:
         dtype: str = "float32",
         seed: Optional[int] = None,
         oversample: float = 1.0,
+        cuda_graph: bool = True,
     ) -> None:
         config = AtmosphereConfig.create(
             layers, r0, seeing, wavelength, zenith_angle, diameter, n, L0,
@@ -357,6 +365,9 @@ class Atmosphere:
                 ExtrudeBoilingPerformanceWarning,
                 stacklevel=2,
             )
+        if not isinstance(cuda_graph, bool):
+            raise ValueError("cuda_graph must be True or False")
+        self.cuda_graph = cuda_graph
         self.config = config
         self.engine = config.engine
         self.interp = config.interp
@@ -520,6 +531,7 @@ class Atmosphere:
 
         self._t = 0.0
         self._ext_time = 0.0  # furthest time the streaming extruder has reached
+        self._gpu = None  # GPU spectral fast path, set by _build_batched
         if self.engine == "spectral":
             self._build_batched()
         else:
@@ -606,6 +618,14 @@ class Atmosphere:
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
         if self._lgs_mag is not None:
             self._build_lgs_zoom()
+        # GPU fast path (fused layer sum, device-side phasors, CUDA graph). It
+        # holds references to _spectra/_sh_coeffs, which boiling updates in
+        # place; rebuilding them (reset) rebuilds this too.
+        self._gpu = None
+        if xp is not np and self._lgs_mag is None:
+            from ._gpu_spectral import SpectralGPU
+
+            self._gpu = SpectralGPU(self, use_graph=self.cuda_graph)
 
     def _main_shift(self, disp: np.ndarray) -> Any:
         """Main-grid displacements on the device, reduced modulo the screen period.
@@ -854,7 +874,7 @@ class Atmosphere:
 
     def opd(
         self,
-        t: float = 0.0,
+        t: Union[float, Sequence[float]] = 0.0,
         directions: Optional[Sequence[Tuple[float, float]]] = None,
         wavelength: Optional[float] = None,
     ) -> Any:
@@ -862,8 +882,13 @@ class Atmosphere:
 
         Parameters
         ----------
-        t : float
-            Time since the start of the simulation [s]. Taylor frozen flow:
+        t : float or 1-D array_like
+            Time since the start of the simulation [s]. An array of times
+            returns a leading time axis (``(len(t), n, n)``, or
+            ``(len(t), len(directions), n, n)``); on the GPU the spectral
+            engine evaluates many times in one batched transform, the fastest
+            way to generate an offline time series. Boiling is not applied to
+            random-access times (use :meth:`frames`). Taylor frozen flow:
             each layer's phase evolves as ``phi(x, t) = phi_0(x + wind_vector
             * t)`` — a fixed pupil point sees the turbulence that was
             ``wind_vector * t`` metres further along the wind direction at
@@ -886,26 +911,17 @@ class Atmosphere:
         wavelength : float, optional
             If given, return phase [rad] at this wavelength; otherwise OPD [m].
         """
+        times = np.asarray(t, dtype=np.float64)
+        if times.ndim > 1 or times.size == 0:
+            raise ValueError("t must be a scalar or a non-empty 1-D array of times [s]")
+        if times.ndim == 1:
+            return self._to_opd(self._phase_times(times, directions), wavelength)
         if directions is None:
             phase = self._phase(float(t), 0.0, 0.0)
             return self._to_opd(phase, wavelength)
 
         xp = self.xp
-        oxs, oys = [], []
-        for thx, thy in directions:
-            radius = float(np.hypot(thx, thy))
-            if radius > self.field_of_view:
-                raise ValueError(
-                    f"direction ({thx}, {thy}) arcsec has radius {radius:.3g} "
-                    f"arcsec, exceeding the declared "
-                    f"field_of_view={self.field_of_view} arcsec (a radius). The "
-                    "screens are only oversized out to that radius, so a larger "
-                    "request would sample wrapped (spectral) or clamped "
-                    "(extrude) turbulence. Construct the Atmosphere with a "
-                    "field_of_view covering every direction you plan to request."
-                )
-            oxs.append(np.tan(thx * _ARCSEC_TO_RAD))
-            oys.append(np.tan(thy * _ARCSEC_TO_RAD))
+        oxs, oys = self._direction_slopes(directions)
         # On the GPU the spectral engine (without the per-layer LGS zoom)
         # batches all directions through one inverse FFT and one subharmonic
         # matmul chain -- ~1.8x at 512² by removing per-direction launch
@@ -921,6 +937,65 @@ class Atmosphere:
                 [self._phase(float(t), ox, oy) for ox, oy in zip(oxs, oys)]
             )
         return self._to_opd(stacked, wavelength)
+
+    def _direction_slopes(
+        self, directions: Sequence[Tuple[float, float]]
+    ) -> Tuple[List[float], List[float]]:
+        """Validated direction tangents ``(tan(thx), tan(thy))`` for each direction."""
+        oxs, oys = [], []
+        for thx, thy in directions:
+            radius = float(np.hypot(thx, thy))
+            if radius > self.field_of_view:
+                raise ValueError(
+                    f"direction ({thx}, {thy}) arcsec has radius {radius:.3g} "
+                    f"arcsec, exceeding the declared "
+                    f"field_of_view={self.field_of_view} arcsec (a radius). The "
+                    "screens are only oversized out to that radius, so a larger "
+                    "request would sample wrapped (spectral) or clamped "
+                    "(extrude) turbulence. Construct the Atmosphere with a "
+                    "field_of_view covering every direction you plan to request."
+                )
+            oxs.append(np.tan(thx * _ARCSEC_TO_RAD))
+            oys.append(np.tan(thy * _ARCSEC_TO_RAD))
+        return oxs, oys
+
+    def _phase_times(
+        self,
+        times: np.ndarray,
+        directions: Optional[Sequence[Tuple[float, float]]],
+    ) -> Any:
+        """Reference-wavelength phase for each time (and direction), stacked."""
+        xp = self.xp
+        oxs, oys = self._direction_slopes(directions) if directions else ([0.0], [0.0])
+        n_dirs = len(oxs)
+        if self._gpu is not None:
+            ox = np.asarray(oxs)
+            oy = np.asarray(oys)
+            # (T, D, L) displacements, flattened to one batch of frames.
+            disp_x = (times[:, None, None] * self._vx[None, None, :]
+                      + ox[None, :, None] * self._alt[None, None, :])
+            disp_y = (times[:, None, None] * self._vy[None, None, :]
+                      + oy[None, :, None] * self._alt[None, None, :])
+            disp_x = disp_x.reshape(-1, disp_x.shape[-1])
+            disp_y = disp_y.reshape(-1, disp_y.shape[-1])
+            if not self._wrap_warned:
+                self._check_wrap(disp_x, disp_y)
+            # Bound the (B, n_screen, n_screen) complex working set per batch.
+            chunk = max(1, (1 << 24) // (self.n_screen * self.n_screen))
+            parts = [self._gpu.batch(disp_x[i:i + chunk], disp_y[i:i + chunk])
+                     for i in range(0, disp_x.shape[0], chunk)]
+            stacked = parts[0] if len(parts) == 1 else xp.concatenate(parts)
+            shape = (times.size, n_dirs, self.n, self.n) if directions else (
+                times.size, self.n, self.n)
+            return stacked.reshape(shape)
+        frames = []
+        for t in times:
+            if directions:
+                frames.append(xp.stack([self._phase(float(t), ox, oy)
+                                        for ox, oy in zip(oxs, oys)]))
+            else:
+                frames.append(self._phase(float(t), 0.0, 0.0))
+        return xp.stack(frames)
 
     def _phase(self, t: float, ox: float, oy: float) -> Any:
         """Reference-wavelength pupil phase at time ``t`` toward slope (ox, oy).
@@ -964,6 +1039,8 @@ class Atmosphere:
         disp_y = self._vy * t + self._alt * oy
         if not self._wrap_warned:
             self._check_wrap(disp_x, disp_y)
+        if self._gpu is not None:
+            return self._gpu.single(disp_x, disp_y)
         sx = self._main_shift(disp_x)
         sy = self._main_shift(disp_y)
         f = self._grid_f
@@ -1021,6 +1098,8 @@ class Atmosphere:
         disp_y = self._vy[None, :] * t + self._alt[None, :] * oys[:, None]
         if not self._wrap_warned:
             self._check_wrap(disp_x, disp_y)
+        if self._gpu is not None:
+            return self._gpu.batch(disp_x, disp_y)
         f = self._grid_f
         sx_all = self._main_shift(disp_x)  # (D, L)
         sy_all = self._main_shift(disp_y)
@@ -1170,7 +1249,9 @@ class Atmosphere:
             (2, L, self.n_screen, self.n_screen), dtype=self._spectra.real.dtype
         )
         fresh = (noise[0] + 1j * noise[1]) * self._amplitudes
-        self._spectra = a * self._spectra + b * fresh.astype(self._cdtype)
+        # In place: the GPU fast path (and its captured graph) reads _spectra.
+        self._spectra *= a
+        self._spectra += b * fresh.astype(self._cdtype)
         if self._n_sh:
             a_sh = xp.exp(-dt / self._boil_sh_tau)  # (P, L, 3, 3)
             b_sh = xp.sqrt(xp.clip(1.0 - a_sh * a_sh, 0.0, None))
@@ -1178,7 +1259,8 @@ class Atmosphere:
                 (2, self._n_sh, L, 3, 3), dtype=self._spectra.real.dtype
             )
             fresh = (noise[0] + 1j * noise[1]) * self._sh_amps
-            self._sh_coeffs = a_sh * self._sh_coeffs + b_sh * fresh.astype(self._cdtype)
+            self._sh_coeffs *= a_sh
+            self._sh_coeffs += b_sh * fresh.astype(self._cdtype)
 
     def frames(
         self, dt: float, steps: int, wavelength: Optional[float] = None

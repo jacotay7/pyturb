@@ -327,3 +327,53 @@ def test_large_single_time_jump_matches_many_small_steps():
 
     np.testing.assert_array_equal(jumped, stepped)
     assert np.isfinite(jumped).all()
+
+
+@pytest.mark.parametrize("tau_boil", [None, 0.02])
+def test_batched_cpu_extrusion_matches_per_layer(monkeypatch, tau_boil):
+    # The CPU extruder colours every layer's new rows in two matrix products
+    # per row step (layers grouped by L0). It must reproduce extruding each
+    # layer on its own -- same random draws, same rows -- to float round-off,
+    # including across L0 groups, uneven per-layer row counts and boiling.
+    import warnings
+
+    from pyturb.extrude import ExtrudedAtmosphere
+
+    layers = [
+        pyturb.Layer(0.0, 0.4, 5.5, 0.0, L0=25.0),
+        pyturb.Layer(2000.0, 0.3, 32.0, 70.0, L0=25.0),
+        pyturb.Layer(9000.0, 0.3, 14.0, 200.0, L0=10.0),
+    ]
+    kw = dict(r0=0.15, diameter=8.0, n=48, engine="extrude", dtype="float64",
+              seed=9, tau_boil=tau_boil)
+
+    def run():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", pyturb.ExtrudeBoilingPerformanceWarning)
+            atm = pyturb.Atmosphere(layers, **kw)
+        return np.stack([atm.evolve(1.3e-3) for _ in range(60)])
+
+    batched = run()
+
+    def per_layer(self):
+        for layer in self.layers:
+            layer._ensure()
+
+    monkeypatch.setattr(ExtrudedAtmosphere, "_extrude_pending", per_layer)
+    reference = run()
+    np.testing.assert_allclose(batched, reference, rtol=0,
+                               atol=1e-12 * np.abs(reference).max())
+
+
+def test_blas_single_thread_limits_and_restores():
+    threadpoolctl = pytest.importorskip("threadpoolctl")
+    from pyturb.backend import blas_single_thread
+
+    def blas_threads():
+        return [p["num_threads"] for p in threadpoolctl.threadpool_info()
+                if p["user_api"] == "blas"]
+
+    before = blas_threads()
+    with blas_single_thread():
+        assert all(n == 1 for n in blas_threads())
+    assert blas_threads() == before

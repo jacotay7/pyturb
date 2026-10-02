@@ -8,6 +8,7 @@ backend. The only CPU-pinned work is the one-time covariance/matrix setup in
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 from types import ModuleType
 from typing import Any, Optional
 
@@ -122,3 +123,30 @@ def to_numpy(array: Any) -> np.ndarray:
     if hasattr(array, "get"):  # CuPy device array
         return array.get()
     return np.asarray(array)
+
+
+_blas_controller: Any = None
+
+
+def blas_single_thread() -> AbstractContextManager:
+    """Context that runs CPU BLAS calls on one thread (restored on exit).
+
+    The extruders issue many small, memory-bound matrix products per frame.
+    A threaded BLAS (OpenBLAS sizes its pool to every core) gains nothing on
+    them and leaves its threads spinning afterwards, which starves the Numba
+    readout running on the same cores: on a 16-core host this halves the CPU
+    extrude frame rate. Uses ``threadpoolctl`` (a pyturb dependency); a no-op
+    if it is unavailable. The controller is built once, so entering the
+    context costs a few microseconds.
+    """
+    global _blas_controller
+    if _blas_controller is None:
+        try:
+            from threadpoolctl import ThreadpoolController
+
+            _blas_controller = ThreadpoolController()
+        except ImportError:  # pragma: no cover - threadpoolctl is a dependency
+            _blas_controller = False
+    if _blas_controller is False:
+        return nullcontext()
+    return _blas_controller.limit(limits=1, user_api="blas")

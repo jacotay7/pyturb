@@ -8,6 +8,20 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`opd(t=array)`** returns a stack of frames for many times (and
+  directions) at once; on the GPU the spectral engine evaluates them in one
+  batched transform (~26,000 frames/s at 256² and ~6,700 at 512² on an RTX 4060
+  for the 9-layer `paranal-median`). Boiling is not applied to random-access
+  times (#15).
+- **`Atmosphere(cuda_graph=True)`**: on the GPU, each spectral frame
+  (`frames`, `evolve`, single-direction `opd`) replays a captured CUDA graph
+  built from fused layer-sum and subharmonic kernels with device-side float64
+  phasors. Frames are bit-identical to ordinary execution (`cuda_graph=False`),
+  boiling included; capture falls back to ordinary execution if unsupported.
+  On an RTX 4060 with an Arm host, 9-layer spectral frames go from ~830 to
+  ~6,300 fps at 256², ~820 to ~4,300 at 512² and ~460 to ~1,300 at 1024²
+  (RTX A400: ~830/500/130 to ~4,800/1,300/330). Multi-direction spectral
+  frames use the same fused kernels (#15).
 - **`Atmosphere(oversample=...)`**: FFT screens for `sample()` and the spectral
   engine can be made larger than the pupil (default 1, unchanged). On a
   pupil-sized screen the FFT periodicity puts opposite pupil edges next to each
@@ -20,6 +34,17 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The CPU extruder batches row extrusion across layers.** Layers sharing an
+  outer scale share the extrusion matrices, so each row step is two matrix
+  products for all of them instead of two mat-vecs per layer, and the CPU
+  extrusion BLAS calls run single-threaded (`threadpoolctl`, a new
+  dependency): a threaded BLAS gains nothing on these small memory-bound
+  products and its spinning threads starve the Numba readout. 9-layer
+  `paranal-median` at 512² on 16 Arm cores: ~42 to ~98 fps (no change at 256²,
+  where the readout dominates). Each layer keeps its own random stream; frames
+  agree with per-layer extrusion to ~1e-14. `InfinitePhaseScreen` and CPU
+  extruder boiling use the same single-threaded BLAS (#16).
+- Spectral boiling updates the stored spectra in place.
 - **`analysis.temporal_psd` tapers with a Hann window by default**
   (`window="hann"`; `window=None` gives the previous untapered periodogram, and
   any `scipy.signal.get_window` name or an explicit array also works). The

@@ -14,6 +14,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.22",
     "scipy>=1.8",
+    "threadpoolctl>=3",
 ]
 keywords = [
     "adaptive-optics",
@@ -94,3 +95,9 @@ ignore = ["B008", "B905"]
 "validation/*" = ["E402"]
 # The immediately-consumed timing lambdas intentionally close over loop vars.
 "benchmarks/*" = ["E402", "B023"]
+
+[tool.coverage.run]
+# CuPy-only module: CI has no GPU, so it cannot run there. It is exercised by
+# the GPU-marked tests (`pytest --run-gpu`), which CONTRIBUTING requires before
+# merging GPU changes.
+omit = ["*/pyturb/_gpu_spectral.py"]

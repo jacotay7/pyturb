@@ -3,6 +3,7 @@
 ## An atmosphere in one line
 
 ```python
+import numpy as np
 import pyturb
 
 atm = pyturb.Atmosphere.from_profile(
@@ -35,6 +36,15 @@ non-periodic extruder engine:
 ```python
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
                                      engine="extrude")
+```
+
+For an offline time series (training data, PSD studies, pre-generated loops),
+ask for many times at once: on the GPU the spectral engine evaluates them in
+one batched transform, several times faster than stepping frame by frame.
+
+```python
+times = np.arange(512) * 1e-3                    # 0.5 s at 1 kHz
+series = atm.opd(t=times)                        # (512, n, n); no boiling
 ```
 
 ## Monte-Carlo ensembles
