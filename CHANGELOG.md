@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-02
+
+Highlights: 53 published turbulence profiles with full provenance, covering
+12 sites: Paranal (the fourteen ESO reference profiles and Stereo-SCIDAR), the
+five TMT candidate sites, Cerro Pachon, Cerro Tololo, Siding Spring,
+Sutherland, Mt Graham and La Palma. `profile_info(name)` gives the
+citation, how the numbers were obtained (table, dataset or figure), and the
+published conditions (r0, seeing, theta0, tau0). `from_profile` uses a
+profile's published r0 by default and takes winds via `wind=`. No breaking
+changes.
+
 ### Added
 
 - **Fourteen traceable Paranal profiles**, `paranal-p01` ... `paranal-p14`,
