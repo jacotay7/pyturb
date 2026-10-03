@@ -750,7 +750,13 @@ class Atmosphere:
     # constructors
     # ------------------------------------------------------------------
     @classmethod
-    def from_profile(cls, name: str, **kwargs) -> "Atmosphere":
+    def from_profile(
+        cls,
+        name: str,
+        wind: Any = None,
+        wind_direction: Any = None,
+        **kwargs: Any,
+    ) -> "Atmosphere":
         """Build from a named profile (see :func:`pyturb.list_profiles`).
 
         Any :class:`Atmosphere` keyword may be passed, e.g.::
@@ -758,11 +764,40 @@ class Atmosphere:
             Atmosphere.from_profile("paranal-median", seeing=0.8,
                                     zenith_angle=30, diameter=8, n=512)
 
+        If neither ``r0`` nor ``seeing`` is given and the profile's source
+        publishes its strength (``profile_info(name).conditions["r0"]``, the
+        traceable site profiles), that r0 is used.
+
+        ``wind`` replaces the layers' wind speeds (``"bufton"``, a scalar, or
+        one per layer; see :func:`pyturb.with_wind`) and ``wind_direction``
+        their directions. Profiles whose source publishes no winds have static
+        (0 m/s) layers and warn unless ``wind`` is given.
+
         The profile name and its :func:`pyturb.profile_info` provenance
         (traceable-vs-representative, source, site) are recorded in
         :attr:`metadata` so a saved OPD carries where its atmosphere came from.
         """
-        atm = cls(_profiles.get_profile(name), **kwargs)
+        layers = _profiles.get_profile(name)
+        info = _profiles.profile_info(name)
+        conditions = info.conditions or {}
+        if kwargs.get("r0") is None and kwargs.get("seeing") is None and (
+                "r0" in conditions):
+            kwargs["r0"] = conditions["r0"]
+        if wind is not None or wind_direction is not None:
+            layers = _profiles.with_wind(
+                layers,
+                wind if wind is not None else [layer.wind_speed for layer in layers],
+                wind_direction,
+            )
+        elif conditions.get("winds_published") is False:
+            warnings.warn(
+                f"profile {name!r} has no published winds, so its layers are "
+                "static (0 m/s) and frames() will not move. Pass wind=... (e.g. "
+                "wind='bufton' or measured speeds) for frozen flow.",
+                UserWarning,
+                stacklevel=2,
+            )
+        atm = cls(layers, **kwargs)
         atm._profile_name = str(name).lower()
         return atm
 

@@ -14,6 +14,17 @@ to [Semantic Versioning](https://semver.org/).
   height and probability of occurrence in the new
   `ProfileInfo.conditions`. Tests recompute the paper's mean height and tau0
   from the stored layers (#18).
+- **31 more traceable site profiles** from refereed papers, each transcribed
+  verbatim and checked against the rendered tables, with tests that recompute
+  every published integrated quantity: TMT site testing at Maunakea 13N,
+  Armazones, Tolar, Tolonchar and San Pedro Martir (Els et al. 2009,
+  good/typical/bad), Cerro Pachon (Tokovinin & Travouillon 2006), Siding Spring
+  (Goodwin et al. 2013, nine GL x FA combinations with modelled winds),
+  Sutherland (Catala et al. 2013) and Mt Graham (Masciadri et al. 2010).
+- `Atmosphere.from_profile` uses a traceable profile's published r0 when no
+  `r0`/`seeing` is given, accepts `wind=`/`wind_direction=`, and warns for
+  profiles whose source publishes no winds (their layers are static).
+  `pyturb.with_wind(layers, speed, direction)` assigns winds to any profile.
 
 ### Fixed
 
