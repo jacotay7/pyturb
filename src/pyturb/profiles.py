@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ._published_profiles import PUBLISHED_PROFILES
+
 # np.trapezoid was added in NumPy 2.0; np.trapz (the pre-2.0 name) was
 # removed in a later NumPy release. Use whichever this NumPy has -- checked
 # with hasattr (not getattr's default, which would eagerly evaluate np.trapz
@@ -43,6 +45,7 @@ __all__ = [
     "hufnagel_valley",
     "bufton_wind",
     "discretize_cn2",
+    "with_wind",
     "isoplanatic_angle",
     "coherence_time",
     "greenwood_frequency",
@@ -290,6 +293,30 @@ for _gr_id in _GR2015:
         lambda _id=_gr_id: _paranal_gr2015(_id)
     )
 
+# Further traceable site profiles (see _published_profiles.py for the data and
+# each entry's citation/table). Weights are normalised to fractions; sources
+# without winds get 0 m/s (static layers; Atmosphere.from_profile warns and
+# accepts wind=...), and sources without an outer scale get pyturb's 25 m.
+_PUBLISHED = {entry["name"]: entry for entry in PUBLISHED_PROFILES}
+
+
+def _published(name: str) -> List[Layer]:
+    entry = _PUBLISHED[name]
+    weights = np.asarray(entry["weights"], dtype=np.float64)
+    fractions = weights / weights.sum()
+    n = weights.size
+    speeds = entry["wind_speed"] or [0.0] * n
+    directions = entry["wind_direction"] or [0.0] * n
+    return [
+        Layer(altitude=h, cn2_fraction=float(f), wind_speed=float(v),
+              wind_direction=float(d), L0=25.0)
+        for h, f, v, d in zip(entry["altitudes_m"], fractions, speeds, directions)
+    ]
+
+
+for _name in _PUBLISHED:
+    _PROFILES[_name] = lambda _n=_name: _published(_n)
+
 
 @dataclass(frozen=True)
 class ProfileInfo:
@@ -404,6 +431,33 @@ def _gr2015_info(profile_id: str) -> ProfileInfo:
 for _gr_id in _GR2015:
     _PROFILE_INFO[f"paranal-{_gr_id.lower()}"] = _gr2015_info(_gr_id)
 
+_UNIT_SCALE = {"m^1/3": 1.0, "1e-13 m^1/3": 1e-13}
+
+
+def _published_info(entry: Mapping[str, Any]) -> ProfileInfo:
+    conditions: Dict[str, Any] = dict(entry["conditions"])
+    weights = np.asarray(entry["weights"], dtype=np.float64)
+    if entry["weight_unit"] in _UNIT_SCALE:
+        # Absolute Cn2 dh: the profile fixes r0 (0.5 um, zenith).
+        integral = weights.sum() * _UNIT_SCALE[entry["weight_unit"]]
+        k = 2.0 * np.pi / 500e-9
+        conditions["r0"] = float((0.423 * k * k * integral) ** (-3.0 / 5.0))
+        conditions["r0_from"] = "integral of the tabulated Cn2 dh at 0.5 um"
+    elif "seeing" in conditions:
+        conditions["r0"] = float(0.98 * 500e-9 / (conditions["seeing"] / 206264.806))
+        conditions["r0_from"] = "published total seeing (0.98 lambda / r0, 0.5 um)"
+    conditions["winds_published"] = entry["wind_speed"] is not None
+    if entry["site_altitude_m"] is not None:
+        conditions["site_altitude_m"] = entry["site_altitude_m"]
+    return ProfileInfo(
+        entry["name"], True, entry["citation"], entry["site"], 25.0, False,
+        f"{entry['kind']}; {entry['caveat']}", conditions,
+    )
+
+
+for _name, _entry in _PUBLISHED.items():
+    _PROFILE_INFO[_name] = _published_info(_entry)
+
 
 def profile_info(name: str) -> ProfileInfo:
     """Return the :class:`ProfileInfo` provenance record for a named profile.
@@ -431,8 +485,11 @@ def get_profile(name: str) -> List[Layer]:
 
     Names: ``"single-layer"``, ``"two-layer"``, ``"paranal-median"``,
     ``"mauna-kea"``, ``"keck"``, ``"las-campanas"``, ``"cerro-pachon"``,
-    ``"armazones"``, ``"hv57"``, and ``"paranal-p01"`` ... ``"paranal-p14"``.
-    See :func:`list_profiles`.
+    ``"armazones"``, ``"hv57"``, ``"paranal-p01"`` ... ``"paranal-p14"``,
+    and the traceable site profiles ``"tmt-<site>-<good|typical|bad>"``,
+    ``"cerro-pachon-<class>"``, ``"siding-spring-gl-<class>-fa-<class>"``,
+    ``"sutherland-median"`` and ``"mt-graham-<class>"`` (sources in
+    :func:`profile_info`). See :func:`list_profiles`.
 
     ``"mauna-kea"``, ``"keck"``, ``"las-campanas"`` and the fourteen
     ``"paranal-pNN"`` profiles (Garcia-Rissmann et al. 2015: Paranal seeing
@@ -485,6 +542,38 @@ def bufton_wind(h: ArrayLike) -> np.ndarray:
     """Bufton wind-speed model [m/s] versus altitude [m] (peaks near 9.4 km)."""
     h = np.asarray(h, dtype=np.float64)
     return 5.0 + 30.0 * np.exp(-(((h - 9400.0) / 4800.0) ** 2))
+
+
+def with_wind(
+    layers: List[Layer],
+    speed: Union[str, float, ArrayLike],
+    direction: Union[None, float, ArrayLike] = None,
+) -> List[Layer]:
+    """Return copies of ``layers`` with new wind speeds (and optionally directions).
+
+    ``speed`` is ``"bufton"`` (the Bufton model, :func:`bufton_wind`, at each
+    layer's altitude), a scalar for every layer, or one value per layer [m/s].
+    ``direction`` [deg, the from-direction, see :class:`Layer`] is a scalar or
+    one value per layer; ``None`` keeps each layer's direction. For profiles
+    whose source publishes no winds (see ``profile_info(name).conditions``).
+    """
+    altitudes = np.array([layer.altitude for layer in layers], dtype=np.float64)
+    if isinstance(speed, str):
+        if speed.lower() != "bufton":
+            raise ValueError("speed must be 'bufton', a number, or one value per layer")
+        speeds = bufton_wind(altitudes)
+    else:
+        speeds = np.broadcast_to(np.asarray(speed, dtype=np.float64), altitudes.shape)
+    if direction is None:
+        directions = np.array([layer.wind_direction for layer in layers],
+                              dtype=np.float64)
+    else:
+        directions = np.broadcast_to(np.asarray(direction, dtype=np.float64),
+                                     altitudes.shape)
+    return [
+        Layer(layer.altitude, layer.cn2_fraction, float(v), float(d), layer.L0)
+        for layer, v, d in zip(layers, speeds, directions)
+    ]
 
 
 def _optimal_edges(heights: np.ndarray, cn2: np.ndarray, n_layers: int) -> np.ndarray:

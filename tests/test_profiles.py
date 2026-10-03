@@ -196,3 +196,96 @@ def test_paranal_gr2015_classes_and_probabilities():
     seeing = [i.conditions["seeing_class"] for i in infos]
     r0 = [i.conditions["r0"] for i in infos]
     assert np.all(np.diff(seeing) >= 0) and np.all(np.diff(r0) <= 0)
+
+
+def _derived(name):
+    info = pyturb.profile_info(name)
+    layers = pyturb.get_profile(name)
+    r0 = info.conditions["r0"]
+    theta0 = profiles.isoplanatic_angle(layers, r0) * 206264.806
+    return info, layers, r0, theta0
+
+
+@pytest.mark.parametrize("site", ["tolar", "armazones", "tolonchar",
+                                  "san-pedro-martir", "maunakea-13n"])
+def test_tmt_profiles_els2009(site):
+    # Els et al. (2009) Table 4: median Cn2 dh around the 25/50/75 per cent
+    # DIMM seeing. Seeing must rise good -> bad; the text quotes 0.54" for the
+    # Tolar median profile.
+    seeing = []
+    for cls in ("good", "typical", "bad"):
+        info, layers, r0, _ = _derived(f"tmt-{site}-{cls}")
+        assert "10.1086/599384" in info.source and len(layers) == 7
+        seeing.append(pyturb.seeing_from_r0(r0))
+    assert seeing[0] < seeing[1] < seeing[2]
+    if site == "tolar":
+        assert seeing[1] == pytest.approx(0.54, abs=0.005)
+
+
+@pytest.mark.parametrize("cls", ["good", "typical", "bad"])
+def test_cerro_pachon_tokovinin_travouillon_2006(cls):
+    # Table 3 model; Table 2 gives its free-atmosphere seeing and theta0.
+    info, layers, r0, theta0 = _derived(f"cerro-pachon-{cls}")
+    j = np.array([layer.cn2_fraction for layer in layers])
+    r0_fa = r0 * (1 - j[0]) ** (-3 / 5)          # everything above the 0 km layer
+    expected = info.conditions["seeing_FA"]
+    assert pyturb.seeing_from_r0(r0_fa) == pytest.approx(expected, abs=0.006)
+    assert theta0 == pytest.approx(info.conditions["theta0"], rel=0.005)
+
+
+@pytest.mark.parametrize("gl", ["good", "typical", "bad"])
+@pytest.mark.parametrize("fa", ["good", "typical", "bad"])
+def test_siding_spring_goodwin2013(gl, fa):
+    # Tables 11-13 publish seeing, theta0 and tau0 for each of the nine
+    # GL x FA combinations; recompute all three from the layers and winds.
+    info, layers, r0, theta0 = _derived(f"siding-spring-gl-{gl}-fa-{fa}")
+    c = info.conditions
+    assert theta0 == pytest.approx(c["theta0"], rel=0.002)
+    assert profiles.coherence_time(layers, r0) == pytest.approx(c["tau0"], rel=0.002)
+    # Eq. 8 of the paper: seeing = (J / 6.8e-13)^0.6 (vs 0.98 lambda / r0, ~0.25% apart)
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(c["seeing"], rel=0.005)
+
+
+def test_siding_spring_probabilities_sum_to_one():
+    names = [f"siding-spring-gl-{g}-fa-{f}" for g in ("good", "typical", "bad")
+             for f in ("good", "typical", "bad")]
+    total = sum(pyturb.profile_info(n).conditions["probability"] for n in names)
+    assert total == pytest.approx(1.0)
+
+
+def test_sutherland_catala2013():
+    info, layers, r0, theta0 = _derived("sutherland-median")
+    assert sum(layer.cn2_fraction for layer in layers) == pytest.approx(1.0)
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(1.4)   # r0 from published seeing
+    assert theta0 == pytest.approx(info.conditions["theta0"], rel=0.03)  # 1.96 vs 1.92
+
+
+@pytest.mark.parametrize("cls, with_dome", [("good", 0.65), ("typical", 0.95),
+                                            ("bad", 1.34)])
+def test_mt_graham_masciadri2010(cls, with_dome):
+    # Restoring the dome to the 0-100 m slab must reproduce Table 4's total
+    # seeing (dome included) at the matching percentile.
+    info, layers, r0, _ = _derived(f"mt-graham-{cls}")
+    c = info.conditions
+    assert c["seeing_with_dome"] == with_dome
+    j_total = (0.423 * (2 * np.pi / 500e-9) ** 2) ** -1 * r0 ** (-5 / 3)
+    j_ground_free = layers[0].cn2_fraction * j_total
+    j_with_dome = j_total - j_ground_free + c["J_0_100m_with_dome"]
+    r0_dome = (0.423 * (2 * np.pi / 500e-9) ** 2 * j_with_dome) ** (-3 / 5)
+    assert pyturb.seeing_from_r0(r0_dome) == pytest.approx(with_dome, rel=0.02)
+
+
+def test_profiles_without_published_winds_warn_and_accept_winds():
+    with pytest.warns(UserWarning, match="no published winds"):
+        static = pyturb.Atmosphere.from_profile("sutherland-median", n=16)
+    assert all(layer.wind_speed == 0 for layer in static.layers)
+    windy = pyturb.Atmosphere.from_profile("sutherland-median", n=16, wind="bufton",
+                                           wind_direction=45.0)
+    altitudes = [layer.altitude for layer in windy.layers]
+    np.testing.assert_allclose([layer.wind_speed for layer in windy.layers],
+                               pyturb.bufton_wind(altitudes))
+    assert windy.r0 == pytest.approx(static.r0)            # published r0 by default
+    explicit = pyturb.Atmosphere.from_profile("sutherland-median", n=16, r0=0.2,
+                                              wind=10.0)
+    assert explicit.r0 == pytest.approx(0.2)
+    assert all(layer.wind_speed == 10.0 for layer in explicit.layers)

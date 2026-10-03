@@ -42,6 +42,7 @@ from .profiles import (
     list_profiles,
     mean_turbulence_height,
     profile_info,
+    with_wind,
 )
 from .utils import (
     air_refractivity,
@@ -76,6 +77,7 @@ __all__ = [
     "hufnagel_valley",
     "bufton_wind",
     "discretize_cn2",
+    "with_wind",
     "isoplanatic_angle",
     "coherence_time",
     "greenwood_frequency",

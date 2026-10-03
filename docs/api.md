@@ -36,6 +36,8 @@ Generated from the source docstrings.
 
 ::: pyturb.discretize_cn2
 
+::: pyturb.with_wind
+
 ::: pyturb.hufnagel_valley
 
 ::: pyturb.bufton_wind
