@@ -289,3 +289,81 @@ def test_profiles_without_published_winds_warn_and_accept_winds():
                                               wind=10.0)
     assert explicit.r0 == pytest.approx(0.2)
     assert all(layer.wind_speed == 10.0 for layer in explicit.layers)
+
+
+def test_maunakea_raven_ono2017():
+    # Table 1: mean SLODAR Cn2 dh in five bins with a median L0 per bin; the
+    # text quotes a 0.46" seeing for the dataset.
+    info, layers, r0, _ = _derived("maunakea-raven-mean")
+    assert info.origin == "table"
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(0.46, abs=0.005)
+    assert [layer.L0 for layer in layers] == [17.40, 13.57, 15.19, 29.76, 33.54]
+    assert info.outer_scale is None                      # varies with altitude
+    cfht = pyturb.profile_info("maunakea-cfht-mean")
+    assert pyturb.seeing_from_r0(cfht.conditions["r0"]) == pytest.approx(0.53, abs=0.01)
+
+
+@pytest.mark.parametrize("cls, seeing",
+                         [("good", 0.79), ("typical", 0.95), ("bad", 1.17)])
+def test_cerro_tololo_dataset_profiles(cls, seeing):
+    # Derived from the authors' data file; strength set to Table 1's total
+    # seeing quartiles, theta0 compared with Table 1's median (1.80").
+    info, layers, r0, theta0 = _derived(f"cerro-tololo-{cls}")
+    assert info.origin == "dataset" and "statist.dat" in info.source
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(seeing, rel=1e-3)
+    ground = layers[0]
+    assert ground.altitude == 0 and 0.6 < ground.cn2_fraction < 0.8   # paper: ~60% <500 m
+    if cls == "typical":
+        assert theta0 == pytest.approx(1.80, rel=0.05)
+
+
+def test_paranal_stereo_scidar_mean_osborn2018():
+    # Figure-digitised mean profile scaled to Table 2's median seeing must give
+    # Table 2's median theta0 and ground-layer fractions.
+    info, layers, r0, theta0 = _derived("paranal-stereo-scidar-mean")
+    assert info.origin == "figure" and len(layers) == 24
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(0.64, rel=1e-3)
+    assert theta0 == pytest.approx(1.75, rel=0.05)
+    below_600 = sum(layer.cn2_fraction for layer in layers if layer.altitude < 600)
+    assert below_600 == pytest.approx(0.40, abs=0.04)
+
+
+def test_la_palma_median_garcia_lorenzo2011():
+    # Median-of-profiles shape: seeing pinned to Table 3 (0.84"); its theta0
+    # (~2.8") exceeds the published median (2.22") -- documented in the caveat.
+    info, layers, r0, theta0 = _derived("la-palma-median")
+    assert info.origin == "figure" and "2.22" in info.caveat
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(0.84, rel=1e-3)
+    assert 2.2 < theta0 < 3.0
+    assert layers[0].cn2_fraction > 0.5          # ground layer dominates at the ORM
+
+
+def test_san_pedro_martir_median_avila2019():
+    # Fig. 9 median shape pinned to the paper's median seeing (0.79"); theta0
+    # then lands near Avila et al. (2011)'s 1.96" for an older subset.
+    info, layers, r0, theta0 = _derived("san-pedro-martir-median")
+    assert info.origin == "figure" and "10.1093/mnras/stz2672" in info.source
+    assert pyturb.seeing_from_r0(r0) == pytest.approx(0.79, rel=1e-3)
+    assert theta0 == pytest.approx(1.96, rel=0.05)
+    j = np.array([layer.cn2_fraction for layer in layers])
+    assert j[0] == pytest.approx(0.5, abs=0.03)      # half the turbulence below 500 m
+    assert max(layer.altitude for layer in layers) < 20e3
+
+
+@pytest.mark.parametrize("cls", ["good", "typical", "bad"])
+def test_mt_graham_climatological_winds_hagelin2010(cls):
+    # Hagelin et al. (2010) winds: the subtropical jet peaks ~9 km above the
+    # summit; tau0 with the typical profile is ~3.6 ms, ~25% below
+    # Masciadri et al. (2010)'s 4.8 ms median (as the caveat states).
+    info, layers, r0, _ = _derived(f"mt-graham-{cls}")
+    c = info.conditions
+    assert c["winds_published"] and c["wind_origin"] == "figure"
+    assert "10.1111/j.1365-2966.2010.17102.x" in c["wind_source"]
+    speeds = np.array([layer.wind_speed for layer in layers])
+    peak = layers[int(np.argmax(speeds))].altitude
+    assert 7e3 <= peak <= 11e3 and 25 < speeds.max() < 32
+    assert 7 < speeds[0] < 9                          # SCIDAR 0-100 m mean
+    if cls == "typical":
+        tau0 = profiles.coherence_time(layers, r0)
+        assert tau0 == pytest.approx(3.55e-3, rel=0.05)
+        assert tau0 < 0.8 * c["tau0_with_dome"]

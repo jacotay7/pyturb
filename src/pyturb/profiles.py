@@ -307,10 +307,12 @@ def _published(name: str) -> List[Layer]:
     n = weights.size
     speeds = entry["wind_speed"] or [0.0] * n
     directions = entry["wind_direction"] or [0.0] * n
+    outer = entry.get("L0") or [25.0] * n
     return [
         Layer(altitude=h, cn2_fraction=float(f), wind_speed=float(v),
-              wind_direction=float(d), L0=25.0)
-        for h, f, v, d in zip(entry["altitudes_m"], fractions, speeds, directions)
+              wind_direction=float(d), L0=float(L0))
+        for h, f, v, d, L0 in zip(entry["altitudes_m"], fractions, speeds, directions,
+                                  outer)
     ]
 
 
@@ -353,6 +355,12 @@ class ProfileInfo:
         does (e.g. ``r0`` [m, 0.5 um], ``tau0`` [s], ``seeing_class``
         [arcsec], ``probability``, ``quality``); ``None`` otherwise. Pass
         ``r0=info.conditions["r0"]`` to reproduce the published case.
+    origin : str
+        How the numbers were obtained: ``"table"`` (transcribed from a printed
+        table), ``"dataset"`` (computed by pyturb from the authors' published
+        data) or ``"figure"`` (digitised from a plotted curve, so accurate only
+        to the plot's resolution; see the caveat). Representative and
+        illustrative profiles report ``"table"`` for their own definitions.
     """
 
     name: str
@@ -363,6 +371,7 @@ class ProfileInfo:
     wind_direction_measured: bool
     caveat: str
     conditions: Optional[Mapping[str, Any]] = None
+    origin: str = "table"
 
 
 _REPRESENTATIVE = ("representative discretisation (general shape of the site's "
@@ -431,13 +440,16 @@ def _gr2015_info(profile_id: str) -> ProfileInfo:
 for _gr_id in _GR2015:
     _PROFILE_INFO[f"paranal-{_gr_id.lower()}"] = _gr2015_info(_gr_id)
 
-_UNIT_SCALE = {"m^1/3": 1.0, "1e-13 m^1/3": 1e-13}
+_UNIT_SCALE = {"m^1/3": 1.0, "1e-13 m^1/3": 1e-13, "1e-14 m^1/3": 1e-14}
 
 
 def _published_info(entry: Mapping[str, Any]) -> ProfileInfo:
     conditions: Dict[str, Any] = dict(entry["conditions"])
     weights = np.asarray(entry["weights"], dtype=np.float64)
-    if entry["weight_unit"] in _UNIT_SCALE:
+    if conditions.get("strength_from") == "seeing":
+        conditions["r0"] = float(0.98 * 500e-9 / (conditions["seeing"] / 206264.806))
+        conditions["r0_from"] = "published total seeing (0.98 lambda / r0, 0.5 um)"
+    elif entry["weight_unit"] in _UNIT_SCALE:
         # Absolute Cn2 dh: the profile fixes r0 (0.5 um, zenith).
         integral = weights.sum() * _UNIT_SCALE[entry["weight_unit"]]
         k = 2.0 * np.pi / 500e-9
@@ -449,9 +461,12 @@ def _published_info(entry: Mapping[str, Any]) -> ProfileInfo:
     conditions["winds_published"] = entry["wind_speed"] is not None
     if entry["site_altitude_m"] is not None:
         conditions["site_altitude_m"] = entry["site_altitude_m"]
+    outer = entry.get("L0")
+    uniform_L0 = 25.0 if outer is None else (outer[0] if len(set(outer)) == 1 else None)
     return ProfileInfo(
-        entry["name"], True, entry["citation"], entry["site"], 25.0, False,
+        entry["name"], True, entry["citation"], entry["site"], uniform_L0, False,
         f"{entry['kind']}; {entry['caveat']}", conditions,
+        origin=entry.get("origin", "table"),
     )
 
 

@@ -71,51 +71,69 @@ pick = np.random.default_rng(0).choice(names, p=weights)
 
 ### More traceable site profiles
 
-Profiles transcribed verbatim from refereed papers (each value checked against
-the rendered table; pyturb's tests recompute every published seeing, θ0 or τ0
-the source gives). r0 is the profile's own (from its tabulated Cn²·dh, or from
-the published seeing where only percentages are given) and is used when you
-pass neither `r0` nor `seeing`. L0 is pyturb's 25 m where the source gives
-none.
+Profiles from refereed papers. Each records how its numbers were obtained in
+`profile_info(name).origin`:
 
-| name | layers | r0 [m] | seeing | θ0 | winds | source |
-|---|---:|---:|---:|---:|---|---|
-| `tmt-tolar-good` | 7 | 0.230 | 0.44" | 2.18" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-tolar-typical` | 7 | 0.188 | 0.54" | 1.97" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-tolar-bad` | 7 | 0.152 | 0.66" | 1.79" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-armazones-good` | 7 | 0.229 | 0.44" | 2.36" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-armazones-typical` | 7 | 0.185 | 0.55" | 2.09" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-armazones-bad` | 7 | 0.144 | 0.70" | 1.88" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-tolonchar-good` | 7 | 0.218 | 0.46" | 2.23" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-tolonchar-typical` | 7 | 0.182 | 0.55" | 1.89" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-tolonchar-bad` | 7 | 0.146 | 0.69" | 1.52" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-san-pedro-martir-good` | 7 | 0.184 | 0.55" | 2.52" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-san-pedro-martir-typical` | 7 | 0.144 | 0.70" | 2.17" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-san-pedro-martir-bad` | 7 | 0.102 | 0.99" | 1.77" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-maunakea-13n-good` | 7 | 0.198 | 0.51" | 3.26" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-maunakea-13n-typical` | 7 | 0.153 | 0.66" | 2.98" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `tmt-maunakea-13n-bad` | 7 | 0.112 | 0.90" | 2.66" | none (0 m/s) | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
-| `cerro-pachon-good` | 7 | 0.164 | 0.62" | 2.57" | none (0 m/s) | [Tokovinin & Travouillon 2006](https://doi.org/10.1111/j.1365-2966.2005.09813.x) T3 |
-| `cerro-pachon-typical` | 7 | 0.135 | 0.75" | 2.22" | none (0 m/s) | [Tokovinin & Travouillon 2006](https://doi.org/10.1111/j.1365-2966.2005.09813.x) T3 |
-| `cerro-pachon-bad` | 7 | 0.111 | 0.91" | 2.04" | none (0 m/s) | [Tokovinin & Travouillon 2006](https://doi.org/10.1111/j.1365-2966.2005.09813.x) T3 |
-| `siding-spring-gl-good-fa-good` | 7 | 0.117 | 0.86" | 6.43" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-good-fa-typical` | 7 | 0.107 | 0.94" | 3.72" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-good-fa-bad` | 7 | 0.094 | 1.07" | 2.01" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-typical-fa-good` | 7 | 0.086 | 1.18" | 6.37" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-typical-fa-typical` | 7 | 0.082 | 1.24" | 3.71" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-typical-fa-bad` | 7 | 0.075 | 1.35" | 2.01" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-bad-fa-good` | 7 | 0.067 | 1.52" | 6.23" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-bad-fa-typical` | 7 | 0.064 | 1.57" | 3.67" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `siding-spring-gl-bad-fa-bad` | 7 | 0.061 | 1.67" | 2.00" | modelled (Bufton) + directions | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
-| `sutherland-median` | 7 | 0.072 | 1.40" | 1.96" | none (0 m/s) | [Catala+ 2013](https://doi.org/10.1093/mnras/stt1602) T3 |
-| `mt-graham-good` | 20 | 0.217 | 0.47" | 3.03" | none (0 m/s) | [Masciadri+ 2010](https://doi.org/10.1111/j.1365-2966.2010.16313.x) T6+8 |
-| `mt-graham-typical` | 20 | 0.145 | 0.70" | 2.27" | none (0 m/s) | [Masciadri+ 2010](https://doi.org/10.1111/j.1365-2966.2010.16313.x) T6+8 |
-| `mt-graham-bad` | 20 | 0.096 | 1.05" | 1.57" | none (0 m/s) | [Masciadri+ 2010](https://doi.org/10.1111/j.1365-2966.2010.16313.x) T6+8 |
+- **table**: transcribed verbatim from a printed table and checked against
+  the rendered page;
+- **dataset**: computed by pyturb from the authors' published data file;
+- **figure**: digitised from a plotted curve (vector paths read from the PDF
+  where the figure is vector, otherwise traced from the raster), with an
+  overlay check against the figure.
+
+pyturb's tests recompute every published seeing, θ0 or τ0 the source gives.
+r0 is the profile's own (from its tabulated Cn²·dh, or from the published
+seeing where only percentages are given or where the profile is a per-altitude
+median, see below) and is used when you pass neither `r0` nor `seeing`. L0 is
+pyturb's 25 m where the source gives none.
+
+| name | layers | r0 [m] | seeing | θ0 | winds | origin | source |
+|---|---:|---:|---:|---:|---|---|---|
+| `tmt-tolar-good` | 7 | 0.230 | 0.44" | 2.18" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-tolar-typical` | 7 | 0.188 | 0.54" | 1.97" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-tolar-bad` | 7 | 0.152 | 0.66" | 1.79" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-armazones-good` | 7 | 0.229 | 0.44" | 2.36" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-armazones-typical` | 7 | 0.185 | 0.55" | 2.09" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-armazones-bad` | 7 | 0.144 | 0.70" | 1.88" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-tolonchar-good` | 7 | 0.218 | 0.46" | 2.23" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-tolonchar-typical` | 7 | 0.182 | 0.55" | 1.89" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-tolonchar-bad` | 7 | 0.146 | 0.69" | 1.52" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-san-pedro-martir-good` | 7 | 0.184 | 0.55" | 2.52" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-san-pedro-martir-typical` | 7 | 0.144 | 0.70" | 2.17" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-san-pedro-martir-bad` | 7 | 0.102 | 0.99" | 1.77" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-maunakea-13n-good` | 7 | 0.198 | 0.51" | 3.26" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-maunakea-13n-typical` | 7 | 0.153 | 0.66" | 2.98" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `tmt-maunakea-13n-bad` | 7 | 0.112 | 0.90" | 2.66" | none (0 m/s) | table | [Els+ 2009](https://doi.org/10.1086/599384) T4 |
+| `cerro-pachon-good` | 7 | 0.164 | 0.62" | 2.57" | none (0 m/s) | table | [Tokovinin & Travouillon 2006](https://doi.org/10.1111/j.1365-2966.2005.09813.x) T3 |
+| `cerro-pachon-typical` | 7 | 0.135 | 0.75" | 2.22" | none (0 m/s) | table | [Tokovinin & Travouillon 2006](https://doi.org/10.1111/j.1365-2966.2005.09813.x) T3 |
+| `cerro-pachon-bad` | 7 | 0.111 | 0.91" | 2.04" | none (0 m/s) | table | [Tokovinin & Travouillon 2006](https://doi.org/10.1111/j.1365-2966.2005.09813.x) T3 |
+| `siding-spring-gl-good-fa-good` | 7 | 0.117 | 0.86" | 6.43" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-good-fa-typical` | 7 | 0.107 | 0.94" | 3.72" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-good-fa-bad` | 7 | 0.094 | 1.07" | 2.01" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-typical-fa-good` | 7 | 0.086 | 1.18" | 6.37" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-typical-fa-typical` | 7 | 0.082 | 1.24" | 3.71" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-typical-fa-bad` | 7 | 0.075 | 1.35" | 2.01" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-bad-fa-good` | 7 | 0.067 | 1.52" | 6.23" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-bad-fa-typical` | 7 | 0.064 | 1.57" | 3.67" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `siding-spring-gl-bad-fa-bad` | 7 | 0.061 | 1.67" | 2.00" | modelled (Bufton) + directions | table | [Goodwin+ 2013](https://doi.org/10.1017/pasa.2012.009) T11–13 |
+| `sutherland-median` | 7 | 0.072 | 1.40" | 1.96" | none (0 m/s) | table | [Catala+ 2013](https://doi.org/10.1093/mnras/stt1602) T3 |
+| `mt-graham-good` | 20 | 0.217 | 0.47" | 3.03" | climatology (speeds only) | table; winds figure | [Masciadri+ 2010](https://doi.org/10.1111/j.1365-2966.2010.16313.x) T6+8; winds [Hagelin+ 2010](https://doi.org/10.1111/j.1365-2966.2010.17102.x) F3+7 |
+| `mt-graham-typical` | 20 | 0.145 | 0.70" | 2.27" | climatology (speeds only) | table; winds figure | [Masciadri+ 2010](https://doi.org/10.1111/j.1365-2966.2010.16313.x) T6+8; winds [Hagelin+ 2010](https://doi.org/10.1111/j.1365-2966.2010.17102.x) F3+7 |
+| `mt-graham-bad` | 20 | 0.096 | 1.05" | 1.57" | climatology (speeds only) | table; winds figure | [Masciadri+ 2010](https://doi.org/10.1111/j.1365-2966.2010.16313.x) T6+8; winds [Hagelin+ 2010](https://doi.org/10.1111/j.1365-2966.2010.17102.x) F3+7 |
+| `maunakea-raven-mean` | 5 | 0.219 | 0.46" | 2.89" | none (0 m/s) | table | [Ono+ 2017](https://doi.org/10.1093/mnras/stw3083) T1 |
+| `maunakea-cfht-mean` | 5 | 0.191 | 0.53" | 2.64" | none (0 m/s) | table | [Ono+ 2017](https://doi.org/10.1093/mnras/stw3083) T1 |
+| `cerro-tololo-good` | 7 | 0.128 | 0.79" | 1.91" | none (0 m/s) | dataset | [Tokovinin+ 2003](https://doi.org/10.1046/j.1365-8711.2003.06231.x) data |
+| `cerro-tololo-typical` | 7 | 0.106 | 0.95" | 1.75" | none (0 m/s) | dataset | [Tokovinin+ 2003](https://doi.org/10.1046/j.1365-8711.2003.06231.x) data |
+| `cerro-tololo-bad` | 7 | 0.086 | 1.17" | 1.51" | none (0 m/s) | dataset | [Tokovinin+ 2003](https://doi.org/10.1046/j.1365-8711.2003.06231.x) data |
+| `paranal-stereo-scidar-mean` | 24 | 0.158 | 0.64" | 1.81" | none (0 m/s) | figure | [Osborn+ 2018](https://doi.org/10.1093/mnras/sty1070) F2 |
+| `la-palma-median` | 8 | 0.120 | 0.84" | 2.84" | none (0 m/s) | figure | [García-Lorenzo & Fuensalida 2011](https://doi.org/10.1111/j.1365-2966.2011.19186.x) F3b |
+| `san-pedro-martir-median` | 37 | 0.128 | 0.79" | 1.91" | none (0 m/s) | figure | [Avila+ 2019](https://doi.org/10.1093/mnras/stz2672) F9 |
 
 Notes on using them:
 
-- **Winds.** Only the Siding Spring profiles carry winds, and those are a
-  Bufton model with modelled directions, not measurements. The others publish
+- **Winds.** The Siding Spring winds are a Bufton model with modelled
+  directions, not measurements; the Mt Graham speeds are a climatology (see
+  below) with all directions 0°. The others publish
   no winds: their layers are static (0 m/s) and `from_profile` warns. Supply
   winds for frozen flow, e.g. `wind="bufton"`, a scalar, or measured speeds
   (`pyturb.with_wind` does the same for a layer list).
@@ -133,7 +151,32 @@ Notes on using them:
   layer holds everything below the 500 m MASS layer.
 - **Mt Graham** (Masciadri et al. 2010): G-SCIDAR slab integrals placed at
   slab midpoints, dome seeing removed; the "good" dome-free row is not
-  consistent with the paper's quoted dome seeing.
+  consistent with the paper's quoted dome seeing. The wind speeds come from a
+  separate paper (Hagelin et al. 2010, digitised from Figs. 3 and 7): the
+  SCIDAR mean below 1 km and ECMWF monthly medians, weighted to the campaign's
+  months, above. They are not simultaneous with the Cn², and the jet they put
+  at ~9 km makes τ0 about 25% shorter than the paper's median (3.6 vs 4.8 ms
+  for `typical`). Same speeds for all three classes; override with `wind=`.
+- **Maunakea, RAVEN and CFHT** (Ono et al. 2017, Table 1): mean profiles in
+  five coarse bins (0–1.5, 1.5–3, 3–6, 6–12, >12 km) placed at the table's
+  bin labels. `maunakea-raven-mean` carries the published per-bin median L0
+  (13–34 m, biased toward ~2–3x the 8.2 m aperture).
+- **Cerro Tololo** (Tokovinin et al. 2003): derived by pyturb from the
+  authors' public file of 22,300 MASS-DIMM profiles, the same way Els et al.
+  built the TMT rows: per-layer medians of the profiles within ±5% of the
+  25/50/75% total-seeing percentiles. The total seeing reproduces the paper's
+  Table 1 (0.79/0.95/1.17").
+
+**Per-altitude medians.** The three figure profiles plot the median (or, for
+Paranal, the mean) Cn² at each height. A per-altitude median is not the
+profile of a median night: its integral falls well short of the median seeing
+(by ~45% at San Pedro Mártir) and it under-weights the free atmosphere. pyturb
+keeps the shape and sets the strength to the paper's median seeing
+(`conditions["strength_from"] == "seeing"`). The resulting θ0 is close to
+published for Paranal (1.81" vs 1.75") and San Pedro Mártir (1.91" vs 1.96",
+from Avila et al. 2011), but 2.84" vs 2.22" at La Palma, where the ground
+layer dominates the median shape. Digitisation itself is accurate to ~1% in
+seeing.
 
 ```python
 import pyturb
@@ -142,13 +185,12 @@ atm = pyturb.Atmosphere.from_profile("tmt-armazones-typical", wind="bufton", n=1
 print(atm.r0, atm.seeing, pyturb.profile_info("tmt-armazones-typical").source)
 ```
 
-Sources that were checked but publish no layer table (profiles only in
-figures, integrated statistics only, or model output in figures): Osborn et
-al. 2018 (Paranal Stereo-SCIDAR), Ono et al. 2017 (Maunakea, RAVEN; coarse
-bins without winds), García-Lorenzo & Fuensalida 2011 (La Palma), Osborn et al.
-2017 (Stereo-SCIDAR winds), Avila et al. 2011/2019 (San Pedro Mártir),
-Hagelin et al. 2010 (Mt Graham winds), Tokovinin et al. 2003 (Cerro Tololo),
-Catala et al. 2017 (Sutherland PML) and the 2020/2021 Ali (Tibet) studies.
+Sources that were checked and not added: Osborn et al. 2017 (Stereo-SCIDAR
+winds; no per-layer table to pair with a profile), Catala et al. 2017
+(Sutherland PML; integrated statistics only), the 2020/2021 Ali (Tibet)
+studies (model output), the San Pedro Mártir quartile curves (per-altitude
+quartiles would need a 9x rescale to match the quoted seeing), and ESO's
+35-layer model (ESO-258292 / ESO-399284 are not public).
 
 `paranal-median` (below) predates these and is a representative profile, not
 a published table; prefer the `paranal-pNN` set for Paranal work.

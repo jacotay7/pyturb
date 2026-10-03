@@ -21,6 +21,20 @@ to [Semantic Versioning](https://semver.org/).
   good/typical/bad), Cerro Pachon (Tokovinin & Travouillon 2006), Siding Spring
   (Goodwin et al. 2013, nine GL x FA combinations with modelled winds),
   Sutherland (Catala et al. 2013) and Mt Graham (Masciadri et al. 2010).
+- **Eight dataset- and figure-derived profiles**, with
+  `ProfileInfo.origin` recording how each profile's numbers were obtained
+  (`"table"`, `"dataset"` or `"figure"`): Cerro Tololo good/typical/bad,
+  computed from the public MASS-DIMM data of Tokovinin et al. (2003), which
+  reproduces their Table 1; Paranal Stereo-SCIDAR mean (Osborn et al. 2018);
+  La Palma median (Garcia-Lorenzo & Fuensalida 2011); San Pedro Martir median
+  (Avila et al. 2019). Figure profiles take their strength from the paper's
+  median seeing; their caveats give the theta0 check against the published
+  value. Also two coarse Maunakea tables (RAVEN and CFHT, Ono et al. 2017),
+  with RAVEN's per-layer median L0. Published profiles may now carry a
+  per-layer L0.
+- The Mt Graham profiles carry climatological wind speeds digitised from
+  Hagelin et al. (2010). They are not simultaneous with the Cn2, so tau0
+  comes out ~25% below the paper's median, as the caveat states.
 - `Atmosphere.from_profile` uses a traceable profile's published r0 when no
   `r0`/`seeing` is given, accepts `wind=`/`wind_direction=`, and warns for
   profiles whose source publishes no winds (their layers are static).
