@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from ._rng import default_rng
 from .backend import on_device
 from .fourier import PhaseScreen
 
@@ -43,7 +44,8 @@ class FourierFlowScreen:
         ``L0`` and ``device`` from it.
     seed : int, optional
         Seed for the fixed coefficient realisation. Reuse the same seed to
-        reproduce a layer exactly.
+        reproduce a layer exactly on the same backend (see ``seed`` in
+        :class:`pyturb.PhaseScreen` for the CPU/GPU streams).
 
     Examples
     --------
@@ -67,7 +69,7 @@ class FourierFlowScreen:
         self.dtype = template.dtype
         self._fft = template._fft
         self._cdtype = template.xp.dtype(template._cdtype)
-        self._rng = self.xp.random.default_rng(seed)
+        self._rng = default_rng(self.xp, seed)
         self.reseed()
 
     @on_device
@@ -79,7 +81,7 @@ class FourierFlowScreen:
         keeping the same PSD/grid configuration.
         """
         if seed is not None:
-            self._rng = self.xp.random.default_rng(seed)
+            self._rng = default_rng(self.xp, seed)
         n = self.n
         noise = self._rng.standard_normal((2, n, n), dtype=self.dtype)
         self._spectrum = (

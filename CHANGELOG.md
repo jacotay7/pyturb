@@ -6,6 +6,34 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The same `seed` gives the same turbulence on every GPU** (#36). GPU
+  streams came from `cupy.random.default_rng`. Its XORWOW generator keeps
+  `2048 x multiProcessorCount` cuRAND states and fills element `i` of a draw
+  from state `i % state_count`. Every draw larger than that pool (every
+  turbulence noise block) therefore depended on the GPU's SM count. On an
+  RTX 4060 and an RTX A400, the Keck atmosphere at `seed=123` had 764 nm vs
+  956 nm RMS OPD. pyturb now draws GPU normals from its own counter-based
+  Philox4x32-10 + Box–Muller kernel, where each value is a pure function of
+  the seed and its position. The random draws are bit-identical on every
+  device. The spectral engine's OPD is bit-identical on the two GPUs tested.
+  The extruder agrees to float32 rounding (a few 1e-6 relative), because its
+  cuBLAS recurrence may pick different kernels per GPU model. Affects
+  `Atmosphere` (both engines, boiling included), `PhaseScreen`,
+  `FourierFlowScreen` and `InfinitePhaseScreen` on the GPU.
+
+### Changed
+
+- **GPU realisations for a given seed differ from earlier releases**: the GPU
+  stream is now Philox rather than CuPy's XORWOW. The earlier GPU results
+  could not be reproduced across GPU models anyway. **CPU results are
+  unchanged** (still `numpy.random.default_rng(seed)`, PCG64, bit for bit).
+  The CPU-vs-GPU contract is documented under `seed` and in the quickstart's
+  "Reproducing a run": the same seed gives a different but statistically
+  equivalent realisation on CPU and GPU. A `cupy.random.Generator` passed as
+  `seed` to `PhaseScreen`/`FourierFlowScreen` is still used as given.
+
 ## [1.2.0] - 2026-10-02
 
 Highlights: 53 published turbulence profiles with full provenance, covering

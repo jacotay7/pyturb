@@ -62,6 +62,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from . import _accel
+from ._rng import default_rng
 from .backend import blas_single_thread, get_array_module
 from .config import ExtrusionConfig
 from .fourier import PhaseScreen
@@ -616,7 +617,7 @@ class ExtrudedAtmosphere:
                     with_seed=self.boiling,
                 )
             a_matrix, b_unit, s_unit = self._ab_cache[key]
-            rng = xp.random.default_rng(seed)
+            rng = default_rng(xp, seed)
             self.layers.append(
                 _ExtrudeLayer(
                     n=self.n,
@@ -671,7 +672,7 @@ class ExtrudedAtmosphere:
         # friendly, so the stacks are skipped there.
         self._boil_rng = None
         if self.boiling:
-            self._boil_rng = xp.random.default_rng(boil_seed)
+            self._boil_rng = default_rng(xp, boil_seed)
             if xp is not np:
                 self._a_stack = xp.stack([lyr._a for lyr in self.layers])  # (L,W,mW)
                 self._b_stack = xp.stack([lyr._b for lyr in self.layers])  # (L,W,W)

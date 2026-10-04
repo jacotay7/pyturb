@@ -22,6 +22,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
+from ._rng import default_rng
 from .backend import get_array_module, get_fft_module, on_device
 from .config import ScreenConfig
 
@@ -69,8 +70,12 @@ class PhaseScreen:
         the PSD off above ``fm = 5.92/(2 pi l0)`` (modified von Kármán / Hill),
         flattening the structure function at small separations.
     seed : int, optional
-        Seed for the random generator. Screens are reproducible for a fixed
-        seed, backend and dtype.
+        Seed for the random generator. A seed reproduces the same screens for a
+        given backend and dtype. On the CPU the stream is
+        ``numpy.random.default_rng(seed)`` (PCG64). On the GPU it is pyturb's
+        counter-based Philox4x32-10 stream, which is identical on every CUDA
+        device. The backends use different generators, so the same seed draws
+        a different (statistically equivalent) realisation on CPU and GPU.
     device : str, optional
         ``"cpu"`` (default) or ``"gpu"`` (requires CuPy).
     dtype : str or dtype, optional
@@ -122,7 +127,7 @@ class PhaseScreen:
         self._fft = get_fft_module(self.xp)
         self.dtype = self.xp.dtype(config.dtype)
         self._cdtype = "complex64" if self.dtype == "float32" else "complex128"
-        self._rng = self.xp.random.default_rng(seed)
+        self._rng = default_rng(self.xp, seed)
 
         self._build_filters()
 

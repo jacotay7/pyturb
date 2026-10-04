@@ -433,7 +433,10 @@ def test_gpu_matches_cpu_statistics():
     atm_g = pyturb.Atmosphere.from_profile("paranal-median", device="gpu", **kw)
     r0 = atm_c.r0
     for atm in (atm_c, atm_g):
-        phase = atm.sample(10, wavelength=500e-9)
+        # 80 independent screens: with 10 the ratio at the largest separation
+        # scatters by ~0.13 from seed to seed (about one seed in eight leaves
+        # [0.8, 1.2] on either backend); 80 brings that to ~0.05.
+        phase = atm.sample(80, wavelength=500e-9)
         r, D = pyturb.structure_function(phase, atm.pixel_scale, max_separation=24)
         ratio = D[3:] / (6.88 * (r[3:] / r0) ** (5.0 / 3.0))
         assert np.all(ratio > 0.8) and np.all(ratio < 1.2)
