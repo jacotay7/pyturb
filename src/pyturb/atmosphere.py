@@ -28,6 +28,7 @@ import numpy as np
 
 from . import _accel
 from . import profiles as _profiles
+from ._rng import default_rng
 from .backend import device_context, get_array_module, on_device
 from .config import AtmosphereConfig
 from .extrude import ExtrudedAtmosphere, _catmull_rom_weights
@@ -264,7 +265,12 @@ class Atmosphere:
         ``"float32"`` (default) or ``"float64"``.
     seed : int, optional
         Master seed. Per-layer streams are spawned from it so results are
-        reproducible and independent of layer count.
+        reproducible and independent of layer count. A seed gives the same
+        atmosphere on every CUDA GPU: the random draws are bit-identical, and
+        the OPD agrees to float32 rounding (cuFFT/cuBLAS may pick different
+        kernels on different GPU models). CPU (NumPy PCG64) and GPU (Philox)
+        use different generators, so the same seed draws a different,
+        statistically equivalent, realisation on each backend.
     cuda_graph : bool, optional
         On the GPU, replay each spectral-engine frame (:meth:`frames`,
         :meth:`evolve`, single-direction :meth:`opd`) as a captured CUDA graph:
@@ -435,7 +441,7 @@ class Atmosphere:
         master = np.random.SeedSequence(self.seed)
         seeds = master.spawn(len(self.layers))
         self._boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
-        self._boil_rng = self.xp.random.default_rng(self._boil_seed)
+        self._boil_rng = default_rng(self.xp, self._boil_seed)
         self._ext_boil_seed = int(master.spawn(1)[0].generate_state(1)[0])
         self._layers: List[_LayerState] = []
         ext_r0, ext_L0, ext_wind, ext_alt, ext_seeds = [], [], [], [], []
@@ -898,7 +904,7 @@ class Atmosphere:
 
         ``overrides`` replace individual inputs, e.g. ``device="gpu"`` to
         replay a CPU run on the GPU (the same seed draws a different
-        realisation on a different backend).
+        realisation on a different backend, but the same one on any GPU).
         """
         if isinstance(config, str):
             config = json.loads(config)
@@ -1718,7 +1724,7 @@ class Atmosphere:
             # Boiling reassigns self._spectra / self._sh_coeffs in place; rebuild
             # them from the untouched per-layer flow realisations and rewind the
             # boil RNG so the boiled sequence repeats bit-for-bit.
-            self._boil_rng = self.xp.random.default_rng(self._boil_seed)
+            self._boil_rng = default_rng(self.xp, self._boil_seed)
             self._build_batched()
         return self
 

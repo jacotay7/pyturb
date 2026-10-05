@@ -152,6 +152,21 @@ data, meta = pyturb.load("frame.npz")
 again = pyturb.Atmosphere.from_config(meta["config"]).opd(0.01)   # == data
 ```
 
+What a seed reproduces depends on the backend:
+
+- **Same backend, same machine:** bit-identical.
+- **GPU, any CUDA device:** the same realisation. The GPU random stream is
+  pyturb's own counter-based generator (Philox4x32-10 with a Box–Muller
+  transform). Every value is a pure function of the seed and its position in
+  the stream, so the random draws are bit-identical on every GPU, whatever its
+  size. The OPD agrees to float32 rounding: cuFFT and cuBLAS may choose
+  different kernels on different GPU models, which changes the summation order.
+- **CPU vs GPU:** a different realisation with the same statistics. The CPU
+  stream is `numpy.random.default_rng(seed)` (PCG64), and pyturb treats any
+  change to it as a breaking change. PCG64 is a sequential generator, which
+  is why the GPU uses a counter-based one. Replay a run on the backend that made
+  it; the config records `device`.
+
 ## Wavelengths and OPD
 
 OPD is achromatic and returned in metres. Ask any output method for phase at a

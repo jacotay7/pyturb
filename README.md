@@ -127,7 +127,9 @@ the head-to-head against aotools, soapy and HCIPy:
   `.npz`, with provenance metadata.
 - **GPU-optional** — every class takes `device="gpu"` (CuPy); the GPU path is
   statistically identical to CPU (validated against the same theory to
-  numerical precision). CuPy and NumPy have independent RNG streams, so a given
+  numerical precision). A `seed` reproduces the same atmosphere on any CUDA
+  GPU (pyturb's GPU stream is a counter-based Philox generator, independent of
+  the device). CPU (NumPy PCG64) and GPU use different generators, so a given
   `seed` draws a *different* realisation on each backend — the guarantee is
   matched statistics, not a bit-for-bit copy.
 - **Validated against theory** — structure function, Zernike spectrum,
