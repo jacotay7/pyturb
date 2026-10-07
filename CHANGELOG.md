@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-07
+
 ### Changed
 
 - pyturb now uses the stack's shared packages for generic primitives, as the
