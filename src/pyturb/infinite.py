@@ -44,12 +44,88 @@ from numpy.typing import ArrayLike
 from scipy import linalg
 from scipy.special import gamma, kv
 
+from . import _accel
 from .backend import blas_single_thread, get_array_module, on_device
 from .config import ScreenConfig
 from .fourier import PhaseScreen
 from .ring import compact_row_ring
 
 __all__ = ["InfinitePhaseScreen", "phase_covariance"]
+
+
+# GPU pupil readout of InfinitePhaseScreen: the row gather and the
+# interpolation in one kernel. Each product and sum is rounded separately
+# (the *_rn intrinsics; NVRTC would otherwise contract a*b + c into an FMA), in
+# the order of the CuPy expressions in InfinitePhaseScreen._sample, so the
+# screen is bit-identical to them with ~30 fewer launches per step.
+_SAMPLE_SRC = r"""
+#define MUL {p}mul_rn
+#define ADD {p}add_rn
+#define SUB {p}sub_rn
+__device__ __forceinline__ long long clamp_row(long long r, long long fmax) {{
+    return r < 0 ? 0 : (r > fmax ? fmax : r);
+}}
+extern "C" __global__ void infinite_cubic_{suf}(
+    const {T}* __restrict__ buf, const long long* __restrict__ i0,
+    const {T}* __restrict__ t, const {T}* __restrict__ t2,
+    const {T}* __restrict__ t3, long long fmax, {T}* __restrict__ out, int n)
+{{
+    long long p = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= (long long)n * n) return;
+    int i = (int)(p / n);
+    int j = (int)(p - (long long)i * n);
+    long long r = i0[i];
+    {T} p0 = buf[clamp_row(r, fmax) * n + j];
+    {T} p1 = buf[clamp_row(r + 1, fmax) * n + j];
+    {T} pm1 = buf[clamp_row(r - 1, fmax) * n + j];
+    {T} p2 = buf[clamp_row(r + 2, fmax) * n + j];
+    {T} ti = t[i], t2i = t2[i], t3i = t3[i];
+    // 0.5 * (2 p0 + (-pm1 + p1) t + (2 pm1 - 5 p0 + 4 p1 - p2) t2
+    //        + (-pm1 + 3 p0 - 3 p1 + p2) t3)
+    {T} acc = ADD(MUL(({T})2, p0), MUL(ADD(-pm1, p1), ti));
+    {T} c = SUB(ADD(SUB(MUL(({T})2, pm1), MUL(({T})5, p0)), MUL(({T})4, p1)), p2);
+    acc = ADD(acc, MUL(c, t2i));
+    {T} d = ADD(SUB(ADD(-pm1, MUL(({T})3, p0)), MUL(({T})3, p1)), p2);
+    acc = ADD(acc, MUL(d, t3i));
+    out[p] = MUL(({T})0.5, acc);
+}}
+extern "C" __global__ void infinite_taps_{suf}(
+    const {T}* __restrict__ buf, const long long* __restrict__ i0,
+    const {T}* __restrict__ w, const int* __restrict__ offsets, int K,
+    long long fmax, {T}* __restrict__ out, int n)
+{{
+    // out[i, j] = sum_k w[k, i] * buf[clip(i0[i] + offsets[k]), j], in k order.
+    long long p = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= (long long)n * n) return;
+    int i = (int)(p / n);
+    int j = (int)(p - (long long)i * n);
+    long long r = i0[i];
+    {T} acc = MUL(w[i], buf[clamp_row(r + offsets[0], fmax) * n + j]);
+    for (int k = 1; k < K; ++k)
+        acc = ADD(acc, MUL(w[(long long)k * n + i],
+                           buf[clamp_row(r + offsets[k], fmax) * n + j]));
+    out[p] = acc;
+}}
+"""
+
+_sample_kernels: dict = {}
+
+
+def _sample_kernel(name: str, dtype: Any) -> Any:
+    """Compile (once per dtype) one of the ``_SAMPLE_SRC`` kernels."""
+    import cupy
+
+    key = (name, np.dtype(dtype).name)
+    kernel = _sample_kernels.get(key)
+    if kernel is None:
+        if key[1] == "float32":
+            src = _SAMPLE_SRC.format(T="float", suf="f", p="__f")
+            kernel = cupy.RawKernel(src, f"{name}_f")
+        else:
+            src = _SAMPLE_SRC.format(T="double", suf="d", p="__d")
+            kernel = cupy.RawKernel(src, f"{name}_d")
+        _sample_kernels[key] = kernel
+    return kernel
 
 
 def _spd_solve(spd, rhs):
@@ -320,6 +396,15 @@ class InfinitePhaseScreen:
         positions = (travel - self._base) + self._grid  # float, shape (n,)
         i0 = xp.floor(positions).astype(xp.int64)
         t = (positions - i0).astype(self.dtype)[:, None]  # (n, 1)
+        if xp is not np:
+            return self._sample_gpu(i0, t)
+        if _accel.HAVE_NUMBA:
+            return self._sample_numba(i0, t)
+        return self._sample_expr(i0, t)
+
+    def _sample_expr(self, i0, t):
+        """The readout as array expressions (the reference the kernels match)."""
+        xp = self.xp
 
         def rows(offset):
             return self._buf[xp.clip(i0 + offset, 0, self._fill - 1)]
@@ -346,6 +431,51 @@ class InfinitePhaseScreen:
                 + (-pm1 + 3.0 * p0 - 3.0 * p1 + p2) * t3
             )
         return xp.ascontiguousarray(screen.astype(self.dtype, copy=False))
+
+    def _sample_numba(self, i0, t):
+        """:meth:`_sample` with Numba: one parallel gather-and-interpolate pass."""
+        n = self.n
+        out = np.empty((n, n), dtype=self.dtype)
+        fmax = self._fill - 1
+        if self.interp == "cubic":
+            t2 = t * t
+            t3 = t2 * t
+            consts = np.array([0.5, 2.0, 3.0, 4.0, 5.0], dtype=self.dtype)
+            _accel.infinite_cubic(self._buf, i0, t, t2, t3, fmax, consts, out)
+            return out
+        if self.interp == "linear":
+            offsets, weights = (0, 1), (1.0 - t, t)
+        else:
+            offsets, weights = _lanczos_weights(t, np)
+        w = np.concatenate([weight.reshape(1, n) for weight in weights])  # (K, n)
+        _accel.infinite_taps(self._buf, i0, w, np.asarray(offsets, dtype=np.int64),
+                             fmax, out)
+        return out
+
+    def _sample_gpu(self, i0, t):
+        """:meth:`_sample` on the GPU: one gather-and-interpolate kernel."""
+        xp = self.xp
+        n = self.n
+        out = xp.empty((n, n), dtype=self.dtype)
+        threads = 256
+        grid = ((n * n + threads - 1) // threads,)
+        fmax = np.int64(self._fill - 1)
+        if self.interp == "cubic":
+            t2 = t * t
+            t3 = t2 * t
+            _sample_kernel("infinite_cubic", self.dtype)(
+                grid, (threads,), (self._buf, i0, t, t2, t3, fmax, out, np.int32(n)))
+            return out
+        if self.interp == "linear":
+            offsets, weights = (0, 1), (1.0 - t, t)
+        else:
+            offsets, weights = _lanczos_weights(t, xp)
+        w = xp.concatenate([weight.reshape(1, n) for weight in weights])  # (K, n)
+        _sample_kernel("infinite_taps", self.dtype)(
+            grid, (threads,),
+            (self._buf, i0, w, xp.asarray(offsets, dtype=np.int32),
+             np.int32(len(offsets)), fmax, out, np.int32(n)))
+        return out
 
     def _advance_to(self, travel):
         if travel < self._travel:

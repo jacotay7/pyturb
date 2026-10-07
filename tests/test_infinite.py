@@ -237,3 +237,23 @@ def test_extruded_screen_is_isotropic_after_burn_in():
     assert np.all(0.85 < d_cross / theory) and np.all(d_cross / theory < 1.15)
     ratio = d_along.mean() / d_cross.mean()
     assert 0.85 < ratio < 1.15, f"along/cross anisotropy {ratio:.3f} out of band"
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("interp", ["cubic", "linear", "lanczos"])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_gpu_readout_kernel_is_the_array_expression(interp, dtype):
+    # The fused GPU readout must give the bits of the CuPy array expression it
+    # replaces, at whole and sub-pixel offsets (including clamped edge rows).
+    import cupy
+
+    layer = pyturb.InfinitePhaseScreen(48, 0.05, 0.15, 25.0, interp=interp, seed=2,
+                                       device="gpu", dtype=dtype)
+    layer.step(3)
+    for travel in (layer.travel, layer.travel + 0.37, layer.travel + 1.93):
+        layer._advance_to(travel)
+        positions = (travel - layer._base) + layer._grid
+        i0 = cupy.floor(positions).astype(cupy.int64)
+        t = (positions - i0).astype(layer.dtype)[:, None]
+        np.testing.assert_array_equal(cupy.asnumpy(layer._sample_gpu(i0, t)),
+                                      cupy.asnumpy(layer._sample_expr(i0, t)))

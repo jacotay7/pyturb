@@ -1,0 +1,925 @@
+{
+ "note": "Interleaved before/after runs of benchmarks/bench_suite.py on the Arm bench host (80-core Ampere Neoverse-N1; GPU = RTX 4060 via CUDA_VISIBLE_DEVICES=1). Order per repeat: gpu-base, gpu-cand, cpu-base, cpu-cand. 'base' is pyturb 2.2.0 (main df8372a); 'cand' is the perf/hot-paths branch at fe79c9a (synced source tree, so the recorded revision is null and the version still reads 2.2.0). Every run pinned to 12 cores (taskset -c 52-63, OMP/OpenBLAS/Numba threads = 12) under a 5 GB memory cap.",
+ "configuration": {
+  "profile": "paranal-median",
+  "seeing_arcsec": 0.8,
+  "diameter_m": 8.0,
+  "n": [
+   256,
+   512,
+   1024
+  ],
+  "devices": [
+   "cpu",
+   "gpu"
+  ],
+  "seconds_per_cell": 1.0,
+  "monte_carlo_batch": {
+   "256": 64,
+   "512": 64,
+   "1024": 16
+  }
+ },
+ "runs": {
+  "cpu-base-r1": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:06:31.400551+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device cpu --json bench/v2-cpu-base-r1.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "cpu": {
+     "256": {
+      "sample screens/s": 710.5273655198112,
+      "generate screens/s": 713.5261076201515,
+      "frames spectral fps": 332.5291590007956,
+      "frames extrude fps": 312.56977333195346,
+      "frames boiling fps": 42.8944902345145,
+      "opd(times) frames/s": 329.53345079207094,
+      "tomography dirs/s": 188.64583848220875,
+      "frames LGS fps": 24.031322271839926,
+      "infinite step/s": 1169.9505403134347,
+      "infinite advance/s": 1216.462947416109
+     },
+     "512": {
+      "sample screens/s": 162.59983986954094,
+      "generate screens/s": 173.27522444220986,
+      "frames spectral fps": 53.193776870879454,
+      "frames extrude fps": 86.94907497130501,
+      "frames boiling fps": 11.158745045409516,
+      "opd(times) frames/s": 72.37522053228781,
+      "tomography dirs/s": 44.62243958726798,
+      "frames LGS fps": 5.374008419626327,
+      "infinite step/s": 351.4043341604036,
+      "infinite advance/s": 383.7786027266115
+     },
+     "1024": {
+      "sample screens/s": 43.79010052795522,
+      "generate screens/s": 41.648687159952054,
+      "frames spectral fps": 7.342964227655195,
+      "frames extrude fps": 16.294845763807544,
+      "frames boiling fps": 2.421367328874384,
+      "opd(times) frames/s": 7.898670522953797,
+      "tomography dirs/s": 9.166309049195108,
+      "frames LGS fps": 0.9316715782017697,
+      "infinite step/s": 87.13371658930059,
+      "infinite advance/s": 92.93662372651951
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 40.39080559344944,
+     "structure_function calls/s": 75.49536474741794,
+     "temporal_psd calls/s": 34.86692803366789
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.614099547195744,
+     "structure_function calls/s": 8.226605843380439,
+     "temporal_psd calls/s": 6.965930885824905
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.8596439200087567,
+     "structure_function calls/s": 0.9676900654332784,
+     "temporal_psd calls/s": 1.7424862891294286
+    }
+   }
+  },
+  "cpu-base-r2": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:13:26.713532+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device cpu --json bench/v2-cpu-base-r2.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "cpu": {
+     "256": {
+      "sample screens/s": 691.088975557828,
+      "generate screens/s": 690.4819670855927,
+      "frames spectral fps": 335.99469095009783,
+      "frames extrude fps": 400.8837096456395,
+      "frames boiling fps": 45.42700232686678,
+      "opd(times) frames/s": 232.82740629358332,
+      "tomography dirs/s": 177.07703210426763,
+      "frames LGS fps": 24.220056347758568,
+      "infinite step/s": 1294.8589600692867,
+      "infinite advance/s": 1431.1210512376233
+     },
+     "512": {
+      "sample screens/s": 169.0927860330847,
+      "generate screens/s": 162.12371624629554,
+      "frames spectral fps": 51.587583221157274,
+      "frames extrude fps": 67.67395641947475,
+      "frames boiling fps": 11.201870982774414,
+      "opd(times) frames/s": 97.94202345661259,
+      "tomography dirs/s": 47.23560856331651,
+      "frames LGS fps": 5.739848347633984,
+      "infinite step/s": 361.83291750241636,
+      "infinite advance/s": 375.37736119986926
+     },
+     "1024": {
+      "sample screens/s": 42.17222451202812,
+      "generate screens/s": 42.70700299403338,
+      "frames spectral fps": 7.926222459687775,
+      "frames extrude fps": 15.02487734690182,
+      "frames boiling fps": 2.3587117806068423,
+      "opd(times) frames/s": 7.709475705160802,
+      "tomography dirs/s": 9.418178259235566,
+      "frames LGS fps": 0.7448461384486955,
+      "infinite step/s": 52.6763274093233,
+      "infinite advance/s": 59.64119422224267
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 38.61503126870606,
+     "structure_function calls/s": 62.03522318460947,
+     "temporal_psd calls/s": 27.10452338576241
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.379732985560457,
+     "structure_function calls/s": 7.765552487757516,
+     "temporal_psd calls/s": 6.700144859371443
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.9215662745210191,
+     "structure_function calls/s": 0.9378014049950625,
+     "temporal_psd calls/s": 1.7519371271765993
+    }
+   }
+  },
+  "cpu-base-r3": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:24:07.459904+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device cpu --json bench/v2-cpu-base-r3.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "cpu": {
+     "256": {
+      "sample screens/s": 690.777297105323,
+      "generate screens/s": 718.7098870098622,
+      "frames spectral fps": 221.55869230931435,
+      "frames extrude fps": 337.3549129664126,
+      "frames boiling fps": 41.37658230267931,
+      "opd(times) frames/s": 335.7514109162688,
+      "tomography dirs/s": 173.84633969544208,
+      "frames LGS fps": 23.162428160906714,
+      "infinite step/s": 1208.6731626848755,
+      "infinite advance/s": 1290.3514010186257
+     },
+     "512": {
+      "sample screens/s": 170.0454099192946,
+      "generate screens/s": 174.57924356220119,
+      "frames spectral fps": 55.58424634609558,
+      "frames extrude fps": 76.25160173836805,
+      "frames boiling fps": 10.749899418966052,
+      "opd(times) frames/s": 71.2561279411181,
+      "tomography dirs/s": 46.791829744711684,
+      "frames LGS fps": 5.104890873421512,
+      "infinite step/s": 301.67295635122207,
+      "infinite advance/s": 351.79458959877644
+     },
+     "1024": {
+      "sample screens/s": 39.0824647530301,
+      "generate screens/s": 35.37779880946577,
+      "frames spectral fps": 7.991958867450697,
+      "frames extrude fps": 11.288344134306541,
+      "frames boiling fps": 2.438962862941964,
+      "opd(times) frames/s": 8.03362334872786,
+      "tomography dirs/s": 9.496012308289162,
+      "frames LGS fps": 0.8952450788018995,
+      "infinite step/s": 90.5670939993618,
+      "infinite advance/s": 97.73764859490929
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 43.80163357013019,
+     "structure_function calls/s": 77.4241422254106,
+     "temporal_psd calls/s": 36.88324803288257
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.759726978499941,
+     "structure_function calls/s": 8.724475007052662,
+     "temporal_psd calls/s": 6.6474997470760755
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.8649605472834097,
+     "structure_function calls/s": 0.9608371474369383,
+     "temporal_psd calls/s": 1.7262324730565959
+    }
+   }
+  },
+  "cpu-cand-r1": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:08:23.050696+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device cpu --json bench/v2-cpu-cand-r1.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "cpu": {
+     "256": {
+      "sample screens/s": 714.7783376115466,
+      "generate screens/s": 717.6647438263791,
+      "frames spectral fps": 341.9498554385264,
+      "frames extrude fps": 364.4726452556098,
+      "frames boiling fps": 53.47689759871175,
+      "opd(times) frames/s": 337.80455102812385,
+      "tomography dirs/s": 186.76471793200741,
+      "frames LGS fps": 42.668111428676795,
+      "infinite step/s": 6304.495627702062,
+      "infinite advance/s": 17069.99898150593
+     },
+     "512": {
+      "sample screens/s": 176.50521846103155,
+      "generate screens/s": 182.19932918586363,
+      "frames spectral fps": 146.65672515169993,
+      "frames extrude fps": 83.7661220556849,
+      "frames boiling fps": 19.313776349982238,
+      "opd(times) frames/s": 94.25948977956037,
+      "tomography dirs/s": 61.21625147253348,
+      "frames LGS fps": 10.604457050094101,
+      "infinite step/s": 3510.720118274908,
+      "infinite advance/s": 8278.49863743904
+     },
+     "1024": {
+      "sample screens/s": 45.25153020728544,
+      "generate screens/s": 43.91520771898499,
+      "frames spectral fps": 20.93711752412181,
+      "frames extrude fps": 16.574610160524344,
+      "frames boiling fps": 5.1852187489766575,
+      "opd(times) frames/s": 14.155288907034196,
+      "tomography dirs/s": 14.375696810168913,
+      "frames LGS fps": 2.853923590555976,
+      "infinite step/s": 772.3134041322843,
+      "infinite advance/s": 1516.545453395547
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 45.15216218310459,
+     "structure_function calls/s": 77.08146458750306,
+     "temporal_psd calls/s": 34.01005603504178
+    },
+    "512": {
+     "zernike_decompose stacks/s": 7.845707901032649,
+     "structure_function calls/s": 8.578266749057521,
+     "temporal_psd calls/s": 7.025237196922314
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.801326178682765,
+     "structure_function calls/s": 0.9533887951090204,
+     "temporal_psd calls/s": 1.745689629802354
+    }
+   }
+  },
+  "cpu-cand-r2": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:15:18.633783+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device cpu --json bench/v2-cpu-cand-r2.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "cpu": {
+     "256": {
+      "sample screens/s": 674.3201738112019,
+      "generate screens/s": 676.8041201460218,
+      "frames spectral fps": 329.45634958252464,
+      "frames extrude fps": 334.5592984182018,
+      "frames boiling fps": 61.08656808819571,
+      "opd(times) frames/s": 214.890755879495,
+      "tomography dirs/s": 190.5848321169581,
+      "frames LGS fps": 38.91234325338786,
+      "infinite step/s": 4306.8557891755145,
+      "infinite advance/s": 16485.893781287672
+     },
+     "512": {
+      "sample screens/s": 167.1840598229044,
+      "generate screens/s": 170.79727146765768,
+      "frames spectral fps": 128.33897356046603,
+      "frames extrude fps": 70.94436167130799,
+      "frames boiling fps": 19.127638484953163,
+      "opd(times) frames/s": 110.3307323604354,
+      "tomography dirs/s": 64.64177377755482,
+      "frames LGS fps": 11.423036097281171,
+      "infinite step/s": 2623.352331064392,
+      "infinite advance/s": 7627.472148269611
+     },
+     "1024": {
+      "sample screens/s": 36.18177833046315,
+      "generate screens/s": 45.232732914068286,
+      "frames spectral fps": 26.337001746593334,
+      "frames extrude fps": 16.36807174841143,
+      "frames boiling fps": 5.248827224415439,
+      "opd(times) frames/s": 15.950877629565232,
+      "tomography dirs/s": 15.23649776829237,
+      "frames LGS fps": 2.5740000496991056,
+      "infinite step/s": 764.3200799483903,
+      "infinite advance/s": 1422.6364780045392
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 36.061624142314066,
+     "structure_function calls/s": 77.2238775590179,
+     "temporal_psd calls/s": 36.17308847923637
+    },
+    "512": {
+     "zernike_decompose stacks/s": 5.741891778573705,
+     "structure_function calls/s": 8.480985244582552,
+     "temporal_psd calls/s": 7.120591751736071
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.7057087595550933,
+     "structure_function calls/s": 0.9819337186757432,
+     "temporal_psd calls/s": 1.7890882841616405
+    }
+   }
+  },
+  "cpu-cand-r3": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:25:57.978778+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device cpu --json bench/v2-cpu-cand-r3.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "cpu": {
+     "256": {
+      "sample screens/s": 708.7494987173606,
+      "generate screens/s": 699.8304354644084,
+      "frames spectral fps": 337.93728965234016,
+      "frames extrude fps": 313.24690494636144,
+      "frames boiling fps": 59.67416729139931,
+      "opd(times) frames/s": 336.72425590959483,
+      "tomography dirs/s": 190.49174744500442,
+      "frames LGS fps": 42.907409500909495,
+      "infinite step/s": 5371.921532451356,
+      "infinite advance/s": 15637.962781009534
+     },
+     "512": {
+      "sample screens/s": 160.08083668827413,
+      "generate screens/s": 181.20747521413344,
+      "frames spectral fps": 102.83385873960957,
+      "frames extrude fps": 80.28603539690147,
+      "frames boiling fps": 18.92020477399883,
+      "opd(times) frames/s": 131.1555374396182,
+      "tomography dirs/s": 77.26980249980781,
+      "frames LGS fps": 9.655866576191118,
+      "infinite step/s": 3026.415148306041,
+      "infinite advance/s": 7637.6856460984145
+     },
+     "1024": {
+      "sample screens/s": 41.681629648969896,
+      "generate screens/s": 45.717059477017145,
+      "frames spectral fps": 26.163023401348777,
+      "frames extrude fps": 14.890676509718626,
+      "frames boiling fps": 5.054711391634523,
+      "opd(times) frames/s": 17.12480598570381,
+      "tomography dirs/s": 15.104419012397654,
+      "frames LGS fps": 2.7728441972870894,
+      "infinite step/s": 810.0897984987165,
+      "infinite advance/s": 1475.9751947506968
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 37.61381672452753,
+     "structure_function calls/s": 77.2287462456203,
+     "temporal_psd calls/s": 36.76872442941671
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.194759644173748,
+     "structure_function calls/s": 8.789183711921474,
+     "temporal_psd calls/s": 7.074729381134688
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.8425410245763025,
+     "structure_function calls/s": 0.9956130273380491,
+     "temporal_psd calls/s": 1.79598320614551
+    }
+   }
+  },
+  "gpu-base-r1": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:02:56.629801+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device gpu --json bench/v2-gpu-base-r1.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "gpu": {
+     "256": {
+      "sample screens/s": 36062.64852650904,
+      "generate screens/s": 36885.55892300873,
+      "frames spectral fps": 6168.42508422214,
+      "frames extrude fps": 1058.2996077976225,
+      "frames boiling fps": 1296.2704486074547,
+      "opd(times) frames/s": 27587.322316846457,
+      "tomography dirs/s": 4789.831579819385,
+      "frames LGS fps": 204.79532489116602,
+      "infinite step/s": 1028.555081012674,
+      "infinite advance/s": 1188.794404383341
+     },
+     "512": {
+      "sample screens/s": 7132.0908332817435,
+      "generate screens/s": 7591.7704137042,
+      "frames spectral fps": 4361.303900761513,
+      "frames extrude fps": 527.8982978270557,
+      "frames boiling fps": 608.3867627707332,
+      "opd(times) frames/s": 6654.152634171669,
+      "tomography dirs/s": 2492.878469378333,
+      "frames LGS fps": 167.32124533024916,
+      "infinite step/s": 1018.0355406281209,
+      "infinite advance/s": 1159.2772034128645
+     },
+     "1024": {
+      "sample screens/s": 1747.0039552514697,
+      "generate screens/s": 1858.6596409574934,
+      "frames spectral fps": 1305.1732504135923,
+      "frames extrude fps": 123.82130967386212,
+      "frames boiling fps": 124.47833404999425,
+      "opd(times) frames/s": 1166.4819269588727,
+      "tomography dirs/s": 539.8626736146912,
+      "frames LGS fps": 48.976887371212754,
+      "infinite step/s": 1016.0929825720568,
+      "infinite advance/s": 1175.2571328826848
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 45.963498961128096,
+     "structure_function calls/s": 77.97306139793362,
+     "temporal_psd calls/s": 33.35114824220795
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.335862820091505,
+     "structure_function calls/s": 7.818746758778853,
+     "temporal_psd calls/s": 6.551448629504661
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.9550277975765387,
+     "structure_function calls/s": 0.9485310248637129,
+     "temporal_psd calls/s": 1.701023787781922
+    }
+   }
+  },
+  "gpu-base-r2": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:09:47.799532+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device gpu --json bench/v2-gpu-base-r2.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "gpu": {
+     "256": {
+      "sample screens/s": 36004.86432030761,
+      "generate screens/s": 38145.69964256952,
+      "frames spectral fps": 6330.420880360634,
+      "frames extrude fps": 1078.149285225802,
+      "frames boiling fps": 1306.4417234672658,
+      "opd(times) frames/s": 27528.097246501005,
+      "tomography dirs/s": 4772.311051002934,
+      "frames LGS fps": 205.61216118558283,
+      "infinite step/s": 1018.199846625106,
+      "infinite advance/s": 1175.8887710032905
+     },
+     "512": {
+      "sample screens/s": 7129.210679992886,
+      "generate screens/s": 7591.34246979269,
+      "frames spectral fps": 4297.611919347587,
+      "frames extrude fps": 524.7858073334306,
+      "frames boiling fps": 609.8227089467696,
+      "opd(times) frames/s": 6663.29747054525,
+      "tomography dirs/s": 2477.4265513925716,
+      "frames LGS fps": 166.8330746226362,
+      "infinite step/s": 987.6919931792155,
+      "infinite advance/s": 1167.2683457038788
+     },
+     "1024": {
+      "sample screens/s": 1747.229104505204,
+      "generate screens/s": 1857.7657215124523,
+      "frames spectral fps": 1305.873697171573,
+      "frames extrude fps": 125.07327444999368,
+      "frames boiling fps": 124.43052568457851,
+      "opd(times) frames/s": 1167.5813974553685,
+      "tomography dirs/s": 540.1705331765271,
+      "frames LGS fps": 49.35731162305149,
+      "infinite step/s": 1011.414261697982,
+      "infinite advance/s": 1173.7338394097774
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 43.636273290927925,
+     "structure_function calls/s": 81.01599375557164,
+     "temporal_psd calls/s": 32.13171479319555
+    },
+    "512": {
+     "zernike_decompose stacks/s": 9.057940091174808,
+     "structure_function calls/s": 8.860923638793848,
+     "temporal_psd calls/s": 7.142753560181278
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.7799938226315255,
+     "structure_function calls/s": 0.9779324917417166,
+     "temporal_psd calls/s": 1.692265648085478
+    }
+   }
+  },
+  "gpu-base-r3": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:16:58.392773+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device gpu --json bench/v2-gpu-base-r3.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "gpu": {
+     "256": {
+      "sample screens/s": 35970.81870878694,
+      "generate screens/s": 37593.09501891689,
+      "frames spectral fps": 6490.5427802817585,
+      "frames extrude fps": 1076.416656456651,
+      "frames boiling fps": 1296.3120601737069,
+      "opd(times) frames/s": 27500.098409674432,
+      "tomography dirs/s": 4763.6509006395245,
+      "frames LGS fps": 202.91324058848284,
+      "infinite step/s": 994.565286444353,
+      "infinite advance/s": 1143.8531235465002
+     },
+     "512": {
+      "sample screens/s": 7133.014063607763,
+      "generate screens/s": 7593.358879675428,
+      "frames spectral fps": 4545.126784026349,
+      "frames extrude fps": 526.6290103745082,
+      "frames boiling fps": 608.421448984077,
+      "opd(times) frames/s": 6678.039122789272,
+      "tomography dirs/s": 2488.4555121164844,
+      "frames LGS fps": 166.36316287869883,
+      "infinite step/s": 985.1312570775408,
+      "infinite advance/s": 1133.8861533003103
+     },
+     "1024": {
+      "sample screens/s": 1748.076158291156,
+      "generate screens/s": 1858.772879759713,
+      "frames spectral fps": 1305.009990954623,
+      "frames extrude fps": 124.96171052155104,
+      "frames boiling fps": 124.43320037168151,
+      "opd(times) frames/s": 1166.6688459841523,
+      "tomography dirs/s": 540.2008475504333,
+      "frames LGS fps": 49.06724216552851,
+      "infinite step/s": 986.7486879566034,
+      "infinite advance/s": 1135.8779567198662
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 50.69095141122849,
+     "structure_function calls/s": 80.94054010823739,
+     "temporal_psd calls/s": 36.299277013866714
+    },
+    "512": {
+     "zernike_decompose stacks/s": 9.801318069736604,
+     "structure_function calls/s": 8.732554413310401,
+     "temporal_psd calls/s": 7.092971357027254
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.9437275121325457,
+     "structure_function calls/s": 0.9265374329147223,
+     "temporal_psd calls/s": 1.8153025931514934
+    }
+   }
+  },
+  "gpu-cand-r1": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:04:24.824020+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device gpu --json bench/v2-gpu-cand-r1.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "gpu": {
+     "256": {
+      "sample screens/s": 36046.03877081204,
+      "generate screens/s": 37513.877265761614,
+      "frames spectral fps": 6164.31352365064,
+      "frames extrude fps": 1127.7967603934794,
+      "frames boiling fps": 3761.475187672903,
+      "opd(times) frames/s": 27693.803656864926,
+      "tomography dirs/s": 4730.695199805917,
+      "frames LGS fps": 6044.7148196798935,
+      "infinite step/s": 2763.502447943927,
+      "infinite advance/s": 4164.862305380023
+     },
+     "512": {
+      "sample screens/s": 7131.994458166029,
+      "generate screens/s": 7592.938628929757,
+      "frames spectral fps": 4915.12588297754,
+      "frames extrude fps": 530.9142538978322,
+      "frames boiling fps": 2191.044845870024,
+      "opd(times) frames/s": 6672.480070048548,
+      "tomography dirs/s": 2490.7879863631306,
+      "frames LGS fps": 1896.4013750269485,
+      "infinite step/s": 2694.7752476019173,
+      "infinite advance/s": 4161.524302677554
+     },
+     "1024": {
+      "sample screens/s": 1749.1854799602188,
+      "generate screens/s": 1859.6330811887055,
+      "frames spectral fps": 1305.1072248859057,
+      "frames extrude fps": 124.06490259140612,
+      "frames boiling fps": 542.6219589892431,
+      "opd(times) frames/s": 1165.3951682456777,
+      "tomography dirs/s": 539.7156480110756,
+      "frames LGS fps": 362.1194014917611,
+      "infinite step/s": 2765.648090655226,
+      "infinite advance/s": 4179.814240755431
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 51.133250245955935,
+     "structure_function calls/s": 80.52143918502132,
+     "temporal_psd calls/s": 32.58315216697595
+    },
+    "512": {
+     "zernike_decompose stacks/s": 9.483167602746754,
+     "structure_function calls/s": 8.46696208850646,
+     "temporal_psd calls/s": 6.962395641756182
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.840391729158273,
+     "structure_function calls/s": 0.8992594647810633,
+     "temporal_psd calls/s": 1.6878000299985703
+    }
+   }
+  },
+  "gpu-cand-r2": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:11:19.317978+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device gpu --json bench/v2-gpu-cand-r2.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "gpu": {
+     "256": {
+      "sample screens/s": 36140.27071056981,
+      "generate screens/s": 37271.84279493401,
+      "frames spectral fps": 6250.782966651187,
+      "frames extrude fps": 1135.1689530003114,
+      "frames boiling fps": 3821.5904668610633,
+      "opd(times) frames/s": 27702.178243628183,
+      "tomography dirs/s": 4664.62047715323,
+      "frames LGS fps": 6151.849831657759,
+      "infinite step/s": 2817.8178505535193,
+      "infinite advance/s": 4234.464416401224
+     },
+     "512": {
+      "sample screens/s": 7130.67949225005,
+      "generate screens/s": 7592.557068812742,
+      "frames spectral fps": 4918.902291699293,
+      "frames extrude fps": 526.6675525121215,
+      "frames boiling fps": 2183.9899138519772,
+      "opd(times) frames/s": 6676.8674790627865,
+      "tomography dirs/s": 2494.514124746417,
+      "frames LGS fps": 1895.872526694763,
+      "infinite step/s": 2787.8042905106954,
+      "infinite advance/s": 4191.43347319415
+     },
+     "1024": {
+      "sample screens/s": 1747.8497244662813,
+      "generate screens/s": 1859.5013091741412,
+      "frames spectral fps": 1305.8896088529073,
+      "frames extrude fps": 125.72508093932797,
+      "frames boiling fps": 542.4996219108,
+      "opd(times) frames/s": 1165.6009204214117,
+      "tomography dirs/s": 539.7403853106555,
+      "frames LGS fps": 361.5526029200282,
+      "infinite step/s": 2799.83648398553,
+      "infinite advance/s": 4196.8809227397505
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 44.608045784448755,
+     "structure_function calls/s": 80.27750971912656,
+     "temporal_psd calls/s": 33.642140178610056
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.118929661224223,
+     "structure_function calls/s": 8.68924790439246,
+     "temporal_psd calls/s": 7.165321198977536
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.808164465405005,
+     "structure_function calls/s": 0.9073757816029745,
+     "temporal_psd calls/s": 1.8087622611638805
+    }
+   }
+  },
+  "gpu-cand-r3": {
+   "provenance": {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T19:22:00.758916+00:00",
+    "command": "/home/jtaylor/aosim-opt/pyturb/benchmarks/bench_suite.py --device gpu --json bench/v2-gpu-cand-r3.json",
+    "revision": null,
+    "source_dirty": false,
+    "python": "3.13.15 | packaged by conda-forge | (main, Sep  2 2026, 22:02:03) [GCC 15.3.0]",
+    "platform": "Linux-6.17.9-76061709-generic-aarch64-with-glibc2.39",
+    "pyturb": "2.2.0",
+    "dependencies": {
+     "numpy": "2.5.3",
+     "scipy": "1.18.1",
+     "numba": "0.67.0",
+     "cupy": "14.2.0"
+    }
+   },
+   "results": {
+    "gpu": {
+     "256": {
+      "sample screens/s": 35674.308772724326,
+      "generate screens/s": 36760.907825571674,
+      "frames spectral fps": 6079.703039559929,
+      "frames extrude fps": 1122.274144497339,
+      "frames boiling fps": 3685.358139581693,
+      "opd(times) frames/s": 27585.32388649208,
+      "tomography dirs/s": 4687.35047052361,
+      "frames LGS fps": 6072.989424241366,
+      "infinite step/s": 2769.0545118707014,
+      "infinite advance/s": 4170.451477314131
+     },
+     "512": {
+      "sample screens/s": 7133.556468866758,
+      "generate screens/s": 7590.270869722826,
+      "frames spectral fps": 4907.26824417852,
+      "frames extrude fps": 527.2482514625375,
+      "frames boiling fps": 2183.5651304065477,
+      "opd(times) frames/s": 6677.243607847871,
+      "tomography dirs/s": 2492.0996060398506,
+      "frames LGS fps": 1898.3511067134245,
+      "infinite step/s": 2723.8487610303623,
+      "infinite advance/s": 4057.725515098708
+     },
+     "1024": {
+      "sample screens/s": 1748.349391423355,
+      "generate screens/s": 1859.2698114685925,
+      "frames spectral fps": 1306.942476930263,
+      "frames extrude fps": 124.20832192187159,
+      "frames boiling fps": 542.6136111715225,
+      "opd(times) frames/s": 1165.7687062177124,
+      "tomography dirs/s": 539.7329738054193,
+      "frames LGS fps": 362.3326505593241,
+      "infinite step/s": 2757.3409790123974,
+      "infinite advance/s": 4142.248736952807
+     }
+    }
+   },
+   "analysis": {
+    "256": {
+     "zernike_decompose stacks/s": 39.03374775617192,
+     "structure_function calls/s": 78.40471541239067,
+     "temporal_psd calls/s": 33.645155879683
+    },
+    "512": {
+     "zernike_decompose stacks/s": 8.541194832154279,
+     "structure_function calls/s": 8.875067196578796,
+     "temporal_psd calls/s": 7.147208305958449
+    },
+    "1024": {
+     "zernike_decompose stacks/s": 1.706838311057151,
+     "structure_function calls/s": 0.9888361652901102,
+     "temporal_psd calls/s": 1.8177033540410077
+    }
+   }
+  }
+ }
+}
