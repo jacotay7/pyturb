@@ -25,6 +25,7 @@ import warnings
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
+from aocore import ARCSEC_TO_RAD, centered_coordinates
 
 from . import _accel
 from . import profiles as _profiles
@@ -45,7 +46,6 @@ from .utils import (
 
 __all__ = ["Atmosphere", "PeriodicWrapWarning", "ExtrudeBoilingPerformanceWarning"]
 
-_ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 
 # LGS cone zoom: above this batched working set (L * n * n_screen elements) the
 # GPU's batched gather goes memory-bound and loses to the tight per-layer loop
@@ -422,7 +422,7 @@ class Atmosphere:
         # The highest layer needs the most margin; use one uniform size so the
         # per-frame FFT stays a single batched call.
         max_alt_los = max(layer.altitude for layer in self.layers) * self.airmass
-        margin_m = max_alt_los * np.tan(self.field_of_view * _ARCSEC_TO_RAD)
+        margin_m = max_alt_los * np.tan(self.field_of_view * ARCSEC_TO_RAD)
         margin_pix = int(np.ceil(margin_m / self.pixel_scale))
         self.margin_pix = margin_pix
         # ``oversample`` widens the pupil part of the screen as well, so the
@@ -569,7 +569,7 @@ class Atmosphere:
             # actually need rather than a blanket highest-altitude-for-everyone
             # margin (self.margin_pix, used above for the spectral crop).
             ext_fov_margin_pix = [
-                alt * np.tan(self.field_of_view * _ARCSEC_TO_RAD) / self.pixel_scale
+                alt * np.tan(self.field_of_view * ARCSEC_TO_RAD) / self.pixel_scale
                 for alt in ext_alt
             ]
             self._ext_kwargs = dict(
@@ -698,7 +698,7 @@ class Atmosphere:
             return cached
         xp = self.xp
         centre = (self.n_screen - 1) / 2.0
-        base = np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0
+        base = centered_coordinates(self.n)  # pixel offsets from the pupil centre
         rdtype = self._spectra.real.dtype
         idx_layers, w_layers = [], []
         for mag in key:
@@ -971,7 +971,7 @@ class Atmosphere:
     def theta0(self) -> float:
         """Isoplanatic angle [arcsec] at the reference wavelength."""
         theta0 = _profiles.isoplanatic_angle(self._los_layers(), self.r0_los)
-        return theta0 / _ARCSEC_TO_RAD
+        return theta0 / ARCSEC_TO_RAD
 
     @property
     def tau0(self) -> float:
@@ -1296,8 +1296,8 @@ class Atmosphere:
                     "field_of_view covering every direction you plan to request."
                 )
             # thx is along x (axis 1), thy along y (axis 0).
-            slopes0.append(np.tan(thy * _ARCSEC_TO_RAD))
-            slopes1.append(np.tan(thx * _ARCSEC_TO_RAD))
+            slopes0.append(np.tan(thy * ARCSEC_TO_RAD))
+            slopes1.append(np.tan(thx * ARCSEC_TO_RAD))
         return slopes0, slopes1, mags
 
     def _source_mags(self, altitude: Optional[float]) -> np.ndarray:

@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Optional, Tuple, Union
 
 import numpy as np
+from aocore import RAD_TO_ARCSEC
+from aocore import opd_to_phase as _aocore_opd_to_phase
+from aocore import phase_to_opd as _aocore_phase_to_opd
 from numpy.typing import ArrayLike
 
 from .backend import to_numpy
@@ -19,8 +22,6 @@ __all__ = [
     "water_vapour_refractivity",
     "structure_function",
 ]
-
-_RAD_TO_ARCSEC = 180.0 / np.pi * 3600.0
 
 
 def air_refractivity(wavelength: ArrayLike) -> Union[float, np.ndarray]:
@@ -121,17 +122,19 @@ def opd_to_phase(opd: ArrayLike, wavelength: float) -> Union[float, np.ndarray]:
     """Convert optical path difference [m] to phase [rad] at ``wavelength`` [m].
 
     ``phase = 2 pi * opd / wavelength``. OPD is achromatic, so the same OPD
-    gives different phase at different wavelengths.
+    gives different phase at different wavelengths. Delegates to
+    ``aocore.opd_to_phase``; NumPy and CuPy arrays keep their device and dtype.
     """
-    return opd * (2.0 * np.pi / wavelength)
+    return _aocore_opd_to_phase(opd, wavelength)
 
 
 def phase_to_opd(phase: ArrayLike, wavelength: float) -> Union[float, np.ndarray]:
     """Convert phase [rad] at ``wavelength`` [m] to optical path difference [m].
 
-    ``opd = phase * wavelength / (2 pi)``.
+    ``opd = phase * wavelength / (2 pi)``. Delegates to
+    ``aocore.phase_to_opd``; NumPy and CuPy arrays keep their device and dtype.
     """
-    return phase * (wavelength / (2.0 * np.pi))
+    return _aocore_phase_to_opd(phase, wavelength)
 
 
 def r0_from_seeing(seeing: float, wavelength: float = 500e-9) -> float:
@@ -139,12 +142,12 @@ def r0_from_seeing(seeing: float, wavelength: float = 500e-9) -> float:
 
     Uses the Kolmogorov relation ``FWHM = 0.98 lambda / r0``.
     """
-    return 0.98 * wavelength / (seeing / _RAD_TO_ARCSEC)
+    return 0.98 * wavelength / (seeing / RAD_TO_ARCSEC)
 
 
 def seeing_from_r0(r0: float, wavelength: float = 500e-9) -> float:
     """Seeing FWHM (arcsec) from the Fried parameter (m) at ``wavelength`` (m)."""
-    return 0.98 * wavelength / r0 * _RAD_TO_ARCSEC
+    return 0.98 * wavelength / r0 * RAD_TO_ARCSEC
 
 
 def r0_at_wavelength(r0: float, wavelength_in: float, wavelength_out: float) -> float:

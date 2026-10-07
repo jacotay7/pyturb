@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Optional, Sequence, Union
 
 import numpy as np
+from aocore import RAD_TO_ARCSEC
 from numpy.typing import ArrayLike
 from scipy import integrate, special
 
@@ -48,7 +49,6 @@ __all__ = [
     "differential_phase_variance",
 ]
 
-_RAD_TO_ARCSEC = 180.0 / np.pi * 3600.0
 # Exact Kolmogorov phase-PSD constant, (24/5 Gamma(6/5))^(5/6) Gamma(11/6)^2 /
 # (2 pi^(11/3)) = 0.022896..., usually rounded to 0.023. The exact value
 # reproduces Noll's table and pyturb.phase_covariance.
@@ -130,7 +130,7 @@ def image_motion_variance(diameter: float, r0: float, wavelength: float,
     a2 = zernike_variance(2, diameter, r0, L0)  # rad^2 of tilt coefficient
     # Noll tilt Z2 = 2 rho cos(theta): angle = lambda/(2 pi) * 2 a / R.
     sigma_rad = wavelength / (2.0 * np.pi) * 2.0 / (diameter / 2.0)
-    return float(a2 * sigma_rad ** 2 * _RAD_TO_ARCSEC ** 2)
+    return float(a2 * sigma_rad ** 2 * RAD_TO_ARCSEC ** 2)
 
 
 def seeing_fwhm(r0: float, wavelength: float = 500e-9, L0: float = np.inf) -> float:
@@ -142,7 +142,7 @@ def seeing_fwhm(r0: float, wavelength: float = 500e-9, L0: float = np.inf) -> fl
     ~17% below the Kolmogorov value; :attr:`pyturb.Atmosphere.seeing` is the
     Kolmogorov value.
     """
-    fwhm = 0.98 * wavelength / r0 * _RAD_TO_ARCSEC
+    fwhm = 0.98 * wavelength / r0 * RAD_TO_ARCSEC
     if np.isinf(L0):
         return float(fwhm)
     ratio = r0 / L0
@@ -229,7 +229,7 @@ def differential_phase_variance(
         if fraction <= 0:
             continue
         r0_i = r0 * fraction ** (-3.0 / 5.0)
-        sep = layer.altitude * np.tan(theta / _RAD_TO_ARCSEC)
+        sep = layer.altitude * np.tan(theta / RAD_TO_ARCSEC)
         layer_L0 = layer.L0 if L0 is None else L0
         total = total + structure_function(sep, r0_i, layer_L0)
     return total

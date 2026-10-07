@@ -11,10 +11,15 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Jacob Taylor", email = "jacobataylor7@gmail.com" }]
 requires-python = ">=3.10"
+# aocore (stack conventions: coordinates, constants, OPD/phase) and aobasis
+# (the Zernike basis) are pure Python on NumPy/SciPy; their floors set the
+# NumPy/SciPy floors below.
 dependencies = [
-    "numpy>=1.22",
-    "scipy>=1.8",
+    "numpy>=1.23",
+    "scipy>=1.10",
     "threadpoolctl>=3",
+    "aocore>=0.1.1",
+    "aobasis>=2.0",
 ]
 keywords = [
     "adaptive-optics",
@@ -59,7 +64,7 @@ cuda13 = ["cupy-cuda13x[ctk]"]
 # layer sum, extruder bicubic readout). pyturb runs without it (NumPy
 # fallback); with it the CPU frame rate is several times higher.
 accel = ["numba>=0.58"]
-test = ["pytest>=7", "pytest-cov", "aocore>=0.1.1"]
+test = ["pytest>=7", "pytest-cov"]
 fits = ["astropy>=5"]
 plot = ["matplotlib>=3.5"]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]
