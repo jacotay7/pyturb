@@ -58,7 +58,7 @@ opds = atm.sample(256)              # (256, n, n) independent integrated OPDs
 ```python
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8,
                                      field_of_view=30, n=512, seed=1)
-opds = atm.opd(t=0.0, directions=[(0, 0), (10, 0), (0, 10)])   # arcsec offsets
+opds = atm.opd(t=0.0, directions=[(0, 0), (10, 0), (0, 10)])   # (thx, thy) arcsec
 ```
 
 Each direction can carry its own source: `(thx, thy, altitude)` with a laser
@@ -75,8 +75,9 @@ opds = atm.opd(t=0.0, directions=lgs + [(20, 0, None), (0, 0, None)])
 
 To sample arbitrary points instead of the pupil grid — DM actuators,
 sub-apertures, a sparse or multi-aperture layout — use `opd_at` with
-coordinates in metres from the pupil centre (grow the screen with
-`oversample` to reach beyond the pupil):
+coordinates `(x, y)` in metres from the pupil centre, x along the columns
+(axis 1) and y along the rows (axis 0); grow the screen with `oversample` to
+reach beyond the pupil:
 
 ```python
 atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
@@ -136,7 +137,7 @@ gen = pyturb.PhaseScreen(n=256, pixel_scale=0.02, r0=0.15, L0=25.0, seed=0)
 batch = gen.generate(32)                       # (32, 256, 256) independent screens
 
 layer = pyturb.InfinitePhaseScreen(n=128, pixel_scale=0.05, r0=0.15, seed=0)
-phase = layer.advance(0.37)                    # blow 0.37 px along axis 0; never repeats
+phase = layer.advance(0.37)                    # 0.37 px along y (axis 0); never repeats
 ```
 
 ## Reproducing a run

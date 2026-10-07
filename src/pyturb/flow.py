@@ -2,11 +2,12 @@
 
 A :class:`FourierFlowScreen` draws one fixed realisation of a von Kármán phase
 screen's Fourier coefficients and then evaluates the screen at any continuous
-translation ``(sx, sy)`` in metres by applying the shift theorem — multiplying
-each spatial-frequency mode by ``exp(2 pi i (fx sx + fy sy))`` before the
-inverse FFT. This gives **exact sub-pixel translation in an arbitrary
-direction** at the cost of one FFT per frame, which is extremely fast on the
-GPU and requires no row extrusion or interpolation.
+translation ``(sx, sy)`` in metres (``sx`` along x = axis 1, ``sy`` along
+y = axis 0) by applying the shift theorem — multiplying each spatial-frequency
+mode by ``exp(2 pi i (fx sx + fy sy))`` before the inverse FFT. This gives
+**exact sub-pixel translation in an arbitrary direction** at the cost of one
+FFT per frame, which is extremely fast on the GPU and requires no row
+extrusion or interpolation.
 
 The trade-off versus :class:`pyturb.InfinitePhaseScreen` is periodicity: the
 FFT-grid part of the screen repeats with period ``n * pixel_scale``, so the
@@ -54,7 +55,7 @@ class FourierFlowScreen:
     >>> template = pyturb.PhaseScreen(n=256, pixel_scale=0.02, r0=0.15)
     >>> layer = FourierFlowScreen(template, seed=0)
     >>> a = layer.translate(0.0, 0.0)          # (256, 256) radians
-    >>> b = layer.translate(1.3, -0.4)         # blown 1.3 m / -0.4 m
+    >>> b = layer.translate(1.3, -0.4)         # 1.3 m along x, -0.4 m along y
     """
 
     @on_device
@@ -102,23 +103,27 @@ class FourierFlowScreen:
     def translate(self, sx: float, sy: float) -> Any:
         """Return the screen blown by ``(sx, sy)`` metres, shape ``(n, n)``.
 
-        ``sx`` is displacement along axis 0 (rows), ``sy`` along axis 1
-        (columns). Values are phase in radians at the layer's reference
-        wavelength; the array lives on the layer's device.
+        ``sx`` is displacement along x (axis 1, columns), ``sy`` along y
+        (axis 0, rows): the returned screen is ``phi_0(r + s)``, so a positive
+        ``sx`` moves the pattern toward decreasing column index. Values are
+        phase in radians at the layer's reference wavelength; the array lives
+        on the layer's device.
         """
         xp, n = self.xp, self.n
         f = self._f
+        # Displacements along array axes 0 (rows, y) and 1 (columns, x).
+        s0, s1 = float(sy), float(sx)
         # Shift theorem on the periodic FFT grid: multiply each mode by its
-        # translation phasor, then inverse-FFT. Separable in x and y. Every
-        # main-grid mode repeats with period n * pixel_scale, so the shift is
-        # reduced modulo that period in float64 first; otherwise a float32
-        # phasor loses precision as the displacement grows.
+        # translation phasor, then inverse-FFT. Separable in the two axes.
+        # Every main-grid mode repeats with period n * pixel_scale, so the
+        # shift is reduced modulo that period in float64 first; otherwise a
+        # float32 phasor loses precision as the displacement grows.
         period = n * self.pixel_scale
-        rx = float(np.mod(float(sx), period))
-        ry = float(np.mod(float(sy), period))
-        phasor_x = xp.exp((2j * np.pi * rx) * f).astype(self._cdtype)
-        phasor_y = xp.exp((2j * np.pi * ry) * f).astype(self._cdtype)
-        spectrum = self._spectrum * phasor_x[:, None] * phasor_y[None, :]
+        r0 = float(np.mod(s0, period))
+        r1 = float(np.mod(s1, period))
+        phasor0 = xp.exp((2j * np.pi * r0) * f).astype(self._cdtype)
+        phasor1 = xp.exp((2j * np.pi * r1) * f).astype(self._cdtype)
+        spectrum = self._spectrum * phasor0[:, None] * phasor1[None, :]
         field = self._fft.ifft2(spectrum, axes=(-2, -1)) * (n * n)
         screen = field.real
 
@@ -133,11 +138,11 @@ class FourierFlowScreen:
             df = 1.0 / period
             fp = np.stack([np.array([-1.0, 0.0, 1.0]) * df / 3.0 ** level
                            for level in range(1, n_sh + 1)])  # (P, 3) float64
-            px = xp.asarray(np.exp((2j * np.pi) * np.mod(float(sx) * fp, 1.0)),
-                            dtype=self._cdtype)  # (P, 3)
-            py = xp.asarray(np.exp((2j * np.pi) * np.mod(float(sy) * fp, 1.0)),
-                            dtype=self._cdtype)
-            shifted = self._sh_coeffs_stack * px[:, :, None] * py[:, None, :]  # (P,3,3)
+            sh0 = xp.asarray(np.exp((2j * np.pi) * np.mod(s0 * fp, 1.0)),
+                             dtype=self._cdtype)  # (P, 3)
+            sh1 = xp.asarray(np.exp((2j * np.pi) * np.mod(s1 * fp, 1.0)),
+                             dtype=self._cdtype)
+            shifted = self._sh_coeffs_stack * sh0[:, :, None] * sh1[:, None, :]  # (P,3,3)
             m = xp.matmul(shifted, tmpl._sh_basis_stack).reshape(n_sh * 3, n)
             basis_flat = tmpl._sh_basis_stack.reshape(n_sh * 3, n)
             low = (basis_flat.T @ m).real

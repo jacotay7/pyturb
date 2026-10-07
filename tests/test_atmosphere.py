@@ -1,3 +1,4 @@
+import json
 import warnings
 
 import numpy as np
@@ -59,8 +60,8 @@ def test_frozen_flow_is_deterministic_and_continuous():
 
 
 def test_frozen_flow_shifts_screen_by_wind():
-    # One-layer atmosphere, pure wind along axis 0: opd at time t equals the
-    # t=0 screen rolled by the integer number of pixels blown.
+    # One-layer atmosphere, pure wind along x (axis 1): opd at time t equals
+    # the t=0 screen rolled along the columns by the integer pixels blown.
     layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0, L0=25.0)
     atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=128, subharmonics=0,
                             dtype="float64", seed=2)
@@ -68,7 +69,7 @@ def test_frozen_flow_shifts_screen_by_wind():
     dx = atm.pixel_scale
     t = 5 * dx / 10.0  # blow exactly 5 pixels
     shifted = pyturb.to_numpy(atm.opd(t))
-    assert np.allclose(shifted, np.roll(base, -5, axis=0), atol=1e-6)
+    assert np.allclose(shifted, np.roll(base, -5, axis=1), atol=1e-6)
 
 
 @pytest.mark.parametrize("engine_dirs", [None, [(0.0, 0.0), (3.0, 0.0)]])
@@ -166,10 +167,13 @@ def _pattern_shift(a, b):
 
 
 @pytest.mark.parametrize("engine", ["spectral", "extrude"])
-@pytest.mark.parametrize("direction, expected", [(0.0, (-10, 0)), (90.0, (0, -10))])
+@pytest.mark.parametrize("direction, expected", [
+    (0.0, (0, -10)), (90.0, (-10, 0)), (180.0, (0, 10)), (270.0, (10, 0)),
+])
 def test_pattern_moves_against_wind_vector(engine, direction, expected):
     # The documented convention: wind_direction is where the wind blows *from*,
-    # so the pattern moves along -wind_vector (phi(x, t) = phi0(x + v t)).
+    # measured from +x (axis 1) toward +y (axis 0), so the pattern moves along
+    # -wind_vector (phi(r, t) = phi0(r + v t)); expected is (axis 0, axis 1).
     # Pinned on both engines so the sign cannot change silently.
     layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=direction, L0=25.0)
     atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=128, engine=engine,
@@ -322,9 +326,10 @@ def test_field_of_view_oversizes_screen():
 
 
 def test_off_axis_is_a_pure_shift_without_wrap():
-    # Single layer, no wind: an off-axis direction chosen to land on an exact
-    # integer-pixel footprint shift must equal the on-axis screen rolled, with
-    # no wrap contamination because field_of_view oversized the screen.
+    # Single layer, no wind: an off-axis direction (thx, 0) chosen to land on an
+    # exact integer-pixel footprint shift along x (axis 1) must equal the
+    # on-axis screen rolled along the columns, with no wrap contamination
+    # because field_of_view oversized the screen.
     h = 8000.0
     atm = pyturb.Atmosphere([pyturb.Layer(h, 1.0, 0.0, 0.0, L0=np.inf)],
                             r0=0.15, n=160, diameter=10.0, field_of_view=25.0,
@@ -335,7 +340,7 @@ def test_off_axis_is_a_pure_shift_without_wrap():
     lam = atm.wavelength
     off = pyturb.to_numpy(atm.opd(0.0, directions=[(theta_as, 0.0)], wavelength=lam))[0]
     full = pyturb.to_numpy(atm._layers[0].flow.translate(0.0, 0.0))
-    rolled = np.roll(full, -k, axis=0)[atm._crop, atm._crop]
+    rolled = np.roll(full, -k, axis=1)[atm._crop, atm._crop]
     # Relative error is O(1e-6) of the screen RMS (arcsec-rounding only).
     assert np.abs(off - rolled).max() < 1e-3 * rolled.std()
 
@@ -450,8 +455,10 @@ def test_fourier_flow_translation_exact_integer_pixels():
                             subharmonics=0, dtype="float64", seed=3)
     fl = FourierFlowScreen(ps, seed=5)
     base = fl.translate(0.0, 0.0)
-    shifted = fl.translate(7 * 0.02, 0.0)
-    assert np.allclose(shifted, np.roll(base, -7, axis=0), atol=1e-9)
+    shifted = fl.translate(7 * 0.02, 0.0)          # 7 px along x (axis 1)
+    assert np.allclose(shifted, np.roll(base, -7, axis=1), atol=1e-9)
+    shifted = fl.translate(0.0, 4 * 0.02)          # 4 px along y (axis 0)
+    assert np.allclose(shifted, np.roll(base, -4, axis=0), atol=1e-9)
 
 
 def test_spectral_integrate_equals_sum_of_layer_translates(device):
@@ -464,7 +471,7 @@ def test_spectral_integrate_equals_sum_of_layer_translates(device):
     batched = pyturb.to_numpy(atm._phase(t, 0.0, 0.0))
     ref = None
     for st in atm._layers:
-        s = st.flow.translate(st.vx * t, st.vy * t)
+        s = st.flow.translate(st.v1 * t, st.v0 * t)  # (x, y) = (axis 1, axis 0)
         ref = s if ref is None else ref + s
     ref = pyturb.to_numpy(ref[atm._crop, atm._crop])
     np.testing.assert_allclose(batched, ref, rtol=1e-10, atol=1e-11)
@@ -1036,7 +1043,7 @@ def test_opd_at_pupil_grid_reproduces_opd(device, engine, kw):
                                          field_of_view=5.0, engine=engine,
                                          device=device, dtype="float64", seed=8, **kw)
     g = (np.arange(n) - (n - 1) / 2.0) * atm.pixel_scale
-    x, y = np.meshgrid(g, g, indexing="ij")
+    y, x = np.meshgrid(g, g, indexing="ij")  # x along axis 1, y along axis 0
     for t, direction in ((0.004, (0.0, 0.0)), (0.011, (3.0, -2.0))):
         ref = pyturb.to_numpy(atm.opd(t, directions=[direction]))[0]
         got = pyturb.to_numpy(atm.opd_at(x, y, t, direction=direction))
@@ -1130,6 +1137,22 @@ def test_from_config_overrides_and_versioning():
     assert bigger.n == 32 and bigger.r0 == pytest.approx(atm.r0)
     with pytest.raises(ValueError, match="version"):
         pyturb.Atmosphere.from_config({**cfg, "pyturb_config_version": 99})
+
+
+def test_version_1_config_wind_directions_are_converted_to_the_xy_frame():
+    # pyturb 1.x measured wind_direction from axis 0 toward axis 1; the same
+    # wind is 90 - alpha from +x (axis 1) toward +y (axis 0). A v1 config must
+    # replay the frames it recorded, bit for bit.
+    layers = [pyturb.Layer(0.0, 0.6, 9.0, 30.0), pyturb.Layer(8e3, 0.4, 25.0, 300.0)]
+    atm = pyturb.Atmosphere(layers, r0=0.15, n=32, seed=4, dtype="float64")
+    cfg = atm.to_config()
+    assert cfg["pyturb_config_version"] == 2
+    legacy = {**cfg, "pyturb_config_version": 1,
+              "layers": [{**layer, "wind_direction": (90.0 - layer["wind_direction"])
+                          % 360.0} for layer in cfg["layers"]]}
+    rebuilt = pyturb.Atmosphere.from_config(json.dumps(legacy))
+    assert [ly.wind_direction for ly in rebuilt.layers] == pytest.approx([30.0, 300.0])
+    np.testing.assert_array_equal(rebuilt.opd(0.013), atm.opd(0.013))
 
 
 @pytest.mark.parametrize("bad", ["cpu:1", "gpu:x", "tpu:0"])

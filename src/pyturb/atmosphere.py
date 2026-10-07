@@ -53,6 +53,11 @@ _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 # path is ~3-8x faster by removing per-layer launch latency.
 _LGS_BATCH_MAX_ELEMS = 4_000_000
 
+# to_config() schema version. Version 2 measures Layer.wind_direction from +x
+# (axis 1) toward +y (axis 0); version 1 (pyturb 1.x) measured it from axis 0
+# toward axis 1, and from_config() converts it on load.
+_CONFIG_VERSION = 2
+
 # Marks "the source range the Atmosphere was built with" (lgs_altitude), as
 # opposed to an explicit per-direction altitude (None = a star at infinity).
 _DEFAULT_SOURCE = object()
@@ -92,22 +97,26 @@ class ExtrudeBoilingPerformanceWarning(UserWarning):
 
 
 class _LayerState:
-    """Per-layer runtime: independent-draw generator + frozen-flow screen."""
+    """Per-layer runtime: independent-draw generator + frozen-flow screen.
 
-    __slots__ = ("generator", "flow", "vx", "vy", "altitude_los")
+    ``v0``/``v1`` are the wind-vector components [m/s] along array axes 0 and 1
+    (the engines' frame; the public ``(x, y)`` is ``(axis 1, axis 0)``).
+    """
+
+    __slots__ = ("generator", "flow", "v0", "v1", "altitude_los")
 
     def __init__(
         self,
         generator: PhaseScreen,
         flow: Optional[FourierFlowScreen],
-        vx: float,
-        vy: float,
+        v0: float,
+        v1: float,
         altitude_los: float,
     ) -> None:
         self.generator = generator
         self.flow = flow
-        self.vx = vx
-        self.vy = vy
+        self.v0 = v0
+        self.v1 = v1
         self.altitude_los = altitude_los
 
 
@@ -467,20 +476,23 @@ class Atmosphere:
                 if self.engine == "spectral"
                 else None
             )
+            # Layer.wind_vector is (vx, vy) along (axis 1, axis 0); the engines
+            # work in array-axis order.
             vx, vy = layer.wind_vector
+            v0, v1 = vy, vx
             altitude_los = layer.altitude * self.airmass
             self._layers.append(
                 _LayerState(
                     generator=generator,
                     flow=flow,
-                    vx=vx,
-                    vy=vy,
+                    v0=v0,
+                    v1=v1,
                     altitude_los=altitude_los,
                 )
             )
             ext_r0.append(r0_i)
             ext_L0.append(layer.L0)
-            ext_wind.append((vx, vy))
+            ext_wind.append((v0, v1))
             ext_alt.append(altitude_los)
             ext_seeds.append(int(ext_seed.generate_state(1)[0]))
 
@@ -598,8 +610,8 @@ class Atmosphere:
             [state.generator._amplitude for state in self._layers]
         )
         self._grid_f = self._layers[0].generator._f  # (n,) device
-        self._vx = np.array([s.vx for s in self._layers], dtype=np.float64)
-        self._vy = np.array([s.vy for s in self._layers], dtype=np.float64)
+        self._v0 = np.array([s.v0 for s in self._layers], dtype=np.float64)
+        self._v1 = np.array([s.v1 for s in self._layers], dtype=np.float64)
         self._alt = np.array([s.altitude_los for s in self._layers], dtype=np.float64)
         # Subharmonic modes share basis/frequencies across layers (same grid);
         # only the coefficients (and per-layer amplitude) differ. All levels
@@ -867,7 +879,7 @@ class Atmosphere:
         """
         c = self.config
         return {
-            "pyturb_config_version": 1,
+            "pyturb_config_version": _CONFIG_VERSION,
             "layers": [
                 {"altitude": layer.altitude, "cn2_fraction": layer.cn2_fraction,
                  "wind_speed": layer.wind_speed, "wind_direction": layer.wind_direction,
@@ -905,15 +917,29 @@ class Atmosphere:
         ``overrides`` replace individual inputs, e.g. ``device="gpu"`` to
         replay a CPU run on the GPU (the same seed draws a different
         realisation on a different backend, but the same one on any GPU).
+
+        Version-1 configs (written by pyturb 1.x, whose ``wind_direction`` was
+        measured from axis 0 toward axis 1) are read with each layer's
+        direction converted to ``(90 - wind_direction) mod 360``, the same wind
+        in the current frame (from +x = axis 1 toward +y = axis 0), so they
+        replay the frames they recorded.
         """
         if isinstance(config, str):
             config = json.loads(config)
         kwargs = dict(config)
         version = kwargs.pop("pyturb_config_version", None)
-        if version != 1:
-            raise ValueError(f"unsupported pyturb config version {version!r}")
+        if version not in (1, _CONFIG_VERSION):
+            raise ValueError(
+                f"unsupported pyturb config version {version!r}; this pyturb "
+                f"reads versions 1 and {_CONFIG_VERSION}"
+            )
         profile = kwargs.pop("profile", None)
-        layers = [Layer(**layer) for layer in kwargs.pop("layers")]
+        layer_dicts = [dict(layer) for layer in kwargs.pop("layers")]
+        if version == 1:
+            for layer in layer_dicts:
+                layer["wind_direction"] = (
+                    90.0 - float(layer.get("wind_direction", 0.0))) % 360.0
+        layers = [Layer(**layer) for layer in layer_dicts]
         kwargs.update(overrides)
         atm = cls(layers, **kwargs)
         atm._profile_name = profile
@@ -976,9 +1002,9 @@ class Atmosphere:
         finite = periods[np.isfinite(periods)]
         return float(finite.min()) if finite.size else float("inf")
 
-    def _check_wrap(self, disp_x: np.ndarray, disp_y: np.ndarray) -> None:
+    def _check_wrap(self, disp0: np.ndarray, disp1: np.ndarray) -> None:
         """Warn once (per instance) the first time a spectral layer wraps."""
-        disp = np.hypot(np.asarray(disp_x), np.asarray(disp_y))
+        disp = np.hypot(np.asarray(disp0), np.asarray(disp1))
         wrapped = disp > self._screen_period_m
         if not np.any(wrapped):
             return
@@ -1063,8 +1089,8 @@ class Atmosphere:
             engine evaluates many times in one batched transform, the fastest
             way to generate an offline time series. Boiling is not applied to
             random-access times (use :meth:`frames`). Taylor frozen flow:
-            each layer's phase evolves as ``phi(x, t) = phi_0(x + wind_vector
-            * t)`` — a fixed pupil point sees the turbulence that was
+            each layer's phase evolves as ``phi(r, t) = phi_0(r + wind_vector
+            * t)`` with ``r = (x, y)`` — a fixed pupil point sees the turbulence that was
             ``wind_vector * t`` metres further along the wind direction at
             ``t=0`` (the pattern is carried past the aperture by the wind,
             not translated bodily along ``+wind_vector`` in pupil
@@ -1075,7 +1101,8 @@ class Atmosphere:
             ``ValueError``), and :meth:`reset` restarts it at ``t=0``.
         directions : sequence of (thx, thy), optional
             Off-axis directions [arcsec] from the on-axis line of sight, each
-            ``(thx, thy)`` or ``(thx, thy, altitude)``. ``altitude`` [m, at
+            ``(thx, thy)`` or ``(thx, thy, altitude)``, with ``thx`` along x
+            (axis 1, columns) and ``thy`` along y (axis 0, rows). ``altitude`` [m, at
             zenith] gives that direction its own source: a laser guide star at
             that range (cone effect), or ``None`` for a natural star or science
             target at infinity, so an LGS asterism, NGS and science directions
@@ -1089,8 +1116,10 @@ class Atmosphere:
             not guaranteed to be oversized enough and the request raises
             ``ValueError`` instead of silently sampling stale/wrapped data.
             Each layer's footprint is shifted by ``altitude_los * tan(theta)``
-            for anisoplanatism / tomography studies. If given, the result has
-            a leading axis of length ``len(directions)``.
+            along the direction's own axis (``thx > 0`` moves it toward
+            increasing column index) for anisoplanatism / tomography studies.
+            If given, the result has a leading axis of length
+            ``len(directions)``.
         wavelength : float, optional
             If given, return phase [rad] at this wavelength; otherwise OPD [m].
         """
@@ -1104,10 +1133,10 @@ class Atmosphere:
             return self._to_opd(phase, wavelength)
 
         xp = self.xp
-        oxs, oys, mags = self._parse_directions(directions)
+        slopes0, slopes1, mags = self._parse_directions(directions)
         if any(m is not None for m in mags):
-            stacked = xp.stack([self._phase_source(float(t), ox, oy, m)
-                                for ox, oy, m in zip(oxs, oys, mags)])
+            stacked = xp.stack([self._phase_source(float(t), s0, s1, m)
+                                for s0, s1, m in zip(slopes0, slopes1, mags)])
             return self._to_opd(stacked, wavelength)
         # On the GPU the spectral engine (without the per-layer LGS zoom)
         # batches all directions through one inverse FFT and one subharmonic
@@ -1118,10 +1147,10 @@ class Atmosphere:
         # LGS cone (per-layer zoom) also stay a per-direction pass.
         if (self.engine == "spectral" and self._lgs_mag is None
                 and self.xp is not np):
-            stacked = self._integrate_dirs(float(t), oxs, oys)
+            stacked = self._integrate_dirs(float(t), slopes0, slopes1)
         else:
             stacked = xp.stack(
-                [self._phase(float(t), ox, oy) for ox, oy in zip(oxs, oys)]
+                [self._phase(float(t), s0, s1) for s0, s1 in zip(slopes0, slopes1)]
             )
         return self._to_opd(stacked, wavelength)
 
@@ -1138,8 +1167,9 @@ class Atmosphere:
         """OPD at arbitrary pupil-plane coordinates ``(x, y)`` [m].
 
         ``x``/``y`` (broadcastable arrays, any shape) are offsets from the
-        pupil centre along axes 0 and 1 — e.g. DM actuator or sub-aperture
-        positions, a sparse or segmented aperture, or several apertures. Each
+        pupil centre along x (axis 1, columns) and y (axis 0, rows) — e.g. DM
+        actuator or sub-aperture positions, a sparse or segmented aperture, or
+        several apertures. Each
         layer is read at its frozen-flow, off-axis-shifted and cone-magnified
         position with the ``interp`` kernel and the layers summed, so on the
         pupil grid itself this reproduces :meth:`opd` (exactly at its pixel
@@ -1155,24 +1185,28 @@ class Atmosphere:
                                    np.asarray(y, dtype=np.float64))
         entry = tuple(direction) if altitude is _DEFAULT_SOURCE else (
             float(direction[0]), float(direction[1]), altitude)
-        oxs, oys, mags = self._parse_directions([entry])
-        ox, oy, mag = oxs[0], oys[0], mags[0]
-        x_pix = x / self.pixel_scale
-        y_pix = y / self.pixel_scale
+        slopes0, slopes1, mags = self._parse_directions([entry])
+        slope0, slope1, mag = slopes0[0], slopes1[0], mags[0]
+        pix0 = y / self.pixel_scale  # y runs along axis 0 (rows)
+        pix1 = x / self.pixel_scale  # x runs along axis 1 (columns)
         if self.engine == "extrude":
             self._ext_advance(float(t))
-            phase = self._ext.sample_points(x_pix, y_pix, ox, oy, mags=mag)
+            phase = self._ext.sample_points(pix0, pix1, slope0, slope1, mags=mag)
             return self._to_opd(phase, wavelength)
         if mag is None:
             mag = (self._lgs_mag if self._lgs_mag is not None
                    else np.ones(len(self._layers)))
-        phase = self._sample_layers(self._layer_screens(float(t), ox, oy), x_pix,
-                                    y_pix, mag)
+        phase = self._sample_layers(self._layer_screens(float(t), slope0, slope1), pix0,
+                                    pix1, mag)
         return self._to_opd(phase, wavelength)
 
-    def _sample_layers(self, screens: Any, x_pix: np.ndarray, y_pix: np.ndarray,
+    def _sample_layers(self, screens: Any, pix0: np.ndarray, pix1: np.ndarray,
                        mags: np.ndarray) -> Any:
-        """Sum of every layer's screen interpolated at ``centre + mag * (x, y)``."""
+        """Sum of every layer's screen interpolated at ``centre + mag * (pix0, pix1)``.
+
+        ``pix0``/``pix1`` are pixel offsets from the pupil centre along axes 0
+        and 1.
+        """
         xp = self.xp
         centre = (self.n_screen - 1) / 2.0
         if self.interp == "linear":
@@ -1183,8 +1217,8 @@ class Atmosphere:
             reach = (1, 2)
         total = None
         for layer, mag in enumerate(mags):
-            row = centre + mag * x_pix
-            col = centre + mag * y_pix
+            row = centre + mag * pix0
+            col = centre + mag * pix1
             lo = min(row.min(), col.min())
             hi = max(row.max(), col.max())
             if np.floor(lo) - reach[0] < 0 or np.floor(hi) + reach[1] > self.n_screen - 1:
@@ -1222,21 +1256,27 @@ class Atmosphere:
     def _direction_slopes(
         self, directions: Sequence[Tuple[float, ...]]
     ) -> Tuple[List[float], List[float]]:
-        """Validated direction tangents ``(tan(thx), tan(thy))`` for each direction."""
-        oxs, oys, _ = self._parse_directions(directions)
-        return oxs, oys
+        """Validated direction tangents along axes 0 and 1 for each direction.
+
+        Returns ``(tan(thy), tan(thx))`` lists: ``thy`` is along axis 0 and
+        ``thx`` along axis 1.
+        """
+        slopes0, slopes1, _ = self._parse_directions(directions)
+        return slopes0, slopes1
 
     def _parse_directions(
         self, directions: Sequence[Tuple[float, ...]]
     ) -> Tuple[List[float], List[float], List[Optional[np.ndarray]]]:
-        """Direction tangents plus per-layer magnifications for each direction.
+        """Axis-0/axis-1 direction tangents plus per-layer magnifications.
 
-        An entry is ``(thx, thy)`` (the constructor's source range) or
+        Returns ``(slopes0, slopes1, mags)``: ``slopes0`` holds ``tan(thy)``
+        (y is axis 0) and ``slopes1`` ``tan(thx)`` (x is axis 1). An entry is
+        ``(thx, thy)`` (the constructor's source range) or
         ``(thx, thy, altitude)``: ``altitude`` [m, at zenith] of a laser guide
         star, or ``None`` for a source at infinity. The magnification list has
         ``None`` where the constructor's geometry applies.
         """
-        oxs, oys, mags = [], [], []
+        slopes0, slopes1, mags = [], [], []
         for entry in directions:
             if len(entry) not in (2, 3):
                 raise ValueError(
@@ -1255,9 +1295,10 @@ class Atmosphere:
                     "(extrude) turbulence. Construct the Atmosphere with a "
                     "field_of_view covering every direction you plan to request."
                 )
-            oxs.append(np.tan(thx * _ARCSEC_TO_RAD))
-            oys.append(np.tan(thy * _ARCSEC_TO_RAD))
-        return oxs, oys, mags
+            # thx is along x (axis 1), thy along y (axis 0).
+            slopes0.append(np.tan(thy * _ARCSEC_TO_RAD))
+            slopes1.append(np.tan(thx * _ARCSEC_TO_RAD))
+        return slopes0, slopes1, mags
 
     def _source_mags(self, altitude: Optional[float]) -> np.ndarray:
         """Per-layer cone magnification ``1 - h/H`` for a source at ``altitude`` [m]."""
@@ -1289,17 +1330,17 @@ class Atmosphere:
         self._ext_time = t
         self._ext.set_time(t)
 
-    def _phase_source(self, t: float, ox: float, oy: float,
+    def _phase_source(self, t: float, slope0: float, slope1: float,
                       mags: Optional[np.ndarray]) -> Any:
-        """Phase toward (ox, oy) for a source with per-layer magnifications ``mags``."""
+        """Phase toward axis tangents (slope0, slope1), source magnified by ``mags``."""
         if mags is None:
-            return self._phase(t, ox, oy)
+            return self._phase(t, slope0, slope1)
         if self.engine == "spectral":
             if self._lgs_mag is None and np.allclose(mags, 1.0):
-                return self._integrate(t, ox, oy)
-            return self._integrate_lgs(t, ox, oy, mags)
+                return self._integrate(t, slope0, slope1)
+            return self._integrate_lgs(t, slope0, slope1, mags)
         self._ext_advance(t)
-        return self._ext.integrate(ox, oy, mags=mags)
+        return self._ext.integrate(slope0, slope1, mags=mags)
 
     def _phase_times(
         self,
@@ -1308,25 +1349,25 @@ class Atmosphere:
     ) -> Any:
         """Reference-wavelength phase for each time (and direction), stacked."""
         xp = self.xp
-        oxs, oys, mags = (self._parse_directions(directions) if directions
+        slopes0, slopes1, mags = (self._parse_directions(directions) if directions
                           else ([0.0], [0.0], [None]))
-        n_dirs = len(oxs)
+        n_dirs = len(slopes0)
         if self._gpu is not None and all(m is None for m in mags):
-            ox = np.asarray(oxs)
-            oy = np.asarray(oys)
+            slope0 = np.asarray(slopes0)
+            slope1 = np.asarray(slopes1)
             # (T, D, L) displacements, flattened to one batch of frames.
-            disp_x = (times[:, None, None] * self._vx[None, None, :]
-                      + ox[None, :, None] * self._alt[None, None, :])
-            disp_y = (times[:, None, None] * self._vy[None, None, :]
-                      + oy[None, :, None] * self._alt[None, None, :])
-            disp_x = disp_x.reshape(-1, disp_x.shape[-1])
-            disp_y = disp_y.reshape(-1, disp_y.shape[-1])
+            disp0 = (times[:, None, None] * self._v0[None, None, :]
+                      + slope0[None, :, None] * self._alt[None, None, :])
+            disp1 = (times[:, None, None] * self._v1[None, None, :]
+                      + slope1[None, :, None] * self._alt[None, None, :])
+            disp0 = disp0.reshape(-1, disp0.shape[-1])
+            disp1 = disp1.reshape(-1, disp1.shape[-1])
             if not self._wrap_warned:
-                self._check_wrap(disp_x, disp_y)
+                self._check_wrap(disp0, disp1)
             # Bound the (B, n_screen, n_screen) complex working set per batch.
             chunk = max(1, (1 << 24) // (self.n_screen * self.n_screen))
-            parts = [self._gpu.batch(disp_x[i:i + chunk], disp_y[i:i + chunk])
-                     for i in range(0, disp_x.shape[0], chunk)]
+            parts = [self._gpu.batch(disp0[i:i + chunk], disp1[i:i + chunk])
+                     for i in range(0, disp0.shape[0], chunk)]
             stacked = parts[0] if len(parts) == 1 else xp.concatenate(parts)
             shape = (times.size, n_dirs, self.n, self.n) if directions else (
                 times.size, self.n, self.n)
@@ -1334,24 +1375,25 @@ class Atmosphere:
         frames = []
         for t in times:
             if directions:
-                frames.append(xp.stack([self._phase_source(float(t), ox, oy, m)
-                                        for ox, oy, m in zip(oxs, oys, mags)]))
+                frames.append(xp.stack([self._phase_source(float(t), s0, s1, m)
+                                        for s0, s1, m in zip(slopes0, slopes1, mags)]))
             else:
                 frames.append(self._phase(float(t), 0.0, 0.0))
         return xp.stack(frames)
 
-    def _phase(self, t: float, ox: float, oy: float) -> Any:
-        """Reference-wavelength pupil phase at time ``t`` toward slope (ox, oy).
+    def _phase(self, t: float, slope0: float, slope1: float) -> Any:
+        """Reference-wavelength pupil phase at time ``t`` toward (slope0, slope1).
 
         Dispatches to the periodic spectral engine or the non-periodic extruder;
-        ``ox``/``oy`` are direction tangents (``tan(theta)``).
+        ``slope0``/``slope1`` are the direction tangents (``tan(theta)``) along
+        array axes 0 and 1.
         """
         if self.engine == "spectral":
-            return self._integrate(t, ox, oy)
+            return self._integrate(t, slope0, slope1)
         self._ext_advance(t)
-        return self._ext.integrate(ox, oy)
+        return self._ext.integrate(slope0, slope1)
 
-    def _integrate(self, t: float, ox: float, oy: float) -> Any:
+    def _integrate(self, t: float, slope0: float, slope1: float) -> Any:
         """Sum all layers at time ``t`` with per-layer angular offset slopes.
 
         The inverse FFT and the subharmonic outer product are both linear, and
@@ -1364,30 +1406,30 @@ class Atmosphere:
         intermediate.
         """
         if self._lgs_mag is not None:
-            return self._integrate_lgs(t, ox, oy)
+            return self._integrate_lgs(t, slope0, slope1)
         xp = self.xp
         cdtype = self._cdtype
         ns = self.n_screen
         # Per-layer displacement [m] along each axis (host-side, L is small).
-        disp_x = self._vx * t + self._alt * ox
-        disp_y = self._vy * t + self._alt * oy
+        disp0 = self._v0 * t + self._alt * slope0
+        disp1 = self._v1 * t + self._alt * slope1
         if not self._wrap_warned:
-            self._check_wrap(disp_x, disp_y)
+            self._check_wrap(disp0, disp1)
         if self._gpu is not None:
-            return self._gpu.single(disp_x, disp_y)
-        sx = self._main_shift(disp_x)
-        sy = self._main_shift(disp_y)
+            return self._gpu.single(disp0, disp1)
+        shift0 = self._main_shift(disp0)
+        shift1 = self._main_shift(disp1)
         f = self._grid_f
         # Separable shift-theorem phasors, shape (L, n_screen) each.
-        phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
-        phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
+        phasor0 = xp.exp((2j * np.pi) * shift0[:, None] * f[None, :]).astype(cdtype)
+        phasor1 = xp.exp((2j * np.pi) * shift1[:, None] * f[None, :]).astype(cdtype)
         if xp is np and _accel.HAVE_NUMBA:
             # Fused single-pass layer sum (reads the (L, n, n) stack once).
             spectrum = np.empty((ns, ns), dtype=cdtype)
-            _accel.spectral_layer_sum(self._spectra, phasor_x, phasor_y, spectrum)
+            _accel.spectral_layer_sum(self._spectra, phasor0, phasor1, spectrum)
         else:
             spectrum = (
-                self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
+                self._spectra * phasor0[:, :, None] * phasor1[:, None, :]
             ).sum(axis=0)
         field = self._fft.ifft2(spectrum, axes=(-2, -1)) * (ns * ns)
         total = field.real
@@ -1396,10 +1438,10 @@ class Atmosphere:
             # All subharmonic levels at once: shift each level's per-layer 3x3
             # coefficients, sum over layers, then evaluate the shared sinusoid
             # bases as two batched matmuls collapsed to one (ns, 3P) @ (3P, ns).
-            px = self._sh_phasors(disp_x)  # (P, L, 3)
-            py = self._sh_phasors(disp_y)
+            sh0 = self._sh_phasors(disp0)  # (P, L, 3)
+            sh1 = self._sh_phasors(disp1)
             shifted = (
-                self._sh_coeffs * px[:, :, :, None] * py[:, :, None, :]
+                self._sh_coeffs * sh0[:, :, :, None] * sh1[:, :, None, :]
             ).sum(axis=1)  # (P, 3, 3)
             m = xp.matmul(shifted, self._sh_basis).reshape(self._n_sh * 3, ns)
             basis_flat = self._sh_basis.reshape(self._n_sh * 3, ns)
@@ -1410,8 +1452,8 @@ class Atmosphere:
         total = total[self._crop, self._crop]
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
-    def _integrate_dirs(self, t: float, oxs: Sequence[float],
-                        oys: Sequence[float]) -> Any:
+    def _integrate_dirs(self, t: float, slopes0: Sequence[float],
+                        slopes1: Sequence[float]) -> Any:
         """Spectral integrate for several off-axis directions at once -> (D, n, n).
 
         Numerically identical to calling :meth:`_integrate` per direction, but
@@ -1425,38 +1467,39 @@ class Atmosphere:
         xp = self.xp
         cdtype = self._cdtype
         ns = self.n_screen
-        oxs = np.asarray(oxs, dtype=np.float64)
-        oys = np.asarray(oys, dtype=np.float64)
-        D = oxs.shape[0]
-        disp_x = self._vx[None, :] * t + self._alt[None, :] * oxs[:, None]  # (D, L)
-        disp_y = self._vy[None, :] * t + self._alt[None, :] * oys[:, None]
+        slopes0 = np.asarray(slopes0, dtype=np.float64)
+        slopes1 = np.asarray(slopes1, dtype=np.float64)
+        D = slopes0.shape[0]
+        disp0 = self._v0[None, :] * t + self._alt[None, :] * slopes0[:, None]  # (D, L)
+        disp1 = self._v1[None, :] * t + self._alt[None, :] * slopes1[:, None]
         if not self._wrap_warned:
-            self._check_wrap(disp_x, disp_y)
+            self._check_wrap(disp0, disp1)
         if self._gpu is not None:
-            return self._gpu.batch(disp_x, disp_y)
+            return self._gpu.batch(disp0, disp1)
         f = self._grid_f
-        sx_all = self._main_shift(disp_x)  # (D, L)
-        sy_all = self._main_shift(disp_y)
+        shift0_all = self._main_shift(disp0)  # (D, L)
+        shift1_all = self._main_shift(disp1)
         specs = xp.empty((D, ns, ns), dtype=cdtype)
         for d in range(D):
-            phx = xp.exp((2j * np.pi) * sx_all[d][:, None] * f[None, :]).astype(cdtype)
-            phy = xp.exp((2j * np.pi) * sy_all[d][:, None] * f[None, :]).astype(cdtype)
+            ph0 = xp.exp((2j * np.pi) * shift0_all[d][:, None] * f[None, :])
+            ph1 = xp.exp((2j * np.pi) * shift1_all[d][:, None] * f[None, :])
+            ph0, ph1 = ph0.astype(cdtype), ph1.astype(cdtype)
             if xp is np and _accel.HAVE_NUMBA:
                 spectrum = np.empty((ns, ns), dtype=cdtype)
-                _accel.spectral_layer_sum(self._spectra, phx, phy, spectrum)
+                _accel.spectral_layer_sum(self._spectra, ph0, ph1, spectrum)
                 specs[d] = spectrum
             else:
                 specs[d] = (
-                    self._spectra * phx[:, :, None] * phy[:, None, :]
+                    self._spectra * ph0[:, :, None] * ph1[:, None, :]
                 ).sum(axis=0)
         total = (self._fft.ifft2(specs, axes=(-2, -1)) * (ns * ns)).real  # (D, ns, ns)
 
         if self._n_sh:
-            px = self._sh_phasors(disp_x)  # (D, P, L, 3)
-            py = self._sh_phasors(disp_y)
+            sh0 = self._sh_phasors(disp0)  # (D, P, L, 3)
+            sh1 = self._sh_phasors(disp1)
             # (D, P, 3, 3): shift each level's per-layer 3x3 coeffs, sum layers.
             shifted = (
-                self._sh_coeffs[None] * px[:, :, :, :, None] * py[:, :, :, None, :]
+                self._sh_coeffs[None] * sh0[:, :, :, :, None] * sh1[:, :, :, None, :]
             ).sum(axis=2)
             m = xp.matmul(shifted, self._sh_basis[None]).reshape(D, self._n_sh * 3, ns)
             basis_flat = self._sh_basis.reshape(self._n_sh * 3, ns)  # (3P, ns)
@@ -1466,7 +1509,7 @@ class Atmosphere:
         total = total[:, self._crop, self._crop]
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
-    def _integrate_lgs(self, t: float, ox: float, oy: float,
+    def _integrate_lgs(self, t: float, slope0: float, slope1: float,
                        mags: Optional[np.ndarray] = None) -> Any:
         """Spectral frame with the LGS cone: per-layer inverse FFT then zoom.
 
@@ -1477,13 +1520,13 @@ class Atmosphere:
         layer zooms differently), so this is the slower per-layer path.
         """
         xp = self.xp
-        screens = self._layer_screens(t, ox, oy)
+        screens = self._layer_screens(t, slope0, slope1)
         taps = self._zoom_taps(self._lgs_mag if mags is None else mags)
         total = self._lgs_zoom(screens, taps)
         return xp.ascontiguousarray(total.astype(self.dtype_out, copy=False))
 
-    def _layer_screens(self, t: float, ox: float, oy: float) -> Any:
-        """Every layer's full ``(L, n_screen, n_screen)`` phase at ``t`` toward (ox, oy).
+    def _layer_screens(self, t: float, slope0: float, slope1: float) -> Any:
+        """Every layer's ``(L, n_screen, n_screen)`` phase at ``t`` toward the slopes.
 
         Frozen-flow shifted (and, if boiling, boiled), inverse-FFT'd per layer,
         with each layer's subharmonic low-frequency part added. Used where the
@@ -1492,26 +1535,26 @@ class Atmosphere:
         xp = self.xp
         cdtype = self._cdtype
         ns = self.n_screen
-        disp_x = self._vx * t + self._alt * ox
-        disp_y = self._vy * t + self._alt * oy
+        disp0 = self._v0 * t + self._alt * slope0
+        disp1 = self._v1 * t + self._alt * slope1
         if not self._wrap_warned:
-            self._check_wrap(disp_x, disp_y)
-        sx = self._main_shift(disp_x)
-        sy = self._main_shift(disp_y)
+            self._check_wrap(disp0, disp1)
+        shift0 = self._main_shift(disp0)
+        shift1 = self._main_shift(disp1)
         f = self._grid_f
-        phasor_x = xp.exp((2j * np.pi) * sx[:, None] * f[None, :]).astype(cdtype)
-        phasor_y = xp.exp((2j * np.pi) * sy[:, None] * f[None, :]).astype(cdtype)
-        spectra = self._spectra * phasor_x[:, :, None] * phasor_y[:, None, :]
+        phasor0 = xp.exp((2j * np.pi) * shift0[:, None] * f[None, :]).astype(cdtype)
+        phasor1 = xp.exp((2j * np.pi) * shift1[:, None] * f[None, :]).astype(cdtype)
+        spectra = self._spectra * phasor0[:, :, None] * phasor1[:, None, :]
         screens = (self._fft.ifft2(spectra, axes=(-2, -1)) * (ns * ns)).real  # (L,ns,ns)
 
         if self._n_sh:
             # Batch the phasor/shift across levels (small), but keep the layer
             # axis through the basis matmul: each layer's low-frequency screen
             # is zoomed differently below, so it cannot be collapsed here.
-            pxs = self._sh_phasors(disp_x)  # (P, L, 3)
-            pys = self._sh_phasors(disp_y)
+            sh0 = self._sh_phasors(disp0)  # (P, L, 3)
+            sh1 = self._sh_phasors(disp1)
             # (P, L, 3, 3): per level, per layer, shifted 3x3 coefficients.
-            shifted = self._sh_coeffs * pxs[:, :, :, None] * pys[:, :, None, :]
+            shifted = self._sh_coeffs * sh0[:, :, :, None] * sh1[:, :, None, :]
             low = None
             for p in range(self._n_sh):
                 basis = self._sh_basis[p]  # (3, ns)

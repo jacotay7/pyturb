@@ -27,8 +27,8 @@ if HAVE_NUMBA:
     from numba import njit, prange
 
     @njit(fastmath=True, cache=True)
-    def spectral_layer_sum(spectra, px, py, out):  # pragma: no cover - jit
-        """``out[i,j] = sum_l spectra[l,i,j] * px[l,i] * py[l,j]``.
+    def spectral_layer_sum(spectra, ph0, ph1, out):  # pragma: no cover - jit
+        """``out[i,j] = sum_l spectra[l,i,j] * ph0[l,i] * ph1[l,j]``.
 
         The separable frozen-flow shift and layer sum in one fused pass: the
         ``(L, n, n)`` spectrum stack is read once and the ``(n, n)`` shifted sum
@@ -46,9 +46,9 @@ if HAVE_NUMBA:
         n_layers, n_rows, n_cols = spectra.shape
         for i in range(n_rows):
             for j in range(n_cols):
-                acc = spectra[0, i, j] * px[0, i] * py[0, j]
+                acc = spectra[0, i, j] * ph0[0, i] * ph1[0, j]
                 for lyr in range(1, n_layers):
-                    acc += spectra[lyr, i, j] * px[lyr, i] * py[lyr, j]
+                    acc += spectra[lyr, i, j] * ph0[lyr, i] * ph1[lyr, j]
                 out[i, j] = acc
 
     @njit(parallel=True, fastmath=True, cache=True)

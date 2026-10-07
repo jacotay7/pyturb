@@ -63,6 +63,12 @@ lower-level `PhaseScreen`/`InfinitePhaseScreen` building blocks; and
 **[Concepts](https://jacotay7.github.io/pyturb/concepts/)** for r0, L0, Cn²,
 θ0 and τ0 if you're new to AO.
 
+Arrays are indexed `(y, x)` — x along axis 1 (columns), y along axis 0 (rows) —
+the convention of aobasis, makewfs, solvephase and HCIPy; wind directions,
+off-axis `(thx, thy)` and Zernike modes all follow it. Upgrading from 1.x,
+whose x was axis 0? See
+**[Migrating to 2.0](https://jacotay7.github.io/pyturb/migration-2/)**.
+
 ## Benchmarks
 
 Full 9-layer Paranal atmosphere, frames/s (Monte-Carlo: screens/s).

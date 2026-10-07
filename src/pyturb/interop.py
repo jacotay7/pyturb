@@ -36,10 +36,15 @@ class HCIPyLayer:
     Notes
     -----
     Field ordering: an HCIPy pupil field reshaped to 2-D is indexed
-    ``[y, x]``, and pyturb's OPD ``[axis 0, axis 1]`` is flattened onto it
-    row-major, so pyturb axis 0 is HCIPy's **y** and axis 1 its **x**. pyturb's
-    ``Layer.wind_vector`` points where the wind comes from (the pattern moves
-    along ``-wind_vector``); HCIPy layer velocities are the pattern's motion.
+    ``[y, x]``, the same ``(y, x)`` convention as pyturb's OPD arrays, which
+    are flattened onto it row-major; pyturb's x (axis 1) is HCIPy's x and its
+    y (axis 0) HCIPy's y, so direction tuples ``(thx, thy)`` carry over
+    unchanged. pyturb's ``Layer.wind_vector`` points where the wind comes
+    from (the pattern moves along ``-wind_vector``); HCIPy 0.7's
+    ``InfiniteAtmosphericLayer`` velocity behaves the same way, so its
+    ``velocity=(vx, vy)`` is ``wind_direction = degrees(atan2(vy, vx))``.
+    HCIPy's ``FiniteAtmosphericLayer`` uses a different sign and axis order;
+    see the Interop docs.
 
     The OPD at the current time is evaluated once and reused for every
     wavelength (WFS and science), converted with the atmosphere's

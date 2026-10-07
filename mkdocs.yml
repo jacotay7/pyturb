@@ -42,6 +42,7 @@ nav:
   - Interop: interop.md
   - API reference: api.md
   - Project:
+      - Migrating to 2.0: migration-2.md
       - Changelog: changelog.md
       - Roadmap: roadmap.md
       - Contributing: contributing.md

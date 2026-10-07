@@ -59,7 +59,7 @@ cuda13 = ["cupy-cuda13x[ctk]"]
 # layer sum, extruder bicubic readout). pyturb runs without it (NumPy
 # fallback); with it the CPU frame rate is several times higher.
 accel = ["numba>=0.58"]
-test = ["pytest>=7", "pytest-cov"]
+test = ["pytest>=7", "pytest-cov", "aocore>=0.1.1"]
 fits = ["astropy>=5"]
 plot = ["matplotlib>=3.5"]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]

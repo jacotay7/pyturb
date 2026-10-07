@@ -221,7 +221,7 @@ def _get_readout_kernel(dtype: Any, interp: str = "cubic"):
 
 
 def _along_extent_and_span(
-    n: int, wind_vx: float, wind_vy: float, magnification: float, fov_margin_pix: float
+    n: int, wind_v0: float, wind_v1: float, magnification: float, fov_margin_pix: float
 ) -> Tuple[float, int]:
     """This layer's own along-wind half-extent and the buffer span it needs.
 
@@ -235,9 +235,9 @@ def _along_extent_and_span(
     so a caller sizing a shared buffer from this gets exactly what that layer
     will actually use.
     """
-    speed = float(np.hypot(wind_vx, wind_vy))
-    c = wind_vx / speed if speed > 0 else 1.0
-    s = wind_vy / speed if speed > 0 else 0.0
+    speed = float(np.hypot(wind_v0, wind_v1))
+    c = wind_v0 / speed if speed > 0 else 1.0
+    s = wind_v1 / speed if speed > 0 else 0.0
     half = (n - 1) / 2.0 * float(magnification)
     along_extent = half * (abs(c) + abs(s))
     span = (
@@ -325,8 +325,8 @@ class _ExtrudeLayer:
         pixel_scale: float,
         r0: float,
         L0: float,
-        wind_vx: float,
-        wind_vy: float,
+        wind_v0: float,
+        wind_v1: float,
         altitude_los: float,
         stencil_rows: int,
         interp: str,
@@ -350,10 +350,10 @@ class _ExtrudeLayer:
         self.interp = interp
         self._rng = rng
 
-        speed = float(np.hypot(wind_vx, wind_vy))
+        speed = float(np.hypot(wind_v0, wind_v1))
         self.speed = speed
-        c = wind_vx / speed if speed > 0 else 1.0
-        s = wind_vy / speed if speed > 0 else 0.0
+        c = wind_v0 / speed if speed > 0 else 1.0
+        s = wind_v1 / speed if speed > 0 else 0.0
         self._cos, self._sin = c, s
         self.altitude_pix = float(altitude_los) / self.dx
 
@@ -377,10 +377,10 @@ class _ExtrudeLayer:
         # 1 - h/H_LGS`` for a guide star at finite altitude.
         mag = float(magnification)
         g = (np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0) * mag
-        gx = g[:, None]
-        gy = g[None, :]
-        along = gx * c + gy * s
-        perp = -gx * s + gy * c
+        g0 = g[:, None]
+        g1 = g[None, :]
+        along = g0 * c + g1 * s
+        perp = -g0 * s + g1 * c
         self._along = xp.asarray(along, dtype=np.float64)
         self._perp = xp.asarray(perp + self.W / 2.0, dtype=np.float64)
         self._along_min = float(along.min())
@@ -467,17 +467,17 @@ class _ExtrudeLayer:
         if extrude:
             self._ensure()
 
-    def offsets_for_direction(self, thx: float, thy: float) -> Tuple[float, float]:
+    def offsets_for_direction(self, slope0: float, slope1: float) -> Tuple[float, float]:
         """(along, perp) pixel shift of the footprint for an off-axis angle.
 
-        ``thx``/``thy`` are direction tangents (``tan(theta)``); the footprint
-        moves by ``altitude * tan(theta)`` in the world frame, projected onto
-        the layer's wind axes.
+        ``slope0``/``slope1`` are the direction tangents (``tan(theta)``) along
+        array axes 0 and 1; the footprint moves by ``altitude * tan(theta)`` in
+        the pupil frame, projected onto the layer's wind axes.
         """
-        dx_pix = self.altitude_pix * thx
-        dy_pix = self.altitude_pix * thy
-        along = dx_pix * self._cos + dy_pix * self._sin
-        perp = -dx_pix * self._sin + dy_pix * self._cos
+        d0_pix = self.altitude_pix * slope0
+        d1_pix = self.altitude_pix * slope1
+        along = d0_pix * self._cos + d1_pix * self._sin
+        perp = -d0_pix * self._sin + d1_pix * self._cos
         return along, perp
 
     # -- boiling (temporal decorrelation) -----------------------------
@@ -518,6 +518,12 @@ class ExtrudedAtmosphere:
     is a single fused gather over all layers (a custom CUDA / Numba kernel for
     the cubic and Lanczos interpolators), summed into one reference-wavelength
     phase screen. The public :class:`Atmosphere` wraps this and converts to OPD.
+
+    The engine works in array-axis order throughout: each ``layer_wind`` entry
+    is ``(v0, v1)`` [m/s] along axes 0 and 1, and direction tangents
+    (``slope0``, ``slope1``) and :meth:`sample_points` offsets are along axes 0
+    and 1. :class:`pyturb.Atmosphere` converts its public ``(x, y)`` frame
+    (x = axis 1, y = axis 0) to this order.
 
     ``capacity``/``width`` are shared by every layer's slab (needed for the
     fused gather), but are sized to the largest requirement **actually
@@ -587,8 +593,8 @@ class ExtrudedAtmosphere:
         # Size the shared (L, cap, W) buffer to the largest per-layer need
         # actually present (see class docstring), not a blanket worst case.
         along_extents, spans = [], []
-        for (vx, vy), mag, fov_i in zip(layer_wind, magnifications, fov_list):
-            extent, span = _along_extent_and_span(self.n, vx, vy, mag, fov_i)
+        for (v0, v1), mag, fov_i in zip(layer_wind, magnifications, fov_list):
+            extent, span = _along_extent_and_span(self.n, v0, v1, mag, fov_i)
             along_extents.append(extent)
             spans.append(span)
         width = int(np.ceil(2.0 * max(along_extents) + 2.0 * max(fov_list))) + 4
@@ -606,7 +612,7 @@ class ExtrudedAtmosphere:
         self._ab_cache: dict = {}
         self.layers: List[_ExtrudeLayer] = []
         self._buf = xp.empty((n_layers, capacity, width), dtype=self.dtype)
-        for i, (r0, L0, (vx, vy), alt, seed, mag, fov_i, tau) in enumerate(
+        for i, (r0, L0, (v0, v1), alt, seed, mag, fov_i, tau) in enumerate(
             zip(layer_r0, layer_L0, layer_wind, layer_altitude_los, seeds,
                 magnifications, fov_list, tau_list)
         ):
@@ -625,8 +631,8 @@ class ExtrudedAtmosphere:
                     pixel_scale=self.dx,
                     r0=r0,
                     L0=L0,
-                    wind_vx=vx,
-                    wind_vy=vy,
+                    wind_v0=v0,
+                    wind_v1=v1,
                     altitude_los=alt,
                     stencil_rows=stencil_rows,
                     interp=interp,
@@ -859,14 +865,14 @@ class ExtrudedAtmosphere:
         along, perp = [], []
         for layer, mag in zip(self.layers, key):
             g = (np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0) * mag
-            gx, gy = g[:, None], g[None, :]
-            along.append(gx * layer._cos + gy * layer._sin)
-            perp.append(-gx * layer._sin + gy * layer._cos + self.width / 2.0)
+            g0, g1 = g[:, None], g[None, :]
+            along.append(g0 * layer._cos + g1 * layer._sin)
+            perp.append(-g0 * layer._sin + g1 * layer._cos + self.width / 2.0)
         grids = (xp.asarray(np.stack(along)), xp.asarray(np.stack(perp)))
         self._grid_cache[key] = grids
         return grids
 
-    def integrate(self, thx: float = 0.0, thy: float = 0.0,
+    def integrate(self, slope0: float = 0.0, slope1: float = 0.0,
                   mags: Optional[Sequence[float]] = None) -> Any:
         """Summed reference-wavelength phase ``(n, n)`` toward one direction.
 
@@ -888,36 +894,37 @@ class ExtrudedAtmosphere:
             built = (self._along, self._perp)
             self._along, self._perp = self._grids_for(mags)
             try:
-                return self.integrate(thx, thy)
+                return self.integrate(slope0, slope1)
             finally:
                 self._along, self._perp = built
         if self.xp is np:
             if self.interp in ("cubic", "lanczos") and _accel.HAVE_NUMBA:
-                return self._integrate_cpu_fused(thx, thy)
-            return self._integrate_looped(thx, thy)
-        return self._integrate_batched(thx, thy)
+                return self._integrate_cpu_fused(slope0, slope1)
+            return self._integrate_looped(slope0, slope1)
+        return self._integrate_batched(slope0, slope1)
 
-    def sample_points(self, x_pix: Any, y_pix: Any, thx: float = 0.0, thy: float = 0.0,
+    def sample_points(self, pix0: Any, pix1: Any, slope0: float = 0.0,
+                      slope1: float = 0.0,
                       mags: Optional[Sequence[float]] = None) -> Any:
         """Summed phase at arbitrary pupil-frame pixel coordinates (any shape).
 
-        ``x_pix``/``y_pix`` are offsets from the pupil centre in pixels along
+        ``pix0``/``pix1`` are offsets from the pupil centre in pixels along
         axes 0 and 1. Each layer is read at its rotated, cone-magnified position
         with the configured interpolation kernel. Only the region the buffer
         holds (the pupil footprint plus the ``field_of_view`` margin) can be
         read; points outside it raise.
         """
         xp = self.xp
-        x_pix = np.asarray(x_pix, dtype=np.float64)
-        y_pix = np.asarray(y_pix, dtype=np.float64)
+        pix0 = np.asarray(pix0, dtype=np.float64)
+        pix1 = np.asarray(pix1, dtype=np.float64)
         mags = self.magnifications if mags is None else tuple(float(m) for m in mags)
-        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        shift_along, shift_perp, fill = self._readout_shifts(slope0, slope1)
         reach = {"linear": (0, 1), "lanczos": (2, 3)}.get(self.interp, (1, 2))
         total = None
         for i, layer in enumerate(self.layers):
-            gx, gy = x_pix * mags[i], y_pix * mags[i]
-            row = gx * layer._cos + gy * layer._sin + shift_along[i]
-            col = -gx * layer._sin + gy * layer._cos + self.width / 2.0 + shift_perp[i]
+            g0, g1 = pix0 * mags[i], pix1 * mags[i]
+            row = g0 * layer._cos + g1 * layer._sin + shift_along[i]
+            col = -g0 * layer._sin + g1 * layer._cos + self.width / 2.0 + shift_perp[i]
             low_row = np.floor(row.min()) - reach[0]
             high_row = np.floor(row.max()) + reach[1]
             low_col = np.floor(col.min()) - reach[0]
@@ -947,12 +954,12 @@ class ExtrudedAtmosphere:
             total = out if total is None else total + out
         return total.astype(self.dtype, copy=False)
 
-    def _integrate_cpu_fused(self, thx: float, thy: float) -> Any:
+    def _integrate_cpu_fused(self, slope0: float, slope1: float) -> Any:
         """Fused Numba readout on CPU (one parallel pass, no temps).
 
         Catmull-Rom or Lanczos-3 per :attr:`interp`; both mirror the GPU kernels.
         """
-        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        shift_along, shift_perp, fill = self._readout_shifts(slope0, slope1)
         out = np.empty((self.n, self.n), dtype=self.dtype)
         kernel = (
             _accel.extrude_lanczos_readout
@@ -982,7 +989,7 @@ class ExtrudedAtmosphere:
             tuple(zip((-1, 0, 1, 2), _catmull_rom_weights(fc))),
         )
 
-    def _readout_shifts(self, thx: float, thy: float):
+    def _readout_shifts(self, slope0: float, slope1: float):
         """Per-layer (along-shift, perp-shift, fill) readout scalars, host-side.
 
         The along-wind shift keeps travel and base combined in float64 before
@@ -993,13 +1000,13 @@ class ExtrudedAtmosphere:
         shift_perp = np.empty(len(layers), dtype=np.float64)
         fill = np.empty(len(layers), dtype=np.int64)
         for i, layer in enumerate(layers):
-            off_along, off_perp = layer.offsets_for_direction(thx, thy)
+            off_along, off_perp = layer.offsets_for_direction(slope0, slope1)
             shift_along[i] = (layer._travel - layer._base) + off_along
             shift_perp[i] = off_perp
             fill[i] = layer._fill
         return shift_along, shift_perp, fill
 
-    def _integrate_batched(self, thx: float, thy: float) -> Any:
+    def _integrate_batched(self, slope0: float, slope1: float) -> Any:
         """GPU readout: one fused gather over the stacked ``(L, cap, W)`` buffer.
 
         For the default Catmull-Rom ``interp="cubic"`` this is a single custom
@@ -1009,8 +1016,8 @@ class ExtrudedAtmosphere:
         """
         xp = self.xp
         if self.interp in ("cubic", "lanczos"):
-            return self._integrate_fused_kernel(thx, thy)
-        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+            return self._integrate_fused_kernel(slope0, slope1)
+        shift_along, shift_perp, fill = self._readout_shifts(slope0, slope1)
         sa = xp.asarray(shift_along)[:, None, None]
         sp = xp.asarray(shift_perp)[:, None, None]
         row = self._along + sa  # (L, n, n) float64
@@ -1039,10 +1046,10 @@ class ExtrudedAtmosphere:
         total = out.sum(axis=0)  # sum over layers -> (n, n)
         return xp.ascontiguousarray(total.astype(self.dtype, copy=False))
 
-    def _integrate_fused_kernel(self, thx: float, thy: float) -> Any:
+    def _integrate_fused_kernel(self, slope0: float, slope1: float) -> Any:
         """Fused single-kernel readout (Catmull-Rom or Lanczos-3, see kernels)."""
         xp = self.xp
-        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        shift_along, shift_perp, fill = self._readout_shifts(slope0, slope1)
         L, n = len(self.layers), self.n
         out = xp.empty((n, n), dtype=self.dtype)
         ker = _get_readout_kernel(self.dtype, self.interp)
@@ -1058,7 +1065,7 @@ class ExtrudedAtmosphere:
         )
         return out
 
-    def _integrate_looped(self, thx: float, thy: float) -> Any:
+    def _integrate_looped(self, slope0: float, slope1: float) -> Any:
         """CPU readout: per-layer ``(n, n)`` gather, summed as we go.
 
         A big fused ``(L, n, n)`` fancy-index gather is memory-bound and cache-
@@ -1066,7 +1073,7 @@ class ExtrudedAtmosphere:
         markedly faster on the CPU than the batched path the GPU prefers.
         """
         xp = self.xp
-        shift_along, shift_perp, fill = self._readout_shifts(thx, thy)
+        shift_along, shift_perp, fill = self._readout_shifts(slope0, slope1)
         wmax = self.width - 1
         total = None
         for i in range(len(self.layers)):

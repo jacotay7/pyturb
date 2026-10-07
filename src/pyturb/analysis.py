@@ -89,6 +89,14 @@ def zernike_basis(
 ) -> np.ndarray:
     """Noll-ordered Zernike basis over a circular pupil.
 
+    Axes follow the array convention ``(y, x)``: x runs along axis 1
+    (columns), y along axis 0 (rows), both increasing with the index, and the
+    azimuth ``theta = atan2(y, x)`` is measured from +x toward +y. So Noll
+    ``j = 2`` (tip, ``cos theta``) varies along the columns and ``j = 3``
+    (tilt, ``sin theta``) along the rows. This matches
+    ``aobasis.ZernikeBasisGenerator`` evaluated at
+    ``aobasis.positions_from_mask`` positions (x = columns, y = rows).
+
     Parameters
     ----------
     n_modes : int
@@ -110,7 +118,7 @@ def zernike_basis(
         raise ValueError("n_modes >= 1 and n_pixels >= 2 required")
     radius = (n_pixels if diameter_pixels is None else diameter_pixels) / 2.0
     grid = (np.arange(n_pixels) - (n_pixels - 1) / 2.0) / radius
-    xx, yy = np.meshgrid(grid, grid, indexing="ij")
+    yy, xx = np.meshgrid(grid, grid, indexing="ij")  # y = axis 0, x = axis 1
     rho = np.hypot(xx, yy)
     theta = np.arctan2(yy, xx)
     mask = rho <= 1.0

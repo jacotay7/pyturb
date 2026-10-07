@@ -71,12 +71,13 @@ class Layer:
     wind_speed : float
         Wind speed [m/s].
     wind_direction : float
-        Direction the wind blows **from** [deg], measured from axis 0 toward
-        axis 1 (the meteorological convention). Arbitrary (need not be
-        axis-aligned). The turbulence pattern therefore moves across the pupil
-        along ``-wind_vector``: with ``wind_direction=0`` it travels toward
-        decreasing axis-0 index, and new turbulence enters at the high-index
-        edge. Every engine uses this convention.
+        Direction the wind blows **from** [deg] (the meteorological
+        convention), measured from +x (axis 1, columns) toward +y (axis 0,
+        rows). Arbitrary (need not be axis-aligned). The turbulence pattern
+        therefore moves across the pupil along ``-wind_vector``: with
+        ``wind_direction=0`` it travels toward decreasing column index and new
+        turbulence enters at the high-column edge; with ``90`` it travels
+        toward decreasing row index. Every engine uses this convention.
     L0 : float
         Outer scale [m] for this layer. Default 25 m.
     """
@@ -89,10 +90,11 @@ class Layer:
 
     @property
     def wind_vector(self) -> Tuple[float, float]:
-        """``(vx, vy)`` [m/s] along axes 0 and 1, pointing where the wind comes from.
+        """``(vx, vy)`` [m/s] along x (axis 1) and y (axis 0), pointing upwind.
 
-        The frozen-flow pattern moves along ``-wind_vector``: the phase at time
-        ``t`` is ``phi(x, t) = phi_0(x + wind_vector * t)``.
+        The vector points where the wind comes from, and the frozen-flow
+        pattern moves along ``-wind_vector``: the phase at pupil position
+        ``r = (x, y)`` and time ``t`` is ``phi(r, t) = phi_0(r + wind_vector * t)``.
         """
         theta = np.deg2rad(self.wind_direction)
         return self.wind_speed * np.cos(theta), self.wind_speed * np.sin(theta)

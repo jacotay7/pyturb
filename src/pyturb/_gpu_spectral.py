@@ -27,8 +27,8 @@ import numpy as np
 _SRC = r"""
 #include <cupy/complex.cuh>
 extern "C" __global__ void spectral_layer_sum_{suf}(
-    const complex<{T}>* __restrict__ spec, const complex<{T}>* __restrict__ px,
-    const complex<{T}>* __restrict__ py, complex<{T}>* __restrict__ out,
+    const complex<{T}>* __restrict__ spec, const complex<{T}>* __restrict__ ph0,
+    const complex<{T}>* __restrict__ ph1, complex<{T}>* __restrict__ out,
     int L, int ns, long long total, {T} scale)
 {{
     long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
@@ -41,7 +41,7 @@ extern "C" __global__ void spectral_layer_sum_{suf}(
     complex<{T}> acc(0, 0);
     for (int l = 0; l < L; ++l) {{
         long long row = (b * L + l) * ns;
-        acc += spec[l * plane + rem] * px[row + i] * py[row + j];
+        acc += spec[l * plane + rem] * ph0[row + i] * ph1[row + j];
     }}
     out[idx] = acc * scale;
 }}
@@ -125,32 +125,32 @@ class SpectralGPU:
         shift = cp.mod(disp, self.period)
         return cp.exp((2j * np.pi) * shift[..., None] * self.f64).astype(self.cdtype)
 
-    def compute(self, dx: Any, dy: Any) -> Any:
+    def compute(self, disp0: Any, disp1: Any) -> Any:
         """Pupil phase ``(B, n, n)`` for float64 device displacements ``(B, L)``."""
         cp = self.cp
         atm = self.atm
-        B = dx.shape[0]
+        B = disp0.shape[0]
         ns = self.ns
-        px = self._phasors(dx)
-        py = self._phasors(dy)
+        ph0 = self._phasors(disp0)
+        ph1 = self._phasors(disp1)
         spectrum = cp.empty((B, ns, ns), dtype=self.cdtype)
         total = B * ns * ns
         threads = 256
         _kernel("spectral_layer_sum", self.rdtype)(
             ((total + threads - 1) // threads,), (threads,),
-            (atm._spectra, px, py, spectrum, np.int32(self.L), np.int32(ns),
+            (atm._spectra, ph0, ph1, spectrum, np.int32(self.L), np.int32(ns),
              np.int64(total), self.rdtype.type(ns * ns)),
         )
         field = atm._fft.ifft2(spectrum, axes=(-2, -1)).real
         if self.n_sh:
             # Subharmonic level p repeats only every 3**p periods: phase in
             # float64 cycles, reduced modulo one, then unit phasors.
-            cyc_x = dx[:, None, :, None] * self.fp64[None, :, None, :]  # (B,P,L,3)
-            cyc_y = dy[:, None, :, None] * self.fp64[None, :, None, :]
-            sx = cp.exp((2j * np.pi) * cp.mod(cyc_x, 1.0)).astype(self.cdtype)
-            sy = cp.exp((2j * np.pi) * cp.mod(cyc_y, 1.0)).astype(self.cdtype)
+            cyc0 = disp0[:, None, :, None] * self.fp64[None, :, None, :]  # (B,P,L,3)
+            cyc1 = disp1[:, None, :, None] * self.fp64[None, :, None, :]
+            sh0 = cp.exp((2j * np.pi) * cp.mod(cyc0, 1.0)).astype(self.cdtype)
+            sh1 = cp.exp((2j * np.pi) * cp.mod(cyc1, 1.0)).astype(self.cdtype)
             shifted = cp.ascontiguousarray((
-                atm._sh_coeffs[None] * sx[..., None] * sy[..., None, :]
+                atm._sh_coeffs[None] * sh0[..., None] * sh1[..., None, :]
             ).sum(axis=2))  # (B, P, 3, 3)
             # The basis products are tiny (9 terms per level per pixel) and
             # cuBLAS cannot run inside a CUDA-graph capture, so one kernel
@@ -166,25 +166,25 @@ class SpectralGPU:
         out = field[:, self.crop, self.crop]
         return cp.ascontiguousarray(out.astype(self.out_dtype, copy=False))
 
-    def batch(self, disp_x: np.ndarray, disp_y: np.ndarray) -> Any:
+    def batch(self, disp0: np.ndarray, disp1: np.ndarray) -> Any:
         """Eager frames for host float64 displacements ``(B, L)``."""
         cp = self.cp
-        return self.compute(cp.asarray(disp_x, dtype=np.float64),
-                            cp.asarray(disp_y, dtype=np.float64))
+        return self.compute(cp.asarray(disp0, dtype=np.float64),
+                            cp.asarray(disp1, dtype=np.float64))
 
     # ------------------------------------------------------------------
-    def single(self, disp_x: np.ndarray, disp_y: np.ndarray) -> Any:
+    def single(self, disp0: np.ndarray, disp1: np.ndarray) -> Any:
         """One frame ``(n, n)``, replayed from a CUDA graph when possible."""
         if not self.use_graph or self._graph_failed:
-            return self.batch(disp_x[None], disp_y[None])[0]
+            return self.batch(disp0[None], disp1[None])[0]
         cp = self.cp
         if self._graph is None:
             self._capture()
             if self._graph is None:
-                return self.batch(disp_x[None], disp_y[None])[0]
+                return self.batch(disp0[None], disp1[None])[0]
         current = cp.cuda.get_current_stream()
         self._stream.wait_event(current.record())
-        host = np.stack((disp_x, disp_y)).astype(np.float64)[:, None, :]
+        host = np.stack((disp0, disp1)).astype(np.float64)[:, None, :]
         with self._stream:
             self._disp.set(host)
             self._graph.launch()
