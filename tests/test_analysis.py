@@ -1,5 +1,7 @@
 """Tests for the analysis utilities (Zernikes, Noll, temporal PSD, angular)."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -12,6 +14,40 @@ def test_noll_to_zernike_mapping():
                 6: (2, 2), 7: (3, -1), 8: (3, 1), 11: (4, 0)}
     for j, nm in expected.items():
         assert A.noll_to_zernike(j) == nm
+
+
+def _noll_to_nm_reference(j):
+    """Noll's (1976) index walk, independent of aobasis."""
+    n, j1 = 0, j - 1
+    while j1 > n:
+        n += 1
+        j1 -= n
+    return n, (-1) ** j * ((n % 2) + 2 * ((j1 + ((n + 1) % 2)) // 2))
+
+
+def test_noll_to_zernike_matches_reference_and_basis_sign():
+    for j in range(1, 3001):
+        n, m = A.noll_to_zernike(j)
+        assert (n, m) == _noll_to_nm_reference(j)
+        assert type(n) is int and type(m) is int
+    assert A.noll_to_zernike(np.int64(8)) == (3, 1)
+    # m > 0 is cos(m theta), m < 0 sin(|m| theta) in the zernike_basis frame:
+    # Z6 = (2, 2) is sqrt(6) r^2 cos(2 theta), Z5 = (2, -2) sqrt(6) r^2 sin(2 theta).
+    n = 32
+    basis = A.zernike_basis(6, n)
+    c = (np.arange(n) - (n - 1) / 2.0) / (n / 2.0)
+    y, x = np.meshgrid(c, c, indexing="ij")
+    mask = basis[0] != 0
+    np.testing.assert_allclose(basis[5][mask], (np.sqrt(6) * (x**2 - y**2))[mask],
+                               atol=1e-12)
+    np.testing.assert_allclose(basis[4][mask], (np.sqrt(6) * 2 * x * y)[mask],
+                               atol=1e-12)
+
+
+@pytest.mark.parametrize("bad", [0, -2, 2.0, True, np.array([2, 3])])
+def test_noll_to_zernike_rejects_invalid_index(bad):
+    with pytest.raises(ValueError, match="Noll index j must be"):
+        A.noll_to_zernike(bad)
 
 
 def test_basis_orthonormal_over_pupil():
@@ -54,6 +90,40 @@ def test_basis_rejects_degenerate_requests():
     # A 2-pixel-wide pupil holds 4 pixel centres: 5 modes cannot be independent.
     with pytest.raises(ValueError, match="exceeds the 4 pixels inside the pupil"):
         A.zernike_basis(5, 16, diameter_pixels=2.0)
+
+
+def test_basis_rank_check_runs_only_when_independence_is_not_guaranteed(monkeypatch):
+    calls = []
+    real = A.zernike_modes_on_mask
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs["check_rank"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(A, "zernike_modes_on_mask", spy)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        A.zernike_basis(200, 64)  # radial order 19 < 46-pixel inscribed square
+    # An 8-pixel pupil (52 pixel centres, 6 x 6 inscribed square) cannot carry
+    # 45 independent sampled Zernikes: the check runs and says so.
+    with pytest.warns(RuntimeWarning, match="linearly dependent"):
+        A.zernike_basis(45, 8)
+    assert calls == [False, True]
+
+
+@pytest.mark.parametrize("n", [4, 7, 8, 13, 16, 21])
+def test_basis_skipped_rank_check_is_full_rank(n):
+    # The largest basis zernike_basis builds without the rank check on each
+    # pupil is numerically full rank, so skipping the check hides nothing.
+    for diameter in (float(n), 0.8 * n):
+        y, x = np.meshgrid(np.arange(n) - (n - 1) / 2.0, np.arange(n) - (n - 1) / 2.0,
+                           indexing="ij")
+        mask = np.hypot(x, y) <= diameter / 2.0
+        side = int(np.count_nonzero(np.diagonal(mask)))
+        n_modes = max(j for j in range(1, int(mask.sum()) + 1)
+                      if A.noll_to_zernike(j)[0] <= side - 1)
+        basis = A.zernike_basis(n_modes, n, diameter_pixels=diameter)
+        assert np.linalg.matrix_rank(basis[:, mask].T) == n_modes
 
 
 def test_decompose_recovers_known_coefficients():

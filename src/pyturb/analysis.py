@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Optional, Tuple, Union
 
 import numpy as np
-from aobasis import ZernikeBasisGenerator, positions_from_mask
+from aobasis import noll_to_nm, zernike_modes_on_mask
 from aocore import coordinate_grid
 from numpy.typing import ArrayLike
 
@@ -63,21 +63,29 @@ def _noll_residual_coeff(j):
 def noll_to_zernike(j: int) -> Tuple[int, int]:
     """Radial/azimuthal orders ``(n, m)`` for Noll single index ``j`` (>= 1).
 
-    Even ``j`` give the cosine terms (``m > 0``) and odd ``j`` the sine terms
-    (``m < 0``), the same mapping ``aobasis.ZernikeBasisGenerator`` uses for
-    ``ordering="noll"``. It stays local because :mod:`pyturb.theory` needs the
-    ``(n, m)`` of a mode without building a basis, and aobasis has no public
-    index-mapping function.
+    Even ``j`` give the cosine terms (``m > 0``, ``cos(m theta)``) and odd
+    ``j`` the sine terms (``m < 0``, ``sin(|m| theta)``), with ``theta``
+    measured from +x (axis 1) toward +y (axis 0): ``j = 2`` is ``(1, 1)``,
+    tip along x. This is the mapping :func:`zernike_basis` uses; the value is
+    ``aobasis.noll_to_nm(j)``.
+
+    Parameters
+    ----------
+    j : int
+        Noll index, a Python or NumPy integer ``>= 1``.
+
+    Returns
+    -------
+    (n, m) : tuple of int
     """
+    if isinstance(j, (bool, np.bool_)) or not isinstance(j, (int, np.integer)):
+        raise ValueError(
+            f"Noll index j must be an integer, got {j!r} ({type(j).__name__}): "
+            "Noll indices count modes from 1"
+        )
     if j < 1:
         raise ValueError("Noll index j must be >= 1")
-    n = 0
-    j1 = j - 1
-    while j1 > n:
-        n += 1
-        j1 -= n
-    m = (-1) ** j * ((n % 2) + 2 * ((j1 + ((n + 1) % 2)) // 2))
-    return n, m
+    return noll_to_nm(int(j))
 
 
 def zernike_basis(
@@ -85,7 +93,7 @@ def zernike_basis(
 ) -> np.ndarray:
     """Noll-ordered Zernike basis over a circular pupil.
 
-    The polynomials are evaluated by ``aobasis.ZernikeBasisGenerator`` (the
+    The polynomials are evaluated by ``aobasis.zernike_modes_on_mask`` (the
     stack's one Zernike implementation) at the pupil pixel centres, which sit
     at ``i - (n_pixels - 1) / 2`` pixels from the grid centre along each axis
     (``aocore.coordinate_grid``).
@@ -132,12 +140,22 @@ def zernike_basis(
             f"(diameter {2.0 * radius:g} pixels): more modes than samples "
             "cannot be linearly independent; use fewer modes or a larger grid"
         )
-    positions = positions_from_mask(mask, pitch=1.0)  # (x, y) per pupil pixel
-    generator = ZernikeBasisGenerator(positions, pupil_radius=radius)
-    modes = generator.generate(n_modes)  # (n_pupil, n_modes), Noll order
-    basis = np.zeros((n_modes, n_pixels, n_pixels))
-    basis[:, mask] = modes.T
-    return basis
+    # aobasis' rank check (a pivoted QR, most of the build time for a large
+    # basis) is skipped when the basis is full rank by construction; the modes
+    # are identical either way. The pupil contains a k x k square of pixel
+    # centres (k = pupil pixels on the diagonal: if (c, c) is inside, so is
+    # every (x, y) with |x|, |y| <= |c|). Polynomials of degree <= k - 1 in
+    # (x, y) are linearly independent on a k x k grid (the monomials x^a y^b,
+    # a, b < k, are), and the first n_modes Zernikes are independent
+    # polynomials of degree <= the radial order of mode n_modes. Measured on
+    # every grid up to 48 pixels, the check never flags a basis this rule
+    # skips; it only runs when the mode count approaches the pupil's pixel
+    # count (e.g. > 21 modes on an 8-pixel pupil, none of 200 on 512 pixels).
+    side = int(np.count_nonzero(np.diagonal(mask)))
+    full_rank = noll_to_nm(n_modes)[0] <= side - 1
+    return zernike_modes_on_mask(
+        mask, n_modes, pupil_radius=radius, check_rank=not full_rank
+    )
 
 
 def zernike_decompose(
