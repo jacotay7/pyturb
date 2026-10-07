@@ -211,6 +211,38 @@ Reading this:
 - The LGS cone and boiling paths are not graph-captured, so they remain
   host-bound on the GPU.
 
+## 6. pyturb 2.2 on the same Arm workstation
+
+The §5 suite re-run on the same host after the 2.0 axis-convention change
+(x = columns) and the move of Zernike bases to aobasis/aocore (2.1, 2.2).
+Same configuration and protocol: 9-layer `paranal-median`, D = 8 m, 1 s per
+cell, every run pinned to 16 idle cores (`taskset -c 16-31`). Python 3.13,
+NumPy 2.5.3, SciPy 1.18.1, CuPy 14.2.0, Numba 0.67, driver 580.
+Artifacts: [`v2.2.0-arm-rtx4060.json`](artifacts/v2.2.0-arm-rtx4060.json),
+[`v2.2.0-arm-rtxa400.json`](artifacts/v2.2.0-arm-rtxa400.json),
+[`v2.2.0-arm-neoverse-n1-16core.json`](artifacts/v2.2.0-arm-neoverse-n1-16core.json)
+(revision `4922051`, `source_dirty: false`). The test suite, including the
+GPU tests, and `validation/validate.py` pass on this machine.
+
+| metric | RTX 4060 256 / 512 / 1024 | RTX A400 256 / 512 / 1024 | 16× N1 CPU 256 / 512 / 1024 |
+|---|---|---|---|
+| `sample` screens/s | 36,224 / 7,133 / 1,747 | 9,449 / 2,465 / 615 | 720 / 173 / 44 |
+| frames, spectral | 6,649 / 4,508 / 1,304 | 4,815 / 1,285 / 327 | 222 / 51 / 8 |
+| `opd(times)` frames/s | 27,652 / 6,673 / 1,166 | 5,614 / 1,461 / 359 | 312 / 100 / 8 |
+| frames, extrude | 1,121 / 522 / 125 | 420 / 103 / 25 | 386 / 96 / 19 |
+| frames, spectral + boiling | 1,415 / 608 / 124 | 666 / 173 / 44 | 45 / 12 / 2 |
+| tomography (5 dirs), dirs/s | 5,081 / 2,485 / 540 | 2,715 / 681 / 159 | 191 / 47 / 10 |
+| frames, LGS cone | 218 / 168 / 49 | 139 / 36 / 11 | 25 / 6 / 1 |
+
+Reading this:
+
+- **No regression from 2.0–2.2 on the GPU.** Every GPU cell is within
+  0.95–1.09x of 1.1 (median 1.00x) on both cards. The axis-convention change
+  and the aobasis/aocore migration do not touch the hot paths.
+- **CPU rows move with the frequency governor, as in §5.** Individual cells
+  range from 0.66x to 1.6x of 1.1 in both directions (the 1024² LGS cell
+  rounds from 0.3 to 1 frame/s). Compare CPU numbers only at equal load.
+
 ## Takeaways
 
 1. **Monte-Carlo generation is a rout** — pyturb is ~1000× the pure-Python FFT
