@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-07
+
 ### Breaking — axis convention for 2.0
 
 pyturb now uses the `(y, x)` array convention of aobasis, makewfs,
