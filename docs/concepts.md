@@ -92,8 +92,10 @@ optional **boiling** (`tau_boil`) for the residual non-frozen decorrelation.
   (columns) and y (rows); `FourierFlowScreen.translate(sx, sy)` shifts by
   `sx` along x and `sy` along y. `analysis.zernike_basis` uses the same frame
   with `theta = atan2(y, x)`, so Noll Z2 (tip, `cos theta`) varies along the
-  columns and Z3 (tilt, `sin theta`) along the rows — identical to
-  `aobasis.ZernikeBasisGenerator` on `aobasis.positions_from_mask` positions.
+  columns and Z3 (tilt, `sin theta`) along the rows. The polynomials are
+  evaluated by `aobasis.ZernikeBasisGenerator` on
+  `aobasis.positions_from_mask` positions, the stack's one Zernike
+  implementation.
   `theory.zernike_temporal_psd(..., wind_direction)` uses the
   `Layer.wind_direction` frame, so `wind_direction=0` makes Z2 the along-wind
   tilt.

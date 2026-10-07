@@ -4,7 +4,8 @@ These turn a pile of phase screens into the diagnostics AO people actually
 check turbulence against:
 
 - :func:`zernike_basis` / :func:`zernike_decompose` — a Noll-ordered Zernike
-  basis on a circular pupil and a least-squares projection onto it.
+  basis on a circular pupil (evaluated by ``aobasis``) and a least-squares
+  projection onto it.
 - :func:`noll_variance` / :func:`noll_residual_variance` — the Kolmogorov
   Zernike-mode variances and post-correction residuals of Noll (1976), the
   textbook thing to validate a decomposition against.
@@ -18,10 +19,11 @@ for the reductions). Reference: Noll, R. J. (1976), JOSA 66, 207.
 
 from __future__ import annotations
 
-from math import factorial
 from typing import Optional, Tuple, Union
 
 import numpy as np
+from aobasis import ZernikeBasisGenerator, positions_from_mask
+from aocore import coordinate_grid
 from numpy.typing import ArrayLike
 
 from .backend import to_numpy
@@ -59,7 +61,14 @@ def _noll_residual_coeff(j):
 
 
 def noll_to_zernike(j: int) -> Tuple[int, int]:
-    """Radial/azimuthal orders ``(n, m)`` for Noll single index ``j`` (>= 1)."""
+    """Radial/azimuthal orders ``(n, m)`` for Noll single index ``j`` (>= 1).
+
+    Even ``j`` give the cosine terms (``m > 0``) and odd ``j`` the sine terms
+    (``m < 0``), the same mapping ``aobasis.ZernikeBasisGenerator`` uses for
+    ``ordering="noll"``. It stays local because :mod:`pyturb.theory` needs the
+    ``(n, m)`` of a mode without building a basis, and aobasis has no public
+    index-mapping function.
+    """
     if j < 1:
         raise ValueError("Noll index j must be >= 1")
     n = 0
@@ -71,66 +80,63 @@ def noll_to_zernike(j: int) -> Tuple[int, int]:
     return n, m
 
 
-def _radial(n, m, rho):
-    m = abs(m)
-    out = np.zeros_like(rho)
-    for k in range((n - m) // 2 + 1):
-        c = ((-1) ** k * factorial(n - k)) / (
-            factorial(k)
-            * factorial((n + m) // 2 - k)
-            * factorial((n - m) // 2 - k)
-        )
-        out += c * rho ** (n - 2 * k)
-    return out
-
-
 def zernike_basis(
     n_modes: int, n_pixels: int, diameter_pixels: Optional[float] = None
 ) -> np.ndarray:
     """Noll-ordered Zernike basis over a circular pupil.
 
+    The polynomials are evaluated by ``aobasis.ZernikeBasisGenerator`` (the
+    stack's one Zernike implementation) at the pupil pixel centres, which sit
+    at ``i - (n_pixels - 1) / 2`` pixels from the grid centre along each axis
+    (``aocore.coordinate_grid``).
+
     Axes follow the array convention ``(y, x)``: x runs along axis 1
     (columns), y along axis 0 (rows), both increasing with the index, and the
     azimuth ``theta = atan2(y, x)`` is measured from +x toward +y. So Noll
     ``j = 2`` (tip, ``cos theta``) varies along the columns and ``j = 3``
-    (tilt, ``sin theta``) along the rows. This matches
-    ``aobasis.ZernikeBasisGenerator`` evaluated at
-    ``aobasis.positions_from_mask`` positions (x = columns, y = rows).
+    (tilt, ``sin theta``) along the rows.
 
     Parameters
     ----------
     n_modes : int
-        Number of modes, starting at Noll ``j = 1`` (piston).
+        Number of modes, starting at Noll ``j = 1`` (piston). At most the
+        number of pixels inside the pupil.
     n_pixels : int
         Grid size; the returned array is ``(n_modes, n_pixels, n_pixels)``.
     diameter_pixels : float, optional
         Pupil diameter in pixels (default ``n_pixels``). The pupil is the
-        inscribed disc; values are 0 outside it.
+        disc of pixel centres within ``diameter_pixels / 2`` of the grid
+        centre; values are 0 outside it.
 
     Returns
     -------
     basis : ndarray
-        ``(n_modes, n_pixels, n_pixels)``. Each mode is orthonormalised so that
-        its variance over the pupil is 1 (Noll normalisation), and the pupil
+        ``(n_modes, n_pixels, n_pixels)`` float64. Each mode carries the Noll
+        normalisation (unit RMS over the continuous unit disc), and the pupil
         mask is ``basis[0] != 0`` (piston).
     """
     if n_modes < 1 or n_pixels < 2:
         raise ValueError("n_modes >= 1 and n_pixels >= 2 required")
+    if diameter_pixels is not None and not diameter_pixels > 0:
+        raise ValueError(
+            f"diameter_pixels must be positive, got {diameter_pixels}: it sets "
+            "the unit radius the polynomials are evaluated on"
+        )
     radius = (n_pixels if diameter_pixels is None else diameter_pixels) / 2.0
-    grid = (np.arange(n_pixels) - (n_pixels - 1) / 2.0) / radius
-    yy, xx = np.meshgrid(grid, grid, indexing="ij")  # y = axis 0, x = axis 1
-    rho = np.hypot(xx, yy)
-    theta = np.arctan2(yy, xx)
-    mask = rho <= 1.0
-
+    y, x = coordinate_grid(n_pixels)  # y = axis 0, x = axis 1, in pixels
+    mask = np.hypot(x / radius, y / radius) <= 1.0
+    n_pupil = int(np.count_nonzero(mask))
+    if n_modes > n_pupil:
+        raise ValueError(
+            f"n_modes={n_modes} exceeds the {n_pupil} pixels inside the pupil "
+            f"(diameter {2.0 * radius:g} pixels): more modes than samples "
+            "cannot be linearly independent; use fewer modes or a larger grid"
+        )
+    positions = positions_from_mask(mask, pitch=1.0)  # (x, y) per pupil pixel
+    generator = ZernikeBasisGenerator(positions, pupil_radius=radius)
+    modes = generator.generate(n_modes)  # (n_pupil, n_modes), Noll order
     basis = np.zeros((n_modes, n_pixels, n_pixels))
-    for idx in range(n_modes):
-        j = idx + 1
-        n, m = noll_to_zernike(j)
-        norm = np.sqrt(n + 1.0) * (1.0 if m == 0 else np.sqrt(2.0))
-        ang = np.cos(m * theta) if m >= 0 else np.sin(-m * theta)
-        z = norm * _radial(n, m, rho) * ang
-        basis[idx] = np.where(mask, z, 0.0)
+    basis[:, mask] = modes.T
     return basis
 
 

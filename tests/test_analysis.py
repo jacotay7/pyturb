@@ -24,6 +24,38 @@ def test_basis_orthonormal_over_pupil():
     assert np.abs(off).max() < 0.03
 
 
+def test_basis_matches_closed_form_low_orders():
+    # Independent closed forms (Noll 1976) on an off-centre-sized pupil:
+    # x = axis 1, y = axis 0, unit radius at diameter_pixels / 2.
+    n, diameter = 40, 33.0
+    basis = A.zernike_basis(11, n, diameter_pixels=diameter)
+    c = (np.arange(n) - (n - 1) / 2.0) / (diameter / 2.0)
+    y, x = np.meshgrid(c, c, indexing="ij")
+    r2 = x**2 + y**2
+    mask = r2 <= 1.0
+    expected = {
+        1: np.ones_like(x),
+        2: 2.0 * x,
+        3: 2.0 * y,
+        4: np.sqrt(3.0) * (2.0 * r2 - 1.0),
+        5: 2.0 * np.sqrt(6.0) * x * y,
+        6: np.sqrt(6.0) * (x**2 - y**2),
+        11: np.sqrt(5.0) * (6.0 * r2**2 - 6.0 * r2 + 1.0),
+    }
+    np.testing.assert_array_equal(basis[0] != 0, mask)
+    for j, z in expected.items():
+        np.testing.assert_allclose(basis[j - 1][mask], z[mask], rtol=0, atol=1e-12)
+        assert np.all(basis[j - 1][~mask] == 0.0)
+
+
+def test_basis_rejects_degenerate_requests():
+    with pytest.raises(ValueError, match="diameter_pixels must be positive"):
+        A.zernike_basis(3, 16, diameter_pixels=0.0)
+    # A 2-pixel-wide pupil holds 4 pixel centres: 5 modes cannot be independent.
+    with pytest.raises(ValueError, match="exceeds the 4 pixels inside the pupil"):
+        A.zernike_basis(5, 16, diameter_pixels=2.0)
+
+
 def test_decompose_recovers_known_coefficients():
     basis = A.zernike_basis(10, 128)
     truth = np.zeros(10)

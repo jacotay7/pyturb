@@ -203,6 +203,9 @@ class PhaseScreen:
         # spaced df/3^p. The 9 cells of level p exactly tile the DC hole
         # left by level p-1 (and by the main grid for p=1); each level's
         # own centre cell is excluded and covered by the next level.
+        # The origin is pixel n / 2 (not the (n - 1) / 2 pupil centre of
+        # aocore.centered_coordinates): it only fixes the subharmonics' phase
+        # reference, and every seeded screen depends on it.
         coords = (np.arange(n) - n / 2.0) * dx
         self._sh_bases = []  # list of (amplitude(3,3), basis(3,n))
         self._sh_freqs = []  # list of (3,) mode frequencies, for translation

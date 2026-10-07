@@ -23,7 +23,7 @@ and switches to CUDA (via CuPy) with a single argument.
 ## Install
 
 ```bash
-pip install pyturb            # CPU (NumPy + SciPy)
+pip install pyturb            # CPU (NumPy + SciPy, aocore, aobasis)
 pip install pyturb[cuda13]    # + CuPy for CUDA 13.x (with CUDA headers)
 pip install pyturb[cuda12]    # + CuPy for CUDA 12.x (with CUDA headers)
 pip install pyturb[cuda11]    # + CuPy 13.x for CUDA 11.x

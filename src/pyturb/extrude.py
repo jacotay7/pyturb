@@ -60,6 +60,7 @@ from __future__ import annotations
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
+from aocore import centered_coordinates
 
 from . import _accel
 from ._rng import default_rng
@@ -376,7 +377,7 @@ class _ExtrudeLayer:
         # LGS cone effect shrinks the footprint by ``magnification =
         # 1 - h/H_LGS`` for a guide star at finite altitude.
         mag = float(magnification)
-        g = (np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0) * mag
+        g = centered_coordinates(self.n, mag)
         g0 = g[:, None]
         g1 = g[None, :]
         along = g0 * c + g1 * s
@@ -864,7 +865,7 @@ class ExtrudedAtmosphere:
         xp = self.xp
         along, perp = [], []
         for layer, mag in zip(self.layers, key):
-            g = (np.arange(self.n, dtype=np.float64) - (self.n - 1) / 2.0) * mag
+            g = centered_coordinates(self.n, mag)
             g0, g1 = g[:, None], g[None, :]
             along.append(g0 * layer._cos + g1 * layer._sin)
             perp.append(-g0 * layer._sin + g1 * layer._cos + self.width / 2.0)

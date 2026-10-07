@@ -125,9 +125,11 @@ def test_zernike_tip_varies_along_columns():
 
 @pytest.mark.parametrize("n", [31, 64])
 def test_zernike_basis_matches_aobasis(n):
-    # (d) Same frame and normalisation as aobasis' Zernike generator evaluated
-    # at positions_from_mask (x = columns, y = rows) on the same grid.
-    aobasis = pytest.importorskip("aobasis")
+    # (d) zernike_basis is aobasis' Zernike generator evaluated at
+    # positions_from_mask (x = columns, y = rows) on the pupil of the grid,
+    # with the unit radius at n / 2 pixels.
+    import aobasis
+
     basis = A.zernike_basis(21, n)
     mask = basis[0] != 0
     positions = aobasis.positions_from_mask(mask, pitch=1.0)

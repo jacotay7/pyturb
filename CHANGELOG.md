@@ -6,6 +6,37 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- pyturb now uses the stack's shared packages for generic primitives, as the
+  AO conventions contract (aocore `CONVENTIONS.md`, sections 2.3, 5.3 and 9)
+  asks. `aocore>=0.1.1` and `aobasis>=2.0` are new core dependencies (both
+  pure Python on NumPy/SciPy); their floors raise pyturb's to
+  `numpy>=1.23` and `scipy>=1.10`. `aocore` is no longer listed in the
+  `test` extra.
+- `analysis.zernike_basis` evaluates the polynomials with
+  `aobasis.ZernikeBasisGenerator` on `aobasis.positions_from_mask` positions
+  instead of a local factorial-sum implementation. Ordering (Noll), Noll
+  normalisation, orientation (Z2 along x = columns), pupil mask, centring at
+  `(n - 1) / 2` and the float64 dtype are unchanged; values agree with the
+  previous implementation to ~1e-14 for low orders and ~2e-13 by j = 50
+  (aobasis uses a Jacobi recurrence that avoids the factorial sum's
+  cancellation). Turbulence statistics and the theory validation are
+  unchanged. Building a basis takes up to ~1.7x longer, as aobasis checks the
+  basis' numerical rank (e.g. 6.8 s vs 4.1 s for 200 modes on 512²); build it
+  once and pass it to `zernike_decompose(..., basis=...)`.
+- `analysis.zernike_basis` raises `ValueError` for a non-positive
+  `diameter_pixels` and for more modes than pixels inside the pupil (such a
+  basis cannot be linearly independent), instead of returning a degenerate
+  basis.
+- `opd_to_phase` / `phase_to_opd` delegate to `aocore.opd_to_phase` /
+  `aocore.phase_to_opd` (same values, NumPy and CuPy alike); a scalar input
+  now returns a NumPy float64 scalar (a `float` subclass).
+- The arcsecond/radian conversions use `aocore.ARCSEC_TO_RAD` /
+  `aocore.RAD_TO_ARCSEC` (bit-identical to the previous local constants), and
+  the pupil pixel-centre offsets in the frozen-flow engines use
+  `aocore.centered_coordinates` (bit-identical); seeded screens are unchanged.
+
 ## [2.0.0] - 2026-10-07
 
 ### Breaking — axis convention for 2.0
