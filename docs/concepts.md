@@ -93,9 +93,10 @@ optional **boiling** (`tau_boil`) for the residual non-frozen decorrelation.
   `sx` along x and `sy` along y. `analysis.zernike_basis` uses the same frame
   with `theta = atan2(y, x)`, so Noll Z2 (tip, `cos theta`) varies along the
   columns and Z3 (tilt, `sin theta`) along the rows. The polynomials are
-  evaluated by `aobasis.ZernikeBasisGenerator` on
-  `aobasis.positions_from_mask` positions, the stack's one Zernike
-  implementation.
+  evaluated by `aobasis.zernike_modes_on_mask` (aobasis'
+  `ZernikeBasisGenerator` on the pupil's pixel centres), the stack's one
+  Zernike implementation, and `analysis.noll_to_zernike(j)` is
+  `aobasis.noll_to_nm(j)` (`m > 0` cosine, `m < 0` sine terms).
   `theory.zernike_temporal_psd(..., wind_direction)` uses the
   `Layer.wind_direction` frame, so `wind_direction=0` makes Z2 the along-wind
   tilt.

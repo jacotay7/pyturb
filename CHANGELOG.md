@@ -6,6 +6,29 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-07
+
+### Changed
+
+- `aobasis>=2.1,<3` is now required (was `aobasis>=2.0`).
+- `analysis.zernike_basis` builds through `aobasis.zernike_modes_on_mask` and
+  skips aobasis' numerical rank check whenever the basis is linearly
+  independent by construction: the highest radial order is below the side of
+  the largest square of pixel centres inside the pupil, so the sampled modes
+  are independent polynomials on a tensor grid. That covers every basis
+  except ones with modes approaching the pupil's pixel count (e.g. more than
+  21 modes on an 8-pixel pupil), which are still checked and still warn when
+  rank-deficient. The returned bases are bit-identical to 2.1.0 (checked from
+  1 to 200 modes on grids of 16 to 512 pixels), and building one is ~2.8x
+  faster than in 2.1.0 and ~1.5x faster than in 2.0.0 (200 modes on 512²:
+  2.2 s, vs 6.0 s and 3.2 s on the same machine).
+- `analysis.noll_to_zernike` is a thin wrapper over `aobasis.noll_to_nm`;
+  the `(n, m)` values and sign convention (`m > 0` cosine, `m < 0` sine, Z2 =
+  `(1, 1)` tip along x) are unchanged (checked for j = 1 to 20000). It now
+  raises `ValueError` for a non-integer `j` (a float, bool or array) instead
+  of returning float orders or failing with an unrelated error; NumPy
+  integers are accepted and the result is a tuple of Python ints.
+
 ## [2.1.0] - 2026-10-07
 
 ### Changed
