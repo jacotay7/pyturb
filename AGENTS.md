@@ -77,3 +77,32 @@ caught real bugs before.
   `typing.Optional`/`Union` (not bare `X | Y`), matching the existing code.
 - `ruff` line length is 90 (`pyproject.toml`); wrap before that, don't
   disable the rule.
+
+## Axis convention (pyturb 2.0+)
+
+- Arrays are indexed `(y, x)`: **x = axis 1 (columns), y = axis 0 (rows)**,
+  shared with aobasis/makewfs/solvephase/shmpipeline-ao/HCIPy. Every public
+  x/y-labelled input follows it (`Layer.wind_direction`/`wind_vector`,
+  `directions=(thx, thy)`, `opd_at(x, y)`, `FourierFlowScreen.translate(sx,
+  sy)`, `zernike_basis`, `theory.zernike_temporal_psd`).
+- The engines (spectral flow, extruder, CUDA/Numba kernels) work in array-axis
+  order. Convert only at the public boundary (`Atmosphere.__init__` wind,
+  `_parse_directions`, `opd_at`, `translate`) and name internal quantities by
+  axis (`v0`/`v1`, `slope0`/`slope1`, `disp0`/`disp1`, `pix0`/`pix1`) — never
+  `x`/`y` for an axis-0/axis-1 value. `tests/test_axis_convention.py` pins the
+  frame (pattern motion, off-axis footprint, translate, Zernike vs aobasis).
+- 1.x used x = axis 0; `from_config` converts version-1 configs
+  (`wind_direction -> 90 - a`). The mapping table lives in
+  `docs/migration-2.md`.
+- HCIPy's velocity sign is not uniform: measured on HCIPy 0.7,
+  `InfiniteAtmosphericLayer` moves its pattern along `-velocity` (same as
+  pyturb's `wind_vector`), `FiniteAtmosphericLayer` along `+velocity` with the
+  components on (rows, cols). Re-measure before documenting a sign.
+
+## Test-environment gotchas
+
+- `tests/test_docs.py` executes every ```` ```python ```` block in `docs/`,
+  skipping blocks whose optional imports are missing, so a block that passes in
+  CI (no hcipy/poppy) can fail locally when only some of them are installed.
+  Keep later blocks independent of state an optional block may or may not have
+  mutated.

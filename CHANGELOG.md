@@ -6,6 +6,70 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking — axis convention for 2.0
+
+pyturb now uses the `(y, x)` array convention of aobasis, makewfs,
+solvephase, shmpipeline-ao and HCIPy: **x is axis 1 (columns), y is axis 0
+(rows)**. pyturb 1.x labelled axis 0 as x. Array shapes, pixel centres, units
+and all turbulence statistics are unchanged; every x/y-labelled input now
+refers to the other array axis:
+
+- `Layer.wind_direction` (still the direction the wind blows *from*) is
+  measured from +x (axis 1) toward +y (axis 0), and `Layer.wind_vector`
+  returns `(vx, vy)` along (axis 1, axis 0). With `wind_direction=0` the
+  pattern now moves toward decreasing **column** index (it moved toward
+  decreasing row index in 1.x). Applies to both engines and to
+  `with_wind`, `discretize_cn2`, `from_profile` and `from_cn2`.
+- `Atmosphere.opd(directions=[(thx, thy)])` / `(thx, thy, altitude)`: `thx`
+  is along x (axis 1), `thy` along y (axis 0).
+- `Atmosphere.opd_at(x, y, ...)`: `x` is the column offset, `y` the row
+  offset.
+- `FourierFlowScreen.translate(sx, sy)`: `sx` along x (axis 1), `sy` along
+  y (axis 0).
+- `analysis.zernike_basis` / `zernike_decompose`: `theta = atan2(y, x)` with
+  x = axis 1, so Noll Z2 (tip) varies along the columns and Z3 (tilt) along
+  the rows, identical to `aobasis.ZernikeBasisGenerator` on
+  `aobasis.positions_from_mask` positions. The new basis is the old one
+  transposed (`new[k] == old[k].T`): Z2 and Z3 swap, and higher modes map by a
+  signed permutation (table in the migration guide).
+- `theory.zernike_temporal_psd(..., wind_direction)` is in the same frame as
+  `Layer.wind_direction` and the new Zernike basis (its values are
+  unchanged: both frames moved together).
+- `to_config()` writes `pyturb_config_version: 2`. `from_config` still reads
+  version-1 configs and converts each layer's `wind_direction` to
+  `(90 - a) mod 360`, so a run saved by 1.x replays the frames it recorded.
+- The named site profiles keep their published `wind_direction` numbers,
+  now read in the new frame. Profiles carry no sky orientation (most
+  directions are illustrative), so this changes which array axis a layer
+  blows along, not any published quantity.
+- `HCIPyLayer` and HCIPy recipes: pyturb arrays and direction tuples now map
+  onto HCIPy grids with matching x and y, with no axis swap. The interop docs
+  also correct the velocity-sign note: measured with HCIPy 0.7,
+  `InfiniteAtmosphericLayer`'s `velocity` points the same way as pyturb's
+  `wind_vector` (the pattern moves along `-velocity`), whereas
+  `FiniteAtmosphericLayer` differs.
+- Internal: `pyturb.extrude.ExtrudedAtmosphere` keeps its array-axis order
+  (`layer_wind` is `(v_axis0, v_axis1)`), but its direction arguments are
+  renamed `slope0`/`slope1` and `sample_points` takes `pix0`/`pix1`.
+
+#### How to upgrade
+
+Each 1.x call has a 2.0 equivalent that produces the same arrays (checked to
+float64 round-off on both engines):
+
+| pyturb 1.x | pyturb 2.0 |
+|---|---|
+| `wind_direction=a` (any API) | `wind_direction=90 - a` |
+| `directions=[(a, b)]`, `(a, b, h)` | `directions=[(b, a)]`, `(b, a, h)` |
+| `opd_at(p, q, direction=(a, b))` | `opd_at(q, p, direction=(b, a))` |
+| `translate(a, b)` | `translate(b, a)` |
+| `zernike_basis(J, n)` | `zernike_basis(J, n).transpose(0, 2, 1)` |
+| `zernike_decompose(phase, J)` | `zernike_decompose(phase.swapaxes(-1, -2), J)` |
+
+New code should state the geometry in the new frame directly. See
+[Migrating to 2.0](https://jacotay7.github.io/pyturb/migration-2/) for the
+full guide, the Zernike mode table and before/after code.
+
 ### Fixed
 
 - **The same `seed` gives the same turbulence on every GPU** (#36). GPU

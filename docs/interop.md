@@ -47,10 +47,20 @@ pyturb gives you fast, non-periodic, GPU turbulence to drive it. (HCIPy's own
 `InfiniteAtmosphericLayer` is fine too — use pyturb when you want the GPU/batched
 speed or the extra profiles/analysis.)
 
-Two conventions to keep straight (see [Concepts](concepts.md#conventions)):
-`.ravel()` puts pyturb's axis 0 on HCIPy's **y** axis, and pyturb's
-`wind_vector` points where the wind comes *from* (the pattern moves along
-`-wind_vector`), while HCIPy layer velocities are the pattern's motion.
+pyturb and HCIPy share the `(y, x)` array convention (see
+[Concepts](concepts.md#conventions)): `.ravel()` puts pyturb's x (axis 1) on
+HCIPy's **x** and its y (axis 0) on HCIPy's **y**, so arrays and off-axis
+direction tuples `(thx, thy)` map directly, with no axis swap.
+
+Velocity signs need care. pyturb's `wind_vector` points where the wind comes
+*from*: the pattern moves along `-wind_vector`. HCIPy 0.7's
+`InfiniteAtmosphericLayer` (the layer `HCIPyLayer` stands in for) behaves the
+same way — measured, a `velocity` of `(vx, vy)` moves its pattern along
+`-(vx, vy)` in `(x, y)` — so it corresponds to
+`wind_direction = degrees(atan2(vy, vx))` and `wind_speed = hypot(vx, vy)`.
+HCIPy's `FiniteAtmosphericLayer` does not share that convention (in 0.7 its
+pattern moves along `+velocity`, with the components applied to rows and
+columns respectively), so check against the layer class you compare with.
 
 ## poppy
 
@@ -74,7 +84,7 @@ psf = osys.calc_psf(1.65e-6)
 Or save the screen to FITS and load it wherever your pipeline reads OPD maps:
 
 ```python
-pyturb.save("turbulence.fits", atm.opd(), **atm.metadata)   # OPD [m] + header
+pyturb.save("turbulence.fits", opd, **atm.metadata)         # OPD [m] + header
 ```
 
 ## DM fitting / reconstruction

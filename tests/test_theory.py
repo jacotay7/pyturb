@@ -56,24 +56,36 @@ def test_temporal_psd_integrates_to_the_mode_variance(j, direction, L0):
 
 
 def test_along_wind_tilt_spectrum_matches_simulation():
-    # Frozen flow along axis 0, so Noll j=2 (cos, axis-0 tilt) is along the
-    # wind. 96 px across the pupil keeps discretisation leakage into the
-    # fitted tilt small over 2-20 Hz.
+    # Frozen flow along x (wind_direction=0, axis 1), so Noll j=2 (tip,
+    # cos theta, varying along the columns) is the along-wind tilt and j=3
+    # the cross-wind tilt. 96 px across the pupil keeps discretisation leakage
+    # into the fitted tilt small over 2-20 Hz.
     n, v, dt, L0 = 96, 10.0, 2e-3, 25.0
-    basis = A.zernike_basis(2, n)
-    psds = []
+    basis = A.zernike_basis(3, n)
+    psds = {2: [], 3: []}
     for seed in range(2):
         atm = pyturb.Atmosphere([pyturb.Layer(0.0, 1.0, v, 0.0, L0=L0)], r0=R0,
                                 diameter=D, n=n, oversample=4, seed=seed,
                                 dtype="float64")
         frames = pyturb.to_numpy(atm.opd(t=np.arange(1000) * dt,
                                          wavelength=atm.wavelength))
-        freq, p = A.temporal_psd(A.zernike_decompose(frames, 2, basis)[:, 1], dt)
-        psds.append(p)
-    measured = np.mean(psds, axis=0)
-    theory = T.zernike_temporal_psd(freq, 2, D, R0, v, 0.0, L0)
+        coeffs = A.zernike_decompose(frames, 3, basis)
+        for j in (2, 3):
+            freq, p = A.temporal_psd(coeffs[:, j - 1], dt)
+            psds[j].append(p)
     band = (freq >= 2) & (freq <= 20)
-    assert 0.7 < np.median(measured[band] / theory[band]) < 1.4
+    along = T.zernike_temporal_psd(freq, 2, D, R0, v, 0.0, L0)
+    across = T.zernike_temporal_psd(freq, 3, D, R0, v, 0.0, L0)
+    # The theory frame agrees with Layer.wind_direction: wind along y with
+    # tilt j=3 is the same along-wind spectrum.
+    np.testing.assert_allclose(T.zernike_temporal_psd(freq, 3, D, R0, v, 90.0, L0),
+                               along, rtol=1e-6)
+    tip, tilt = np.mean(psds[2], axis=0), np.mean(psds[3], axis=0)
+    assert 0.7 < np.median(tip[band] / along[band]) < 1.4
+    assert 0.7 < np.median(tilt[band] / across[band]) < 1.4
+    # The along- and cross-wind spectra differ several-fold in this band, so
+    # a swapped frame (Z2 across the wind) fails the bounds above.
+    assert np.median(tip[band] / across[band]) > 2.0
 
 
 def test_seeing_fwhm_outer_scale_correction():

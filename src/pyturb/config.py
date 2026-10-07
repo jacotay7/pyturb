@@ -393,7 +393,7 @@ class ExtrusionConfig:
         grid = GridConfig.create(n, pixel_scale, device, dtype)
         r0_values = tuple(float(value) for value in layer_r0)
         L0_values = tuple(float(value) for value in layer_L0)
-        wind_values = tuple((float(vx), float(vy)) for vx, vy in layer_wind)
+        wind_values = tuple((float(v0), float(v1)) for v0, v1 in layer_wind)
         altitude_values = tuple(float(value) for value in layer_altitude_los)
         n_layers = len(r0_values)
         if n_layers == 0:

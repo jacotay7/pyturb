@@ -268,7 +268,8 @@ class PhaseScreen:
 
         if self._n_sh:
             # All subharmonic levels at once. Per level the contribution is
-            # sum_ij cn_ij e^(2i pi f_i x) e^(2i pi f_j y) = basis.T @ (cn @ basis);
+            # sum_ij cn_ij e^(2i pi f_i p0) e^(2i pi f_j p1) = basis.T @ (cn @ basis)
+            # (p0, p1 the positions along axes 0 and 1);
             # stacking the levels' shared 3x3 -> (3, n) bases turns the whole
             # low-frequency sum into two batched matmuls collapsed to one
             # (n, 3P) @ (count, 3P, n). Noise is still drawn level by level so

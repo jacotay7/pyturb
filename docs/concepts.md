@@ -64,21 +64,39 @@ optional **boiling** (`tau_boil`) for the residual non-frozen decorrelation.
 
 ## Conventions
 
-- **Array axes.** Every output is an `(n, n)` array indexed `[axis 0, axis 1]`
-  with pixel pitch `diameter / n`. When you flatten a pyturb OPD onto an
-  HCIPy pupil grid with `.ravel()` (as in [Interop](interop.md)), axis 0
-  becomes HCIPy's **y** and axis 1 its **x**.
+- **Array axes.** Every output is an `(n, n)` array indexed `(y, x)`:
+  **x runs along axis 1 (columns)** and **y along axis 0 (rows)**, both
+  increasing with the index, with pixel centres at `(i - (n-1)/2) * pitch`
+  and pitch `diameter / n`. This is the convention of aobasis, makewfs,
+  solvephase, shmpipeline-ao and HCIPy, so a pyturb OPD flattened with
+  `.ravel()` lands on an HCIPy pupil grid with x and y matching (see
+  [Interop](interop.md)). Every x/y-labelled input below follows it.
 - **Wind direction.** `Layer.wind_direction` is the direction the wind blows
-  **from**, in degrees from axis 0 toward axis 1, and `Layer.wind_vector`
-  points the same way. The turbulence pattern moves along `-wind_vector`:
-  `phi(x, t) = phi_0(x + wind_vector * t)`. With `wind_direction=0` the
-  pattern travels toward decreasing axis-0 index. All engines, and
-  `InfinitePhaseScreen`, follow this. If you compare against a tool that
-  treats velocity as the pattern's motion (HCIPy does), negate the vector,
-  and swap axes as above.
-- **Off-axis directions.** `directions=[(thx, thy)]` are angles in arcsec
-  along axis 0 and axis 1. A layer at line-of-sight range `h` is sampled at
-  `x + h * tan(theta)`.
+  **from**, in degrees measured from +x (axis 1) toward +y (axis 0), and
+  `Layer.wind_vector` returns `(vx, vy)` along (x, y) pointing the same way.
+  The turbulence pattern moves along `-wind_vector`:
+  `phi(r, t) = phi_0(r + wind_vector * t)` with `r = (x, y)`. With
+  `wind_direction=0` the pattern travels toward decreasing **column** index
+  (new turbulence enters at the right-hand, high-column edge); with `90` it
+  travels toward decreasing row index. Both `Atmosphere` engines follow this;
+  `InfinitePhaseScreen` always extrudes along y (axis 0), toward decreasing
+  row index. If you compare against a tool that treats velocity as the
+  pattern's motion, negate the vector; the axes need no swap. (HCIPy's
+  `InfiniteAtmosphericLayer` velocity points the same way as `wind_vector`;
+  see [Interop](interop.md#hcipy).)
+- **Off-axis directions.** `directions=[(thx, thy)]` are angles in arcsec,
+  `thx` along x (axis 1) and `thy` along y (axis 0). A layer at line-of-sight
+  range `h` is sampled at `r + h * tan(theta)`, so `(thx, 0)` with `thx > 0`
+  moves its footprint toward increasing column index.
+- **Other x/y inputs.** `Atmosphere.opd_at(x, y)` takes offsets along x
+  (columns) and y (rows); `FourierFlowScreen.translate(sx, sy)` shifts by
+  `sx` along x and `sy` along y. `analysis.zernike_basis` uses the same frame
+  with `theta = atan2(y, x)`, so Noll Z2 (tip, `cos theta`) varies along the
+  columns and Z3 (tilt, `sin theta`) along the rows — identical to
+  `aobasis.ZernikeBasisGenerator` on `aobasis.positions_from_mask` positions.
+  `theory.zernike_temporal_psd(..., wind_direction)` uses the
+  `Layer.wind_direction` frame, so `wind_direction=0` makes Z2 the along-wind
+  tilt.
 - **Line of sight vs zenith.** `seeing`/`r0` passed to the constructor are at
   zenith; `atm.r0`, `atm.seeing`, `atm.theta0` and `atm.tau0` are along the
   line of sight at `zenith_angle`. So `seeing=0.8` at 30° reports

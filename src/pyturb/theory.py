@@ -176,12 +176,14 @@ def zernike_temporal_psd(
 
     ``PSD_j(nu) = 2/V integral PSD(f) |Q_j(f)|^2 df_perp`` with
     ``f_parallel = nu / V`` (Conan, Rousset & Madec 1995), integrated
-    numerically. ``wind_direction`` [deg] is measured in the same frame as
-    :func:`pyturb.analysis.zernike_basis` (from axis 0 toward axis 1), which
-    matters for non-symmetric modes: tilt along the wind has a different
-    spectrum from tilt across it. Integrates (over ``nu``) to
-    :func:`zernike_variance`. For a profile, sum the layers' spectra, each with
-    its own ``r0_i`` and wind.
+    numerically. ``wind_direction`` [deg] is in the same frame as
+    :attr:`pyturb.Layer.wind_direction` and
+    :func:`pyturb.analysis.zernike_basis` (from +x = axis 1 toward +y =
+    axis 0), so ``wind_direction=0`` is wind along x, where Noll ``j = 2``
+    (tip) is the along-wind tilt. The frame matters for non-symmetric modes:
+    tilt along the wind has a different spectrum from tilt across it.
+    Integrates (over ``nu``) to :func:`zernike_variance`. For a profile, sum the
+    layers' spectra, each with its own ``r0_i`` and wind.
     """
     if j < 2:
         raise ValueError("piston (j=1) has no finite variance; use j >= 2")

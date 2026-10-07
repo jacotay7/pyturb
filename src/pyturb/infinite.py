@@ -125,7 +125,9 @@ class InfinitePhaseScreen:
     wind either by whole pixels with :meth:`step` or by any continuous distance
     (in pixels) with :meth:`advance`; new turbulence is synthesised at the
     leading edge (``screen[-1]``) as needed and older rows are recycled, so
-    memory stays bounded no matter how long the run.
+    memory stays bounded no matter how long the run. The pattern therefore
+    moves along y (axis 0, rows) toward decreasing row index; transpose the
+    screen for motion along x (axis 1).
 
     Translate pixels into wind speed via your loop rate: a step of
     ``wind_speed * dt / pixel_scale`` pixels advances the screen by ``v*dt``

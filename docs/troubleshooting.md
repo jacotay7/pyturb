@@ -40,9 +40,11 @@ screen is periodic across the pupil. Use `oversample=2`–`4`; see
 [Choosing an engine](engines.md).
 
 **My wind blows the wrong way compared with another tool.** pyturb's
-`wind_direction` is where the wind comes *from*; the pattern moves along
-`-wind_vector`. Axis 0 of a pyturb array is HCIPy's y. See
-[Conventions](concepts.md#conventions).
+`wind_direction` is where the wind comes *from*, measured from +x (axis 1,
+columns) toward +y (axis 0, rows); the pattern moves along `-wind_vector`.
+Arrays are indexed `(y, x)`, the same as HCIPy, aobasis and makewfs. Code
+written for pyturb 1.x used x = axis 0: see [Migrating to 2.0](migration-2.md).
+See [Conventions](concepts.md#conventions).
 
 **CPU runs are slow.** Install the `accel` extra (Numba), enable threaded FFTs
 with `pyturb.set_fft_workers(-1)`, and use `float32`. See
