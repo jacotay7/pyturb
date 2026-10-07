@@ -63,7 +63,7 @@ import numpy as np
 from aocore import centered_coordinates
 
 from . import _accel
-from ._rng import default_rng
+from ._rng import CudaNormalGenerator, default_rng
 from .backend import blas_single_thread, get_array_module
 from .config import ExtrusionConfig
 from .fourier import PhaseScreen
@@ -424,13 +424,28 @@ class _ExtrudeLayer:
         self._travel = 0.0
 
     # -- ring-buffer extrusion ----------------------------------------
-    def _extrude_one(self) -> None:
+    def _extrude_one(self, beta: Any = None) -> None:
+        """Extrude one row; ``beta`` is its white noise (drawn here if ``None``)."""
         if self._fill == self._capacity:
             self._compact()
         z = self._buf[self._fill - self.m : self._fill].ravel()
-        beta = self._rng.standard_normal(self.W, dtype=self.dtype)
-        self._buf[self._fill] = self._a @ z + self._b @ beta
+        if beta is None:
+            beta = self._rng.standard_normal(self.W, dtype=self.dtype)
+        self.xp.add(self._a @ z, self._b @ beta, out=self._buf[self._fill])
         self._fill += 1
+
+    def _noise_rows(self, rows: int) -> Any:
+        """White noise for the next ``rows`` rows in one GPU draw, ``(rows, W)``.
+
+        The pyturb GPU stream fills whole Philox blocks per call, so drawing
+        rows padded to a whole number of blocks and dropping the padding gives
+        exactly the numbers (and leaves the stream exactly where) ``rows``
+        separate ``W``-value draws would, in one launch instead of ``rows``.
+        """
+        per_block = 4 if self.dtype == np.float32 else 2
+        padded = -(-self.W // per_block) * per_block
+        flat = self._rng.standard_normal(rows * padded, dtype=self.dtype)
+        return flat.reshape(rows, padded)[:, : self.W]
 
     def _compact(self) -> None:
         # ``self._travel`` is the eventual target set by set_travel() before
@@ -452,7 +467,12 @@ class _ExtrudeLayer:
         return max(0, top - (self._base + self._fill - 1))
 
     def _ensure(self) -> None:
-        for _ in range(self.rows_needed()):
+        needed = self.rows_needed()
+        if needed > 1 and isinstance(self._rng, CudaNormalGenerator):
+            for beta in self._noise_rows(needed):
+                self._extrude_one(beta)
+            return
+        for _ in range(needed):
             self._extrude_one()
 
     # -- readout geometry ---------------------------------------------
