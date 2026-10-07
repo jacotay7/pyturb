@@ -6,6 +6,40 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-07
+
+### Performance
+
+Measured with `benchmarks/bench_suite.py` on an Arm workstation (RTX 4060,
+80-core Neoverse-N1 host pinned to 12 cores), median of three interleaved
+runs, 9-layer `paranal-median`, frames/s at 256² / 512² / 1024² (details in
+`benchmarks/RESULTS.md` §7):
+
+- GPU boiling (`tau_boil`) frames: 1,296 / 608 / 124 → 3,761 / 2,184 / 543.
+  The per-mode AR(1) coefficients are computed once per `dt`, and the update
+  is one kernel that draws its noise inline from the same Philox stream.
+- GPU LGS cone (`lgs_altitude`) frames: 205 / 167 / 49 → 6,073 / 1,896 / 362.
+  The cone frame is now a captured CUDA graph (`cuda_graph=True`): a batched
+  real inverse FFT of each layer's Hermitian half-spectrum, one zoom-and-sum
+  kernel, and the subharmonics evaluated at the zoomed positions.
+- CPU spectral frames: 53 / 8 → 128 / 26 at 512² / 1024² (256² unchanged);
+  tomography and `opd(t=times)` 1.4-2x at 512²-1024². The Numba layer sum
+  runs its per-pixel loop across Numba's threads (`NUMBA_NUM_THREADS`) for
+  stacks of 2M layer-pixels and up.
+- CPU LGS cone frames 1.8-3.1x and boiling frames 1.4-2.1x: one fused Numba
+  pass for the cone zoom and for the boiling update.
+- `InfinitePhaseScreen.step`/`advance`: 2.7-20x (CPU and GPU); the row gather and
+  interpolation run as one kernel.
+- The GPU extruder draws each layer's pending noise rows in one call.
+
+Output: every CPU result (with and without Numba) and every GPU result except
+the LGS cone is bit-identical to 2.2.0 (checked bytewise over ~200 seeded
+configurations; `validation/validate.py` metrics are identical). The GPU LGS
+cone frame uses custom kernels where it used cuBLAS (which cannot run inside a
+CUDA graph) and a real FFT where it used a complex one, so it agrees with 2.2.0
+to float32 rounding (largest difference 5e-6 of the frame RMS; 3e-15 in
+float64), the same envelope as GPU results across GPU models.
+
 ## [2.2.0] - 2026-10-07
 
 ### Changed

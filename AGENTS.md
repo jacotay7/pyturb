@@ -106,3 +106,36 @@ caught real bugs before.
   CI (no hcipy/poppy) can fail locally when only some of them are installed.
   Keep later blocks independent of state an optional block may or may not have
   mutated.
+
+## Performance work: keeping seeded output bit-identical
+
+Seeded screens are expected to stay bit-identical across optimizations (CPU on a
+given platform and dependency set; the GPU's random draws everywhere, its OPD up
+to cuFFT/cuBLAS kernel choice). Tolerance tests do not catch a change in the
+last bit: before and after a hot-path change, save the outputs of many seeded
+configurations (every engine, dtype, interp, boiling, LGS, directions, times,
+`opd_at`, with and without Numba) and compare them bytewise.
+
+- Numba kernels compiled with `fastmath=True` get their bits from LLVM's
+  vectorizer: the spectral layer sum's layer reduction is split into
+  interleaved partial sums with FMA contraction, chosen per ISA. Restructuring
+  the loops (even adding `parallel=True` to the same body) changes the result.
+  To parallelize such a kernel, keep the per-pixel function as it is and call
+  it per row from a `prange` (see `_accel._spectral_rows`), then check bitwise.
+- A fused kernel that replaces a chain of NumPy/CuPy elementwise operations
+  must round each operation separately: Numba without `fastmath`, and
+  `__fmul_rn`/`__fadd_rn` in CUDA (NVRTC contracts `a*b + c` into an FMA by
+  default). Products with an exact zero (complex times a real promoted to
+  complex) can be dropped; they only touch the sign of zero.
+- `scipy.fft` (ducc) with `workers > 1` is not bit-identical to the
+  single-threaded transform for a single 2-D array, so threading the FFT by
+  default would change every seeded CPU screen.
+- CuPy raises on cuBLAS calls during stream capture ("calling cuBLAS API
+  during stream capture is currently unsupported"), so graph-captured frames
+  use custom kernels instead of `matmul`. cuBLAS's summation order is not
+  reproducible by a custom kernel, so replacing one changes the GPU OPD at
+  float32 rounding.
+- On the shared Arm bench host, Numba's OpenMP threads and OpenBLAS's threads
+  both spin after use: a kernel timed alone can run several times faster than
+  inside a frame. Profile frames in steady state (after warm-up), pin cores,
+  and interleave baseline and candidate runs.

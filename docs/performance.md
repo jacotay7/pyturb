@@ -20,7 +20,9 @@ pyturb 1.1, CuPy 14.2, on an Arm Neoverse-N1 host:
 | `opd(directions=5)`, directions/s | 4,737 / 2,491 / 540 | 2,720 / 682 / 160 |
 | `sample()`, screens/s | 33,292 / 6,993 / 1,715 | 9,309 / 2,466 / 615 |
 
-More hardware, the CPU rows and the methodology are in
+pyturb 2.3 raised the RTX 4060 boiling row to 3,761 / 2,184 / 543 and added
+an LGS-cone row of 6,073 / 1,896 / 362 frames/s (2.2: 205 / 167 / 49); see
+`RESULTS.md` §7. More hardware, the CPU rows and the methodology are in
 [`benchmarks/RESULTS.md`](https://github.com/jacotay7/pyturb/blob/main/benchmarks/RESULTS.md).
 
 ## GPU
@@ -32,9 +34,10 @@ More hardware, the CPU rows and the methodology are in
   batched transform over all of them: ~4x the frame-by-frame rate at 256² on
   an RTX 4060 (less on smaller GPUs, ~1.2x on an RTX A400, which is already
   compute-bound there).
-- **CUDA graphs** (`cuda_graph=True`, default) replay each spectral frame as
-  one launch; this is what makes the frame rate independent of a slow host.
-  Boiling, the LGS cone and the extruder still issue per-frame kernels.
+- **CUDA graphs** (`cuda_graph=True`, default) replay each spectral frame,
+  including the LGS cone, as one launch; this is what makes the frame rate
+  independent of a slow host. Boiling adds one kernel per step (the noise is
+  drawn inside it); the extruder still issues per-row kernels.
 - **Several GPUs:** `device="gpu:1"`. CUDA numbers the fastest GPU first;
   `CUDA_DEVICE_ORDER=PCI_BUS_ID` matches `nvidia-smi`.
 - **float32** (default) is the fast path; `dtype="float64"` is slower,
@@ -46,8 +49,10 @@ More hardware, the CPU rows and the methodology are in
 
 ## CPU
 
-- `pip install "pyturb[accel]"` adds Numba kernels for the spectral layer sum
-  and the extruder readout (several-fold on the extruder).
+- `pip install "pyturb[accel]"` adds Numba kernels for the spectral layer
+  sum, the boiling update, the LGS cone zoom and the extruder readout
+  (several-fold on each). They give the same numbers as the NumPy fallback
+  (bit for bit, except the layer sum's round-off).
 - `pyturb.set_fft_workers(-1)` threads the SciPy FFTs (spectral frames,
   `sample()`).
 - The extruder's row recurrence runs its small matrix products

@@ -243,6 +243,75 @@ Reading this:
   range from 0.66x to 1.6x of 1.1 in both directions (the 1024² LGS cell
   rounds from 0.3 to 1 frame/s). Compare CPU numbers only at equal load.
 
+## 7. pyturb 2.3 performance work, before and after (same Arm workstation)
+
+`bench_suite.py` run three times each on 2.2.0 and on the 2.3.0 changes,
+interleaved (GPU base, GPU new, CPU base, CPU new, repeated), on the §5 host:
+RTX 4060, every run pinned to 12 cores (`taskset -c 52-63`, OpenMP/OpenBLAS/
+Numba threads = 12). Cells are the median of the three runs, frames (or calls)
+per second. Artifact, with all twelve runs:
+[`v2.3.0-arm-before-after.json`](artifacts/v2.3.0-arm-before-after.json).
+
+| metric | RTX 4060 256 / 512 / 1024 | 12× N1 CPU 256 / 512 / 1024 |
+|---|---|---|
+| frames, spectral + boiling | 1,296 → 3,761 / 608 → 2,184 / 124 → 543 | 43 → 60 / 11 → 19 / 2 → 5 |
+| frames, LGS cone | 205 → 6,073 / 167 → 1,896 / 49 → 362 | 24 → 43 / 5 → 11 / 1 → 3 |
+| frames, spectral | 6,330 → 6,164 / 4,361 → 4,915 / 1,305 → 1,306 | 333 → 338 / 53 → 128 / 8 → 26 |
+| `opd(times)` frames/s | unchanged | 330 → 337 / 72 → 110 / 8 → 16 |
+| tomography (5 dirs), dirs/s | unchanged | 177 → 190 / 47 → 65 / 9 → 15 |
+| `InfinitePhaseScreen.step`/s | 1,018 → 2,769 / 988 → 2,724 / 1,011 → 2,766 | 1,209 → 5,372 / 351 → 3,026 / 87 → 772 |
+| `InfinitePhaseScreen.advance`/s | 1,176 → 4,170 / 1,159 → 4,162 / 1,174 → 4,180 | 1,290 → 16,486 / 375 → 7,638 / 93 → 1,476 |
+| frames, extrude | 1,076 → 1,128 / 527 → 527 / 125 → 124 | unchanged (within noise) |
+| `sample`, `generate` | unchanged | unchanged |
+
+Reading this:
+
+- **GPU boiling (3-4x)**: the AR(1) coefficients depend only on `dt`, so they
+  are computed once, and the update is one kernel that draws its Philox noise
+  inline instead of a dozen full-size elementwise passes plus a noise array.
+- **GPU LGS cone (7-30x)**: the cone frame is now graph-captured like the
+  plain spectral frame. Each layer's screen comes from one batched real inverse
+  FFT of its Hermitian half-spectrum (half a complex transform), one kernel
+  zooms and sums the layers, and the subharmonic field is evaluated at the
+  zoomed positions as a low-rank product instead of eight `(L, n, n)` complex
+  matmuls.
+- **CPU spectral frames at 512²-1024² (2.4-3.3x)**: the Numba layer sum
+  reads a 9-plane stack one pixel at a time, which aliases in the cache at
+  power-of-two grids; it now runs the same compiled per-pixel loop over
+  threads. 256² stays serial (a 1-2 ms parallel region gains little and is
+  easily stalled on a busy host), so its column is unchanged. Tomography and
+  `opd(times)` share this path.
+- **CPU LGS (1.8-3.1x) and boiling (1.4-2.1x)**: the cone zoom is one fused
+  Numba pass instead of `T**2` full-size gathers per layer; the boiling update
+  is one fused pass with cached coefficients. Boiling is now bound by NumPy's
+  single-threaded normal draw, and the LGS frame by its single-threaded
+  batched FFT (see below).
+- **`InfinitePhaseScreen` (3-20x)**: the row gather and interpolation are one
+  kernel (CUDA, or Numba) instead of ~30 array operations; the GPU step rate is
+  now set by the row extrusion's cuBLAS calls.
+- **Unchanged by design**: the GPU spectral and Monte-Carlo paths were already
+  graph-captured or FFT-bound (their columns move within run-to-run noise),
+  the GPU extruder's readout is bound by double-precision throughput (consumer
+  GPUs run FP64 at 1/64 rate), and its row recurrence and the CPU extruder's
+  readout are kept as they are to keep their output bit-identical.
+
+**Output.** Every CPU output (Numba and NumPy paths) and every GPU output except
+the LGS cone is bit-identical to 2.2.0: checked bytewise over ~200 seeded
+configurations (both engines, float32/float64, all `interp`s, boiling with
+mixed `tau_boil`, LGS, directions with their own source altitude, `opd(t=...)`,
+`opd_at`, `InfinitePhaseScreen`, `reset`), and `validation/validate.py` writes
+identical metrics. The GPU LGS frame replaces cuBLAS matmuls (which cannot be
+graph-captured) with custom kernels and a complex FFT with a real one, so it
+agrees with 2.2.0 to float32 rounding (largest difference 5e-6 of the frame's
+RMS, float64 2.6e-15), like the GPU OPD across GPU models.
+
+What did not help: threading the CPU FFTs by default (`scipy.fft` with
+`workers > 1` is not bit-identical to the single-threaded transform for a
+single 2-D array, so it would change every seeded CPU screen;
+`set_fft_workers(-1)` stays an opt-in), a row-streaming parallel layer sum
+(fastest, ~3 ms instead of ~11 ms at 9 × 1024², but not bit-identical), and a
+row-oriented Numba zoom (slower at 512², faster only at 1024²).
+
 ## Takeaways
 
 1. **Monte-Carlo generation is a rout** — pyturb is ~1000× the pure-Python FFT
