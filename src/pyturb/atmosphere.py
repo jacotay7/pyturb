@@ -29,7 +29,7 @@ from aocore import ARCSEC_TO_RAD, centered_coordinates
 
 from . import _accel
 from . import profiles as _profiles
-from ._rng import default_rng
+from ._rng import CudaNormalGenerator, default_rng
 from .backend import device_context, get_array_module, on_device
 from .config import AtmosphereConfig
 from .extrude import ExtrudedAtmosphere, _catmull_rom_weights
@@ -46,12 +46,6 @@ from .utils import (
 
 __all__ = ["Atmosphere", "PeriodicWrapWarning", "ExtrudeBoilingPerformanceWarning"]
 
-
-# LGS cone zoom: above this batched working set (L * n * n_screen elements) the
-# GPU's batched gather goes memory-bound and loses to the tight per-layer loop
-# (measured crossover between 512² and 1024² at 9 layers); below it the batched
-# path is ~3-8x faster by removing per-layer launch latency.
-_LGS_BATCH_MAX_ELEMS = 4_000_000
 
 # to_config() schema version. Version 2 measures Layer.wind_direction from +x
 # (axis 1) toward +y (axis 0); version 1 (pyturb 1.x) measured it from axis 0
@@ -282,11 +276,12 @@ class Atmosphere:
         statistically equivalent, realisation on each backend.
     cuda_graph : bool, optional
         On the GPU, replay each spectral-engine frame (:meth:`frames`,
-        :meth:`evolve`, single-direction :meth:`opd`) as a captured CUDA graph:
-        one launch instead of a few dozen, which is what limits the frame rate
-        on hosts with a modest CPU. Falls back to ordinary execution if the
-        driver cannot capture. Default ``True``; no effect on the CPU or on
-        ``engine="extrude"``/``lgs_altitude`` frames.
+        :meth:`evolve`, single-direction :meth:`opd`, including the
+        ``lgs_altitude`` cone) as a captured CUDA graph: one launch instead of
+        a few dozen, which is what limits the frame rate on hosts with a
+        modest CPU. Falls back to ordinary execution if the driver cannot
+        capture. Default ``True``; no effect on the CPU or on
+        ``engine="extrude"`` frames.
     oversample : float, optional
         Size of the FFT screens used by :meth:`sample` and the spectral engine,
         as a multiple of the pupil (``>= 1``, before the ``field_of_view``
@@ -644,12 +639,14 @@ class Atmosphere:
                  for p in range(1, self._n_sh + 1)]
             )  # (P, 3) float64
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
+        # (dt, AR(1) coefficients) of the last boiling step; see _boil_coeffs.
+        self._boil_cache: Optional[Tuple[float, Any]] = None
         self._zoom_cache: Dict[Tuple[float, ...], Tuple[Any, Any]] = {}
-        # GPU fast path (fused layer sum, device-side phasors, CUDA graph). It
-        # holds references to _spectra/_sh_coeffs, which boiling updates in
-        # place; rebuilding them (reset) rebuilds this too.
+        # GPU fast path (fused layer sum or LGS cone zoom, device-side phasors,
+        # CUDA graph). It holds references to _spectra/_sh_coeffs, which
+        # boiling updates in place; rebuilding them (reset) rebuilds this too.
         self._gpu = None
-        if xp is not np and self._lgs_mag is None:
+        if xp is not np:
             from ._gpu_spectral import SpectralGPU
 
             self._gpu = SpectralGPU(self, use_graph=self.cuda_graph)
@@ -1352,7 +1349,8 @@ class Atmosphere:
         slopes0, slopes1, mags = (self._parse_directions(directions) if directions
                           else ([0.0], [0.0], [None]))
         n_dirs = len(slopes0)
-        if self._gpu is not None and all(m is None for m in mags):
+        if (self._gpu is not None and self._lgs_mag is None
+                and all(m is None for m in mags)):
             slope0 = np.asarray(slopes0)
             slope1 = np.asarray(slopes1)
             # (T, D, L) displacements, flattened to one batch of frames.
@@ -1520,6 +1518,16 @@ class Atmosphere:
         layer zooms differently), so this is the slower per-layer path.
         """
         xp = self.xp
+        if self._gpu is not None:
+            # One fused pass on the device (CUDA-graph replay for the
+            # constructor's cone); see SpectralGPU.compute_lgs.
+            disp0 = self._v0 * t + self._alt * slope0
+            disp1 = self._v1 * t + self._alt * slope1
+            if not self._wrap_warned:
+                self._check_wrap(disp0, disp1)
+            if mags is None:
+                return self._gpu.single(disp0, disp1)
+            return self._gpu.lgs(disp0, disp1, self._zoom_taps(mags))
         screens = self._layer_screens(t, slope0, slope1)
         taps = self._zoom_taps(self._lgs_mag if mags is None else mags)
         total = self._lgs_zoom(screens, taps)
@@ -1530,7 +1538,7 @@ class Atmosphere:
 
         Frozen-flow shifted (and, if boiling, boiled), inverse-FFT'd per layer,
         with each layer's subharmonic low-frequency part added. Used where the
-        layers must be resampled individually (LGS cone, :meth:`opd_at`).
+        layers must be resampled individually (the CPU LGS cone, :meth:`opd_at`).
         """
         xp = self.xp
         cdtype = self._cdtype
@@ -1544,8 +1552,15 @@ class Atmosphere:
         f = self._grid_f
         phasor0 = xp.exp((2j * np.pi) * shift0[:, None] * f[None, :]).astype(cdtype)
         phasor1 = xp.exp((2j * np.pi) * shift1[:, None] * f[None, :]).astype(cdtype)
-        spectra = self._spectra * phasor0[:, :, None] * phasor1[:, None, :]
-        screens = (self._fft.ifft2(spectra, axes=(-2, -1)) * (ns * ns)).real  # (L,ns,ns)
+        # The (L, ns, ns) temporaries below are updated in place where the
+        # result is the same expression's (each operation rounds identically),
+        # which spares allocating and faulting in a fresh array per step.
+        spectra = self._spectra * phasor0[:, :, None]
+        spectra *= phasor1[:, None, :]
+        field = self._fft.ifft2(spectra, axes=(-2, -1))
+        del spectra
+        field *= ns * ns
+        screens = field.real  # (L, ns, ns)
 
         if self._n_sh:
             # Batch the phasor/shift across levels (small), but keep the layer
@@ -1555,59 +1570,51 @@ class Atmosphere:
             sh1 = self._sh_phasors(disp1)
             # (P, L, 3, 3): per level, per layer, shifted 3x3 coefficients.
             shifted = self._sh_coeffs * sh0[:, :, :, None] * sh1[:, :, None, :]
-            low = None
+            low = contrib = None
             for p in range(self._n_sh):
                 basis = self._sh_basis[p]  # (3, ns)
-                contrib = xp.matmul(basis.T, xp.matmul(shifted[p], basis))  # (L,ns,ns)
-                low = contrib.real if low is None else low + contrib.real
-            low = low - low.mean(axis=(-2, -1), keepdims=True)
-            screens = screens + low
+                # (L, ns, ns), written into the previous level's buffer.
+                contrib = xp.matmul(basis.T, xp.matmul(shifted[p], basis), out=contrib)
+                if low is None:
+                    low = contrib.real.copy()
+                else:
+                    low += contrib.real
+            del contrib
+            low -= low.mean(axis=(-2, -1), keepdims=True)
+            low += screens  # the screens plus their low-frequency part
+            screens = low
         return screens
 
     def _lgs_zoom(self, screens: Any, taps: Tuple[Any, Any]) -> Any:
         """Cone-zoom the ``(L, n_screen, n_screen)`` layer screens into ``(n, n)``.
 
-        Separable interpolation (rows then columns) with the precomputed
-        per-layer taps (:meth:`_zoom_taps`), summed over layers. On the GPU,
-        below a working-set threshold, this is a handful of ``take_along_axis``
-        gathers batched over all layers and taps (3-8x the old per-layer/per-tap
-        Python loop at 256²-512²). On the CPU (the tight loop is
-        cache-friendlier) or for a large batched working set on the GPU (the
-        ``(L, n, n_screen)`` intermediates go memory-bound), the per-layer loop
-        is used instead.
+        Separable interpolation with the precomputed per-layer taps
+        (:meth:`_zoom_taps`), summed over layers. With Numba this is one fused
+        parallel pass (:func:`pyturb._accel.lgs_zoom`, bit-identical to the
+        loop below); otherwise a per-layer, per-tap NumPy gather. The GPU does
+        the whole cone frame in :meth:`SpectralGPU.compute_lgs` instead.
         """
         xp = self.xp
         idx, w = taps  # (L, T, n)
         n_layers, n_taps = idx.shape[0], idx.shape[1]
-        n, ns = self.n, self.n_screen
-        if xp is np or n_layers * n * ns > _LGS_BATCH_MAX_ELEMS:
-            total = None
-            for layer in range(n_layers):
-                field = screens[layer]
-                out = None
-                for a in range(n_taps):
-                    band = field[idx[layer, a]]  # (n, ns)
-                    row_term = None
-                    for b in range(n_taps):
-                        term = w[layer, b][None, :] * band[:, idx[layer, b]]
-                        row_term = term if row_term is None else row_term + term
-                    contrib = w[layer, a][:, None] * row_term
-                    out = contrib if out is None else out + contrib
-                total = out if total is None else total + out
-            return total
-        rows = None  # row-interpolated screens, (L, n, ns)
-        for a in range(n_taps):
-            gather = xp.broadcast_to(idx[:, a, :, None], (n_layers, n, ns))
-            band = xp.take_along_axis(screens, gather, axis=1)  # (L, n, ns)
-            term = w[:, a, :, None] * band
-            rows = term if rows is None else rows + term
-        out = None  # then interpolate along columns, (L, n, n)
-        for b in range(n_taps):
-            gather = xp.broadcast_to(idx[:, b, None, :], (n_layers, n, n))
-            col = xp.take_along_axis(rows, gather, axis=2)  # (L, n, n)
-            term = w[:, b, None, :] * col
-            out = term if out is None else out + term
-        return out.sum(axis=0)  # sum layers -> (n, n)
+        if xp is np and _accel.HAVE_NUMBA:
+            out = np.empty((self.n, self.n), dtype=screens.dtype)
+            _accel.lgs_zoom(screens, idx, w, out)
+            return out
+        total = None
+        for layer in range(n_layers):
+            field = screens[layer]
+            out = None
+            for a in range(n_taps):
+                band = field[idx[layer, a]]  # (n, ns)
+                row_term = None
+                for b in range(n_taps):
+                    term = w[layer, b][None, :] * band[:, idx[layer, b]]
+                    row_term = term if row_term is None else row_term + term
+                contrib = w[layer, a][:, None] * row_term
+                out = contrib if out is None else out + contrib
+            total = out if total is None else total + out
+        return total
 
     def _boil_step(self, dt: float) -> None:
         """Advance boiling by ``dt`` seconds: one AR(1) update per mode.
@@ -1621,32 +1628,63 @@ class Atmosphere:
         scaling. Layers with infinite ``tau_boil`` are untouched (pure frozen
         flow).
         """
-        xp = self.xp
         with np.errstate(divide="ignore"):
             alpha = np.where(
                 np.isfinite(self.tau_boil), np.exp(-dt / self.tau_boil), 1.0
             )
         if np.all(alpha >= 1.0):  # every layer frozen — nothing to do
             return
-        L = self._spectra.shape[0]
+        a, b, sh = self._boil_coeffs(dt)
+        # In place: the GPU fast path (and its captured graph) reads _spectra.
+        self._boil_blend(self._spectra, self._amplitudes, a, b)
+        if self._n_sh:
+            self._boil_blend(self._sh_coeffs, self._sh_amps, *sh)
+
+    def _boil_coeffs(self, dt: float) -> Tuple[Any, Any, Any]:
+        """Per-mode AR(1) coefficients ``(a, b, (a_sh, b_sh))`` for a step of ``dt``.
+
+        ``a = exp(-dt / tau(f))`` and ``b = sqrt(1 - a**2)`` on the main grid
+        and the subharmonic modes (``None`` without subharmonics). They depend
+        only on ``dt``, so the last step's are kept: a fixed-``dt`` run computes
+        them once instead of every frame.
+        """
+        if self._boil_cache is not None and self._boil_cache[0] == dt:
+            return self._boil_cache[1]
+        xp = self.xp
         a = xp.exp(-dt / self._boil_main_tau)
         b = xp.sqrt(xp.clip(1.0 - a * a, 0.0, None))
-        noise = self._boil_rng.standard_normal(
-            (2, L, self.n_screen, self.n_screen), dtype=self._spectra.real.dtype
-        )
-        fresh = (noise[0] + 1j * noise[1]) * self._amplitudes
-        # In place: the GPU fast path (and its captured graph) reads _spectra.
-        self._spectra *= a
-        self._spectra += b * fresh.astype(self._cdtype)
+        sh = None
         if self._n_sh:
             a_sh = xp.exp(-dt / self._boil_sh_tau)  # (P, L, 3, 3)
             b_sh = xp.sqrt(xp.clip(1.0 - a_sh * a_sh, 0.0, None))
-            noise = self._boil_rng.standard_normal(
-                (2, self._n_sh, L, 3, 3), dtype=self._spectra.real.dtype
-            )
-            fresh = (noise[0] + 1j * noise[1]) * self._sh_amps
-            self._sh_coeffs *= a_sh
-            self._sh_coeffs += b_sh * fresh.astype(self._cdtype)
+            sh = (a_sh, b_sh)
+        self._boil_cache = (dt, (a, b, sh))
+        return a, b, sh
+
+    def _boil_blend(self, coeffs: Any, amps: Any, a: Any, b: Any) -> None:
+        """``coeffs = coeffs*a + b*((noise[0] + 1j*noise[1])*amps)``, in place.
+
+        ``noise`` is a fresh ``(2, *coeffs.shape)`` draw from the boiling
+        stream. On the GPU one kernel draws it inline and applies the update
+        (:func:`pyturb._gpu_spectral.boil_blend_rng`); on the CPU the draw is
+        followed by one fused Numba pass. Both round every operation as the
+        NumPy/CuPy expression below does, so every path gives the same
+        coefficients bit for bit.
+        """
+        xp = self.xp
+        dtype = coeffs.real.dtype
+        if xp is not np and isinstance(self._boil_rng, CudaNormalGenerator):
+            from ._gpu_spectral import boil_blend_rng
+
+            boil_blend_rng(coeffs, amps, a, b, self._boil_rng)
+            return
+        noise = self._boil_rng.standard_normal((2,) + coeffs.shape, dtype=dtype)
+        if xp is np and _accel.HAVE_NUMBA:
+            _accel.boil_blend(coeffs, noise, amps, a, b)
+            return
+        fresh = (noise[0] + 1j * noise[1]) * amps
+        coeffs *= a
+        coeffs += b * fresh.astype(coeffs.dtype)
 
     def frames(
         self, dt: float, steps: int, wavelength: Optional[float] = None

@@ -764,6 +764,67 @@ def test_lgs_works_on_both_engines_and_combines_with_boiling():
 
 
 @pytest.mark.gpu
+@pytest.mark.filterwarnings("ignore::pyturb.PeriodicWrapWarning")  # t=3.2 s wraps
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("interp, subharmonics", [("cubic", 8), ("lanczos", 8),
+                                                  ("linear", 0)])
+def test_gpu_fused_lgs_path_matches_cpu_formula(dtype, interp, subharmonics):
+    # The GPU LGS frame (Hermitian half-spectrum real FFT per layer, one zoom
+    # kernel, subharmonics evaluated at the zoomed positions) must reproduce
+    # the CPU per-layer transform + zoom given the same stored realisation.
+    kw = dict(r0=0.15, n=48, diameter=8.0, dtype=dtype, seed=3, field_of_view=4.0,
+              lgs_altitude=90e3, interp=interp, subharmonics=subharmonics)
+    gpu = pyturb.Atmosphere.from_profile("paranal-median", device="gpu", **kw)
+    cpu = pyturb.Atmosphere.from_profile("paranal-median", device="cpu", **kw)
+    cpu._spectra = pyturb.to_numpy(gpu._spectra)
+    if subharmonics:
+        cpu._sh_coeffs = pyturb.to_numpy(gpu._sh_coeffs)
+    tol = 2e-5 if dtype == "float32" else 1e-11
+    for t in (0.0, 0.0137, 3.2):
+        ref = cpu.opd(t)
+        got = pyturb.to_numpy(gpu.opd(t))
+        np.testing.assert_allclose(got, ref, rtol=0, atol=tol * np.abs(ref).max())
+    # Directions with their own source range take the eager (uncaptured) path.
+    dirs = [(0.0, 0.0, 120e3), (2.0, 3.0, None)]
+    np.testing.assert_allclose(pyturb.to_numpy(gpu.opd(0.01, directions=dirs)),
+                               cpu.opd(0.01, directions=dirs), rtol=0,
+                               atol=tol * np.abs(ref).max())
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("shape", [(3, 40, 40), (2, 3, 3, 3), (1, 7, 7)])
+def test_gpu_boil_blend_rng_is_draw_then_expression(dtype, shape):
+    # The fused GPU boiling update draws its noise inline. It must give the
+    # bits of drawing the (2, *shape) noise from the same generator and then
+    # applying the CuPy expression, and leave the generator where that draw
+    # would (odd sizes exercise draws straddling Philox blocks).
+    import cupy
+
+    from pyturb._gpu_spectral import boil_blend_rng
+    from pyturb._rng import CudaNormalGenerator
+
+    rng = np.random.default_rng(0)
+    cdtype = np.complex64 if dtype == "float32" else np.complex128
+    coeffs = cupy.asarray(rng.standard_normal(shape) + 1j * rng.standard_normal(shape),
+                          dtype=cdtype)
+    amps, a = (cupy.asarray(x, dtype=dtype) for x in (rng.random(shape),
+                                                       rng.random(shape)))
+    b = cupy.sqrt(cupy.clip(1.0 - a * a, 0.0, None))
+    ref_rng, fused_rng = CudaNormalGenerator(5), CudaNormalGenerator(5)
+    for gen in (ref_rng, fused_rng):  # start mid-stream, off a block boundary
+        gen.standard_normal(3, dtype=dtype)
+    noise = ref_rng.standard_normal((2,) + shape, dtype=dtype)
+    ref = coeffs * a
+    ref += b * ((noise[0] + 1j * noise[1]) * amps).astype(cdtype)
+    boil_blend_rng(coeffs, amps, a, b, fused_rng)
+    np.testing.assert_array_equal(pyturb.to_numpy(coeffs), pyturb.to_numpy(ref))
+    assert fused_rng._counter == ref_rng._counter
+    np.testing.assert_array_equal(pyturb.to_numpy(fused_rng.standard_normal(9)),
+                                  pyturb.to_numpy(ref_rng.standard_normal(9)))
+
+
+@pytest.mark.gpu
 def test_gpu_spectral_lgs_cone_effect():
     """The spectral LGS zoom-resample runs on the GPU and shows the cone effect
     (differential variance larger for a nearer beacon)."""
@@ -1016,8 +1077,10 @@ def test_gpu_fused_spectral_path_matches_cpu_formula(dtype):
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("tau_boil", [None, 0.05])
-def test_gpu_cuda_graph_frames_match_eager(tau_boil):
-    kw = dict(seeing=0.8, n=64, device="gpu", seed=1, tau_boil=tau_boil)
+@pytest.mark.parametrize("lgs_altitude", [None, 90e3])
+def test_gpu_cuda_graph_frames_match_eager(tau_boil, lgs_altitude):
+    kw = dict(seeing=0.8, n=64, device="gpu", seed=1, tau_boil=tau_boil,
+              lgs_altitude=lgs_altitude)
     graph = pyturb.Atmosphere.from_profile("paranal-median", cuda_graph=True, **kw)
     eager = pyturb.Atmosphere.from_profile("paranal-median", cuda_graph=False, **kw)
     a = [pyturb.to_numpy(f) for _, f in graph.frames(dt=1e-3, steps=20)]

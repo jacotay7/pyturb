@@ -28,7 +28,10 @@ import numpy as np
 
 __all__ = ["CudaNormalGenerator", "default_rng"]
 
-_SRC = r"""
+# Device functions: element ``4 * b + j`` (float32) / ``2 * b + j`` (float64) of
+# the stream is ``z[j]`` of block ``b``. Shared with kernels that draw the
+# stream inline (``pyturb._gpu_spectral``).
+_DEVICE_SRC = r"""
 __device__ __forceinline__ void philox4x32_10(unsigned int c[4], unsigned int k0,
                                               unsigned int k1)
 {
@@ -46,6 +49,45 @@ __device__ __forceinline__ void philox4x32_10(unsigned int c[4], unsigned int k0
 }
 
 // float32: one Philox block -> four normals (two Box-Muller pairs).
+__device__ __forceinline__ void philox_normal4_f(unsigned long long ctr, unsigned int k0,
+                                                 unsigned int k1, float z[4])
+{
+    unsigned int c[4] = {(unsigned int)ctr, (unsigned int)(ctr >> 32), 0u, 0u};
+    philox4x32_10(c, k0, k1);
+    #pragma unroll
+    for (int p = 0; p < 2; ++p) {
+        // u in (0, 1]: never 0, so log(u) is finite (|z| <= 6.8).
+        float u = (float)c[2 * p] * 2.3283064365386963e-10f
+                  + 1.1641532182693481e-10f;
+        float t = (float)c[2 * p + 1] * 4.6566128730773926e-10f;  // 2 * [0, 1)
+        float r = sqrtf(-2.0f * logf(u));
+        float s, co;
+        sincospif(t, &s, &co);
+        z[2 * p] = r * co;
+        z[2 * p + 1] = r * s;
+    }
+}
+
+// float64: one Philox block -> two normals (one Box-Muller pair, 53-bit uniforms).
+__device__ __forceinline__ void philox_normal2_d(unsigned long long ctr, unsigned int k0,
+                                                 unsigned int k1, double z[2])
+{
+    unsigned int c[4] = {(unsigned int)ctr, (unsigned int)(ctr >> 32), 0u, 0u};
+    philox4x32_10(c, k0, k1);
+    unsigned long long a = ((unsigned long long)(c[0] >> 5) << 26) | (c[1] >> 6);
+    unsigned long long e = ((unsigned long long)(c[2] >> 5) << 26) | (c[3] >> 6);
+    // u in (0, 1): 53-bit uniform plus half an ulp.
+    double u = (double)a * 1.1102230246251565e-16 + 5.551115123125783e-17;
+    double t = (double)e * 2.220446049250313e-16;  // 2 * [0, 1)
+    double r = sqrt(-2.0 * log(u));
+    double s, co;
+    sincospi(t, &s, &co);
+    z[0] = r * co;
+    z[1] = r * s;
+}
+"""
+
+_SRC = _DEVICE_SRC + r"""
 extern "C" __global__ void philox_normal_f(
     float* __restrict__ out, long long size, unsigned int k0, unsigned int k1,
     unsigned long long offset)
@@ -54,22 +96,8 @@ extern "C" __global__ void philox_normal_f(
     long long stride = (long long)gridDim.x * blockDim.x;
     for (long long b = (long long)blockIdx.x * blockDim.x + threadIdx.x; b < nblk;
          b += stride) {
-        unsigned long long ctr = offset + (unsigned long long)b;
-        unsigned int c[4] = {(unsigned int)ctr, (unsigned int)(ctr >> 32), 0u, 0u};
-        philox4x32_10(c, k0, k1);
         float z[4];
-        #pragma unroll
-        for (int p = 0; p < 2; ++p) {
-            // u in (0, 1]: never 0, so log(u) is finite (|z| <= 6.8).
-            float u = (float)c[2 * p] * 2.3283064365386963e-10f
-                      + 1.1641532182693481e-10f;
-            float t = (float)c[2 * p + 1] * 4.6566128730773926e-10f;  // 2 * [0, 1)
-            float r = sqrtf(-2.0f * logf(u));
-            float s, co;
-            sincospif(t, &s, &co);
-            z[2 * p] = r * co;
-            z[2 * p + 1] = r * s;
-        }
+        philox_normal4_f(offset + (unsigned long long)b, k0, k1, z);
         long long i = b * 4;
         if (i + 4 <= size) {  // ``out`` is a fresh, 256-byte-aligned allocation
             reinterpret_cast<float4*>(out)[b] = make_float4(z[0], z[1], z[2], z[3]);
@@ -79,7 +107,6 @@ extern "C" __global__ void philox_normal_f(
     }
 }
 
-// float64: one Philox block -> two normals (one Box-Muller pair, 53-bit uniforms).
 extern "C" __global__ void philox_normal_d(
     double* __restrict__ out, long long size, unsigned int k0, unsigned int k1,
     unsigned long long offset)
@@ -88,22 +115,13 @@ extern "C" __global__ void philox_normal_d(
     long long stride = (long long)gridDim.x * blockDim.x;
     for (long long b = (long long)blockIdx.x * blockDim.x + threadIdx.x; b < nblk;
          b += stride) {
-        unsigned long long ctr = offset + (unsigned long long)b;
-        unsigned int c[4] = {(unsigned int)ctr, (unsigned int)(ctr >> 32), 0u, 0u};
-        philox4x32_10(c, k0, k1);
-        unsigned long long a = ((unsigned long long)(c[0] >> 5) << 26) | (c[1] >> 6);
-        unsigned long long e = ((unsigned long long)(c[2] >> 5) << 26) | (c[3] >> 6);
-        // u in (0, 1): 53-bit uniform plus half an ulp.
-        double u = (double)a * 1.1102230246251565e-16 + 5.551115123125783e-17;
-        double t = (double)e * 2.220446049250313e-16;  // 2 * [0, 1)
-        double r = sqrt(-2.0 * log(u));
-        double s, co;
-        sincospi(t, &s, &co);
+        double z[2];
+        philox_normal2_d(offset + (unsigned long long)b, k0, k1, z);
         long long i = b * 2;
         if (i + 2 <= size) {
-            reinterpret_cast<double2*>(out)[b] = make_double2(r * co, r * s);
+            reinterpret_cast<double2*>(out)[b] = make_double2(z[0], z[1]);
         } else {
-            out[i] = r * co;
+            out[i] = z[0];
         }
     }
 }
@@ -158,6 +176,20 @@ class CudaNormalGenerator:
 
     def __repr__(self) -> str:
         return f"CudaNormalGenerator(key={self._key}, counter={self._counter})"
+
+    def _reserve(self, size: int, dtype: Any) -> Tuple[int, int, int, int]:
+        """Consume ``size`` values without drawing them (for kernels drawing inline).
+
+        Returns ``(key0, key1, offset, per_block)``: element ``i`` of the
+        reserved stretch is element ``i % per_block`` of Philox block
+        ``offset + i // per_block``, exactly as :meth:`standard_normal` of the
+        same ``size`` and ``dtype`` would produce it, and the counter advances
+        by the same amount.
+        """
+        per_block = 4 if np.dtype(dtype) == np.float32 else 2
+        offset = self._counter
+        self._counter = (self._counter + -(-int(size) // per_block)) % (1 << 64)
+        return self._key[0], self._key[1], offset, per_block
 
     def standard_normal(
         self,
