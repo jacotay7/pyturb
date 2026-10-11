@@ -61,3 +61,46 @@ an LGS-cone row of 6,073 / 1,896 / 362 frames/s (2.2: 205 / 167 / 49); see
   readout. You don't need to set `OPENBLAS_NUM_THREADS` yourself.
 - On shared machines, pin to idle cores (`taskset`) and compare runs at equal
   load; timings move by tens of percent with other users' work.
+
+## Threads and parallel sweeps
+
+By default the Numba kernels use every core (`NUMBA_NUM_THREADS`, the core
+count), the SciPy FFTs one thread, and BLAS its own pool. That is right for
+one simulation, but in a parallel sweep every worker process starts its own
+pool per core: 8 workers on 16 cores run 128 spinning threads, and the sweep
+can run an order of magnitude slower than one worker would.
+
+`pyturb.set_threads(n)` caps pyturb's Numba kernels at `n` threads (in every
+Python thread that runs them) and caps threaded FFTs, if you enabled them
+with `set_fft_workers`, at `n` workers. Results do not depend on the setting:
+each output element is computed the same way whatever the thread count. A
+sweep then gives each worker one thread:
+
+```python
+import multiprocessing as mp
+import numpy as np
+import pyturb
+
+
+def run(seed):
+    atm = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=64,
+                                         tau_boil=2.0, seed=seed)
+    return float(np.std([pyturb.to_numpy(o) for _, o in atm.frames(1e-3, 5)]))
+
+
+if __name__ == "__main__":
+    with mp.get_context("spawn").Pool(2, initializer=pyturb.set_threads,
+                                      initargs=(1,)) as pool:
+        print(pool.map(run, range(4)))
+```
+
+Environment variables, read when a process starts:
+
+- `NUMBA_NUM_THREADS`: the size of Numba's pool (set it before Numba is
+  imported; it is the most `set_threads` can use).
+- `OMP_NUM_THREADS`: honoured by pyturb's Numba kernels when
+  `NUMBA_NUM_THREADS` is not set, and by OpenMP/OpenBLAS.
+- `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS`: the BLAS pool. `set_threads`
+  leaves BLAS alone because OpenBLAS's rounding depends on its thread count:
+  limiting it (here or with `threadpoolctl`) is safe for speed but can change
+  seeded screens in the last bit.

@@ -27,8 +27,9 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 import numpy as np
 from aocore import ARCSEC_TO_RAD, centered_coordinates
 
-from . import _accel
+from . import _accel, _boiling
 from . import profiles as _profiles
+from . import theory as _theory
 from ._rng import CudaNormalGenerator, default_rng
 from .backend import device_context, get_array_module, on_device
 from .config import AtmosphereConfig
@@ -173,12 +174,19 @@ class Atmosphere:
         exactly the pupil; fastest). Larger values cost a larger per-frame FFT.
     tau_boil : float or sequence, optional
         Boiling (temporal decorrelation) time constant [s] of each layer's
-        *outer-scale* structure, scalar or one per layer. ``None`` (default)
-        is pure frozen flow. When set, the layer relaxes via an AR(1) process
-        toward fresh, statistically identical turbulence with retention
-        ``exp(-dt/tau)`` while preserving its spatial statistics. Active only
-        while stepping with :meth:`frames`/:meth:`evolve`. Works on **both**
-        engines, but the two realise it differently:
+        **outer-scale** structure, scalar or one per layer. ``None`` (default)
+        is pure frozen flow. On the default spectral engine smaller scales
+        decorrelate faster (below), so this is the *longest* lifetime in the
+        layer: with ``L0 = 25 m`` the 1-10 cm structure an AO system senses
+        boils 40-180 times faster than ``tau_boil``. Physically sensible
+        values are of order a second or more; a few tens of milliseconds
+        makes the screen change by a large fraction of its fine structure
+        every millisecond (see the Physics guide for the per-frame change).
+        When set, the layer relaxes toward fresh, statistically identical
+        turbulence while preserving its spatial statistics, by the temporal
+        process ``boil_model``. Active only while stepping with
+        :meth:`frames`/:meth:`evolve`. Works on **both** engines, but the two
+        realise it differently:
 
         - ``engine="spectral"`` boils **per Fourier mode**, so finer spatial
           structure decorrelates faster than the outer scale per Kolmogorov
@@ -193,6 +201,23 @@ class Atmosphere:
           fresh screen every step makes it markedly slower than spectral
           boiling (raises :class:`ExtrudeBoilingPerformanceWarning`); use
           ``"spectral"`` unless genuine non-periodicity is required.
+
+        :func:`pyturb.theory.covariance` (or :meth:`covariance`) gives the
+        space-time statistics of either.
+    boil_model : {"ar1", "ar2"}, optional
+        Temporal process of boiling. ``"ar1"`` (default): each mode is a
+        first-order autoregression (an Ornstein-Uhlenbeck process) with
+        retention ``exp(-dt/tau)`` per step and white innovations, so the
+        screen's change over a short step grows as ``sqrt(dt/tau)``: it is
+        rough in time and cannot be extrapolated from past frames. ``"ar2"``:
+        a smooth, critically damped second-order process (a continuous-time
+        AR(2), Matérn-3/2 correlation ``(1 + 2 lag/tau) exp(-2 lag/tau)``), with
+        the same integral time scale ``tau``. Each mode carries a rate as well
+        as its value, so the change over a short step grows as ``dt/tau``,
+        closer to real boiling, which is smooth at short lags. Sampled exactly
+        for any ``dt``. ``engine="spectral"`` only; it stores a second
+        spectrum per layer (twice the boiling memory) and draws twice the
+        noise per step.
     engine : {"spectral", "extrude"}, optional
         Frozen-flow engine for :meth:`frames`/:meth:`opd`. ``"spectral"``
         (default) is the fastest: an exact sub-pixel shift-theorem translation,
@@ -365,12 +390,13 @@ class Atmosphere:
         seed: Optional[int] = None,
         oversample: float = 1.0,
         cuda_graph: bool = True,
+        boil_model: str = "ar1",
     ) -> None:
         config = AtmosphereConfig.create(
             layers, r0, seeing, wavelength, zenith_angle, diameter, n, L0,
             power_law, inner_scale, subharmonics, field_of_view, tau_boil,
             engine, interp, lgs_altitude, dispersion, wet_fraction, device,
-            dtype, seed, oversample=oversample,
+            dtype, seed, oversample=oversample, boil_model=boil_model,
         )
         if config.engine == "extrude" and config.has_tau_boil:
             warnings.warn(
@@ -435,6 +461,7 @@ class Atmosphere:
         self._wrap_warned = False
 
         self.tau_boil = np.asarray(config.tau_boil, dtype=np.float64)
+        self.boil_model = config.boil_model
 
         self.xp = get_array_module(self.device)
         self.seed = config.seed
@@ -639,8 +666,11 @@ class Atmosphere:
                  for p in range(1, self._n_sh + 1)]
             )  # (P, 3) float64
         self._boil_main_tau, self._boil_sh_tau = self._build_boil_tau_maps()
-        # (dt, AR(1) coefficients) of the last boiling step; see _boil_coeffs.
+        # (dt, boiling coefficients) of the last boiling step; see _boil_coeffs.
         self._boil_cache: Optional[Tuple[float, Any]] = None
+        # boil_model="ar2": each mode's rate (main grid, subharmonics), drawn
+        # from the boiling stream at the first boiling step.
+        self._boil_rates: Optional[Tuple[Any, Any]] = None
         self._zoom_cache: Dict[Tuple[float, ...], Tuple[Any, Any]] = {}
         # GPU fast path (fused layer sum or LGS cone zoom, device-side phasors,
         # CUDA graph). It holds references to _spectra/_sh_coeffs, which
@@ -903,6 +933,7 @@ class Atmosphere:
             "seed": None if c.seed is None else int(c.seed),
             "oversample": c.oversample,
             "cuda_graph": self.cuda_graph,
+            "boil_model": c.boil_model,
             "profile": self._profile_name,
         }
 
@@ -999,9 +1030,88 @@ class Atmosphere:
         finite = periods[np.isfinite(periods)]
         return float(finite.min()) if finite.size else float("inf")
 
+    def covariance(
+        self,
+        points_a: Any,
+        points_b: Any,
+        lag: Union[float, Sequence[float]] = 0.0,
+        wavelength: Optional[float] = None,
+    ) -> np.ndarray:
+        """Theoretical space-time covariance of this atmosphere's on-axis output.
+
+        ``<opd(a, t) opd(b, t + lag)>`` [m^2] between pupil points ``points_a``
+        and ``points_b`` (each one ``(x, y)`` or an ``(N, 2)`` array [m], as in
+        :meth:`opd_at`), from :func:`pyturb.theory.covariance` with this
+        atmosphere's layers, line-of-sight ``r0``, per-layer ``L0``, winds and
+        boiling: ``tau_boil`` and ``boil_model``, scale-dependent on
+        ``engine="spectral"`` and single-timescale on ``engine="extrude"``. With
+        ``wavelength``, phase [rad^2] at that wavelength (including
+        ``dispersion``). Shape ``(Na, Nb)``, or ``(T, Na, Nb)`` for a 1-D
+        ``lag`` [s].
+
+        It is the infinite-screen statistic. The simulated screens lack power
+        above the grid's Nyquist frequency and, on the periodic spectral engine,
+        some of the largest scales (``oversample`` reduces that); differences
+        such as :meth:`structure_function` are much less sensitive to the large
+        scales. Needs a finite ``L0`` (the Kolmogorov variance is infinite).
+        """
+        return self._theory("covariance", points_a, points_b, lag, wavelength)
+
+    def structure_function(
+        self,
+        points_a: Any,
+        points_b: Any,
+        lag: Union[float, Sequence[float]] = 0.0,
+        wavelength: Optional[float] = None,
+    ) -> np.ndarray:
+        """Theoretical structure function ``<[opd(a, t) - opd(b, t + lag)]^2>`` [m^2].
+
+        From :func:`pyturb.theory.space_time_structure_function`, accurate for
+        close points and short lags. With ``points_a == points_b`` it is the
+        mean-square change of the screen at one point over ``lag``: for
+        ``lag = dt``, the per-frame change :meth:`frames` produces. Finite for
+        Kolmogorov layers (``L0=inf``) unless they boil.
+        """
+        return self._theory("structure_function", points_a, points_b, lag, wavelength)
+
+    def _theory(self, kind: str, points_a: Any, points_b: Any, lag: Any,
+                wavelength: Optional[float]) -> np.ndarray:
+        """Shared body of :meth:`covariance` and :meth:`structure_function`."""
+        if self.power_law != 11.0 / 3.0 or self.inner_scale > 0:
+            raise ValueError(
+                f"{kind} is the von Karman theory (power_law=11/3, no inner "
+                "scale); this atmosphere's turbulence has a different spectrum "
+                "and no closed-form space-time statistics are provided for it."
+            )
+        if self.lgs_altitude is not None:
+            raise ValueError(
+                f"{kind} describes a source at infinity; the laser-guide-star "
+                "cone (lgs_altitude) scales each layer's footprint by 1 - h/H, "
+                "which it does not model."
+            )
+        function = (_theory.covariance if kind == "covariance"
+                    else _theory.space_time_structure_function)
+        rad2 = function(
+            points_a, points_b, lag, layers=self.layers, r0=self.r0_los,
+            tau_boil=self.tau_boil, boil_model=self.boil_model,
+            boil_scaling="kolmogorov" if self.engine == "spectral" else "uniform",
+            units="phase", wavelength=self.wavelength,
+        )
+        scale = self.wavelength / (2.0 * np.pi)  # reference phase -> OPD
+        if wavelength is not None:
+            scale *= self._chromatic_scale(float(wavelength)) * (
+                2.0 * np.pi / float(wavelength))
+        return rad2 * scale ** 2
+
     def _check_wrap(self, disp0: np.ndarray, disp1: np.ndarray) -> None:
-        """Warn once (per instance) the first time a spectral layer wraps."""
+        """Warn once (per instance) the first time a spectral layer wraps.
+
+        ``disp0``/``disp1`` have the layers on their last axis; leading axes
+        (several times or directions) are reduced to each layer's largest travel.
+        """
         disp = np.hypot(np.asarray(disp0), np.asarray(disp1))
+        if disp.ndim > 1:
+            disp = disp.reshape(-1, disp.shape[-1]).max(axis=0)
         wrapped = disp > self._screen_period_m
         if not np.any(wrapped):
             return
@@ -1617,22 +1727,26 @@ class Atmosphere:
         return total
 
     def _boil_step(self, dt: float) -> None:
-        """Advance boiling by ``dt`` seconds: one AR(1) update per mode.
+        """Advance boiling by ``dt`` seconds: one update per mode.
 
-        Each Fourier mode relaxes toward a fresh draw of its stationary
-        distribution with retention ``alpha = exp(-dt / tau(f))``, so the
-        mode's temporal autocorrelation decays as ``exp(-dt / tau(f))`` while
-        its spatial PSD (and hence r0) is preserved. ``tau(f)`` is scale
-        dependent (see :meth:`_build_boil_tau_maps`): fine spatial structure
-        boils faster than coarse structure, per Kolmogorov eddy-turnover
-        scaling. Layers with infinite ``tau_boil`` are untouched (pure frozen
-        flow).
+        With ``boil_model="ar1"`` each Fourier mode relaxes toward a fresh
+        draw of its stationary distribution with retention ``alpha =
+        exp(-dt / tau(f))``, so the mode's temporal autocorrelation decays as
+        ``exp(-dt / tau(f))`` while its spatial PSD (and hence r0) is
+        preserved; ``"ar2"`` advances each mode's value and rate together
+        (:meth:`_boil_step_ar2`). ``tau(f)`` is scale dependent (see
+        :meth:`_build_boil_tau_maps`): fine spatial structure boils faster than
+        coarse structure, per Kolmogorov eddy-turnover scaling. Layers with
+        infinite ``tau_boil`` are untouched (pure frozen flow).
         """
         with np.errstate(divide="ignore"):
             alpha = np.where(
                 np.isfinite(self.tau_boil), np.exp(-dt / self.tau_boil), 1.0
             )
         if np.all(alpha >= 1.0):  # every layer frozen — nothing to do
+            return
+        if self.boil_model == "ar2":
+            self._boil_step_ar2(dt)
             return
         a, b, sh = self._boil_coeffs(dt)
         # In place: the GPU fast path (and its captured graph) reads _spectra.
@@ -1660,6 +1774,54 @@ class Atmosphere:
             sh = (a_sh, b_sh)
         self._boil_cache = (dt, (a, b, sh))
         return a, b, sh
+
+    def _boil_step_ar2(self, dt: float) -> None:
+        """One exact step of the critically damped second-order boiling.
+
+        Each mode's value ``x`` (the stored spectrum) and unit-variance rate
+        ``y`` advance as :func:`pyturb._boiling.ar2_coefficients` describes,
+        with ``u = 2 dt / tau(f)``; the innovations are two fresh complex draws
+        scaled like the modes. The rates start from a stationary draw at the
+        first step, so the screen at ``t = 0`` is the one ``"ar1"`` starts from.
+        """
+        xp = self.xp
+        if self._boil_rates is None:
+            rates = [self._fresh(self._spectra, self._amplitudes)]
+            rates.append(self._fresh(self._sh_coeffs, self._sh_amps)
+                         if self._n_sh else None)
+            self._boil_rates = (rates[0], rates[1])
+        if self._boil_cache is None or self._boil_cache[0] != dt:
+            rdtype = self._spectra.real.dtype
+
+            def coeffs(tau: Any) -> Tuple[Any, ...]:
+                u = 2.0 * dt / tau.astype(xp.float64)
+                return tuple(c.astype(rdtype)
+                             for c in _boiling.ar2_coefficients(u, xp))
+
+            sh = coeffs(self._boil_sh_tau) if self._n_sh else None
+            self._boil_cache = (dt, (coeffs(self._boil_main_tau), sh))
+        main, sh = self._boil_cache[1]
+        self._ar2_update(self._spectra, self._boil_rates[0], self._amplitudes, main)
+        if self._n_sh:
+            self._ar2_update(self._sh_coeffs, self._boil_rates[1], self._sh_amps, sh)
+
+    def _fresh(self, coeffs: Any, amps: Any) -> Any:
+        """A fresh stationary complex draw shaped like ``coeffs``, from the boil RNG."""
+        noise = self._boil_rng.standard_normal((2,) + coeffs.shape,
+                                               dtype=coeffs.real.dtype)
+        return ((noise[0] + 1j * noise[1]) * amps).astype(coeffs.dtype)
+
+    def _ar2_update(self, value: Any, rate: Any, amps: Any, c: Tuple[Any, ...]) -> None:
+        """``(value, rate) <- F (value, rate) + L (z1, z2)``, both arrays in place."""
+        f11, f12, f22, l11, l21, l22 = c
+        z1 = self._fresh(value, amps)
+        z2 = self._fresh(value, amps)
+        new_value = f11 * value + f12 * rate + l11 * z1
+        rate *= f22
+        rate -= f12 * value
+        rate += l21 * z1 + l22 * z2
+        # In place: the GPU fast path (and its captured graph) reads _spectra.
+        value[...] = new_value
 
     def _boil_blend(self, coeffs: Any, amps: Any, a: Any, b: Any) -> None:
         """``coeffs = coeffs*a + b*((noise[0] + 1j*noise[1])*amps)``, in place.
@@ -1862,6 +2024,7 @@ class Atmosphere:
             "field_of_view": self.field_of_view,
             "oversample": self.oversample,
             "tau_boil": uniform_tau,
+            "boil_model": self.boil_model,
             "dispersion": self.dispersion,
             "wet_fraction": self.wet_fraction,
             "lgs_altitude": (0.0 if self.lgs_altitude is None

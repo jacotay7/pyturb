@@ -12,6 +12,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from ._boiling import check_model as check_boil_model
 from .profiles import Layer, _fractions
 from .utils import r0_from_seeing
 
@@ -184,6 +185,7 @@ class AtmosphereConfig:
     wet_fraction: float
     seed: Optional[int]
     oversample: float = 1.0
+    boil_model: str = "ar1"
 
     @classmethod
     def create(
@@ -210,6 +212,7 @@ class AtmosphereConfig:
         dtype: Any,
         seed: Optional[int],
         oversample: float = 1.0,
+        boil_model: str = "ar1",
     ) -> "AtmosphereConfig":
         """Validate model inputs and normalise values shared by both engines."""
         model_layers = list(layers)
@@ -239,6 +242,15 @@ class AtmosphereConfig:
             )
         if engine not in ("spectral", "extrude"):
             raise ValueError("engine must be 'spectral' or 'extrude'")
+        check_boil_model(boil_model)
+        if boil_model != "ar1" and engine == "extrude":
+            raise ValueError(
+                f"boil_model={boil_model!r} requires engine='spectral': the "
+                "spectral engine boils each stored Fourier mode, so a "
+                "second-order process only needs a rate per mode, while the "
+                "extruder boils by blending its ring buffer toward freshly "
+                "extruded screens and has no per-mode state to carry a rate."
+            )
         if interp not in ("cubic", "linear", "lanczos"):
             raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
         if not np.isfinite(power_law) or power_law <= 2.0:
@@ -350,6 +362,7 @@ class AtmosphereConfig:
             wet_fraction=float(wet_fraction),
             seed=seed,
             oversample=oversample,
+            boil_model=boil_model,
         )
 
 

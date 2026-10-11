@@ -94,6 +94,10 @@ Generated from the source docstrings.
 
 ::: pyturb.get_fft_workers
 
+::: pyturb.set_threads
+
+::: pyturb.get_threads
+
 ## Backend
 
 ::: pyturb.to_numpy
