@@ -6,6 +6,54 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-10
+
+### Added
+
+- `pyturb.theory.covariance` and `pyturb.theory.space_time_structure_function`:
+  the space-time covariance `<phi(a, t) phi(b, t + lag)>` and structure
+  function between any pupil points for a layered profile under frozen flow
+  (`phi(r, t) = phi_0(r + wind_vector * t)`), Cn²-weighted over the layers,
+  optionally with pyturb's boiling (`tau_boil`, `boil_model`, and
+  `boil_scaling="kolmogorov"` for the spectral engine's per-mode time constants
+  or `"uniform"` for the extruder's). The boiled covariance is a Hankel
+  transform of the von Kármán PSD times each mode's retention, evaluated to
+  ~1e-7 relative (checked against adaptive quadrature); at zero lag it is the
+  closed form. `units="phase"` or `"opd"`; a 1-D `lag` adds a lag axis.
+  `Atmosphere.covariance` and `Atmosphere.structure_function` evaluate them
+  with the atmosphere's own layers, line-of-sight r0, L0 and boiling, in OPD
+  (or phase at a `wavelength`). The test suite checks them against ensembles of
+  `Atmosphere.frames` (with and without boiling, both boil models).
+- `boil_model="ar2"` (spectral engine): smooth boiling. Each mode follows a
+  critically damped second-order process (Matérn-3/2 correlation
+  `(1 + 2 lag/tau) exp(-2 lag/tau)`, the same integral time as AR(1)), sampled
+  exactly for any `dt`, so the per-frame change grows as `dt/tau` instead of
+  `sqrt(dt/tau)`: at 1 kHz with `tau_boil = 50 ms`, 109 nm rms per frame over
+  an 8 m pupil instead of 307 nm (r0 = 0.15 m, L0 = 25 m, one static layer).
+  The default `"ar1"` is unchanged. Recorded in `to_config`/`metadata`.
+- `pyturb.set_threads(n)` / `pyturb.get_threads()`: cap the Numba kernels'
+  threads (in every Python thread) and any threaded FFT workers, e.g. one
+  thread per process in a multiprocessing sweep. Results do not depend on the
+  setting. pyturb's Numba kernels also honour `OMP_NUM_THREADS` when
+  `NUMBA_NUM_THREADS` is unset.
+
+### Changed
+
+- The docs state prominently that `tau_boil` is the outer-scale lifetime (the
+  1-10 cm scales an AO system senses boil 40-180 times faster at `L0 = 25 m`), with
+  guidance on sensible values (seconds) and a table of the per-frame change
+  against `tau_boil`; the Performance guide covers threads and parallel
+  sweeps.
+
+### Fixed
+
+- `Atmosphere.opd(t=times)` on the GPU raised `IndexError` instead of warning
+  when a layer wrapped the periodic screen.
+
+Output: every seeded result of the existing options (CPU with and without
+Numba, GPU) is bit-identical to 2.3.0, checked bytewise over 664 seeded
+configurations per backend, and under `set_threads(1)` and `set_threads(3)`.
+
 ## [2.3.0] - 2026-10-07
 
 ### Performance

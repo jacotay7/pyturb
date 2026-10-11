@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
+import threading
 from contextlib import AbstractContextManager, nullcontext
+from importlib.util import find_spec
 from types import ModuleType
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
@@ -131,6 +134,104 @@ def get_fft_workers() -> Optional[int]:
     return _fft_workers
 
 
+# Thread cap from set_threads (None: no cap). Numba's thread count is
+# per-thread state, so each Python thread applies the current setting before its
+# first Numba kernel and again after every change (tracked by _thread_epoch).
+_threads: Optional[int] = None
+_thread_epoch = 0
+_thread_state = threading.local()
+
+
+def _env_threads() -> Optional[int]:
+    """``OMP_NUM_THREADS`` (its first entry) when ``NUMBA_NUM_THREADS`` is unset."""
+    if "NUMBA_NUM_THREADS" in os.environ:
+        return None  # Numba sized its pool from it already
+    value = os.environ.get("OMP_NUM_THREADS", "").split(",")[0].strip()
+    try:
+        count = int(value)
+    except ValueError:
+        return None
+    return count if count >= 1 else None
+
+
+def apply_threads() -> None:
+    """Apply the thread setting to Numba in the calling thread, once per change.
+
+    Called by pyturb's parallel Numba kernels before they run. The setting is
+    :func:`set_threads`'s value or, when it was never called, an
+    ``OMP_NUM_THREADS`` from the environment (unless ``NUMBA_NUM_THREADS`` is
+    set, which Numba already honours).
+    """
+    if getattr(_thread_state, "epoch", -1) == _thread_epoch:
+        return
+    _thread_state.epoch = _thread_epoch
+    try:
+        import numba
+    except ImportError:  # pragma: no cover - only reached with Numba installed
+        return
+    target = _threads if _threads is not None else _env_threads()
+    pool = int(numba.config.NUMBA_NUM_THREADS)
+    numba.set_num_threads(pool if target is None else min(target, pool))
+
+
+def set_threads(threads: Optional[int]) -> Optional[int]:
+    """Cap the CPU threads pyturb uses; returns the previous cap.
+
+    ``threads`` (an integer >= 1) limits, for this process:
+
+    - pyturb's parallel Numba kernels (``numba.set_num_threads``, at most the
+      ``NUMBA_NUM_THREADS`` pool Numba started with), in every Python thread;
+    - the SciPy FFT workers, if threaded FFTs were enabled with
+      :func:`set_fft_workers` (it never turns them on).
+
+    ``None`` removes the cap (Numba back to its full pool). Results do not
+    depend on the setting: every parallel kernel computes each output element
+    in the same order whatever the thread count.
+
+    It leaves the BLAS thread pool alone, because OpenBLAS's rounding depends
+    on its thread count (a seeded screen changes in the last bit). Limit BLAS
+    with ``OPENBLAS_NUM_THREADS``/``OMP_NUM_THREADS`` before starting Python,
+    or ``threadpoolctl.threadpool_limits``, and expect last-bit differences
+    from runs with a different BLAS thread count.
+
+    Use it in multiprocessing workers, where every process would otherwise
+    start a thread per core, e.g. ``Pool(initializer=pyturb.set_threads,
+    initargs=(1,))``. Without calling it, pyturb honours ``OMP_NUM_THREADS``
+    for its Numba kernels when ``NUMBA_NUM_THREADS`` is not set.
+
+    >>> import pyturb                       # doctest: +SKIP
+    >>> pyturb.set_threads(1)               # one thread per worker process
+    """
+    global _threads, _thread_epoch
+    if threads is not None:
+        if isinstance(threads, bool) or not isinstance(threads, (int, np.integer)):
+            raise ValueError("threads must be None or an integer >= 1")
+        if threads < 1:
+            raise ValueError("threads must be None or an integer >= 1")
+        threads = int(threads)
+    previous = _threads
+    _threads = threads
+    _thread_epoch += 1
+    if find_spec("numba") is not None:
+        apply_threads()
+    return previous
+
+
+def get_threads() -> Optional[int]:
+    """Return the current thread cap (see :func:`set_threads`); ``None`` if unset."""
+    return _threads
+
+
+def _fft_worker_count() -> Optional[int]:
+    """The ``workers`` passed to SciPy: :func:`set_fft_workers`, capped by the cap."""
+    if _fft_workers is None or _threads is None:
+        return _fft_workers
+    workers = _fft_workers
+    if workers < 0:
+        workers = max(1, (os.cpu_count() or 1) + 1 + workers)
+    return min(workers, _threads)
+
+
 class _ThreadedScipyFFT:
     """``scipy.fft`` wrapper that injects the pyturb ``workers`` setting.
 
@@ -147,11 +248,11 @@ class _ThreadedScipyFFT:
         return getattr(self._m, name)
 
     def ifft2(self, a: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("workers", _fft_workers)
+        kwargs.setdefault("workers", _fft_worker_count())
         return self._m.ifft2(a, **kwargs)
 
     def fft2(self, a: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("workers", _fft_workers)
+        kwargs.setdefault("workers", _fft_worker_count())
         return self._m.fft2(a, **kwargs)
 
 

@@ -122,7 +122,13 @@ the head-to-head against aotools, soapy and HCIPy:
   low-order modes), since a pupil-sized periodic screen underestimates them.
 - **Off-axis / tomography** — `atm.opd(t, directions=[...])` batches several
   guide-star directions through one call.
-- **Boiling** — temporal decorrelation on top of frozen flow (`tau_boil`).
+- **Boiling** — temporal decorrelation on top of frozen flow (`tau_boil`, the
+  outer-scale lifetime; finer scales boil faster), rough (`boil_model="ar1"`)
+  or smooth in time (`"ar2"`).
+- **Estimator statistics** — `pyturb.theory.covariance` /
+  `Atmosphere.covariance`: the space-time covariance and structure function
+  the simulator draws from (frozen flow + boiling), for MMSE/predictive/Kalman
+  design.
 - **LGS cone effect** — finite-range sodium beacon focal anisoplanatism
   (`lgs_altitude`).
 - **Chromatic OPD** — achromatic by default; `dispersion="edlen"`/`"ciddor"`

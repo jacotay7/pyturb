@@ -222,6 +222,17 @@ def test_spectral_engine_warns_once_when_a_layer_wraps():
         atm.opd(wrap_t * 1.5)
 
 
+def test_batched_times_warn_about_the_wrapping_layer(device):
+    # opd(t=times) checks a (times, layers) displacement array at once (the
+    # GPU batched path); the warning must name the layer that wrapped.
+    layers = [pyturb.Layer(0.0, 0.5, wind_speed=1.0, wind_direction=0.0),
+              pyturb.Layer(5e3, 0.5, wind_speed=10.0, wind_direction=0.0)]
+    atm = pyturb.Atmosphere(layers, r0=0.15, diameter=8.0, n=32, seed=0,
+                            device=device)
+    with pytest.warns(pyturb.PeriodicWrapWarning, match="layer 1"):
+        atm.opd([0.0, 0.1, atm.time_to_wrap * 1.5, 0.2])
+
+
 def test_spectral_engine_does_not_warn_within_one_period():
     layer = pyturb.Layer(0.0, 1.0, wind_speed=10.0, wind_direction=0.0)
     atm = pyturb.Atmosphere([layer], r0=0.15, diameter=8.0, n=64, seed=0)

@@ -49,3 +49,14 @@ See [Conventions](concepts.md#conventions).
 **CPU runs are slow.** Install the `accel` extra (Numba), enable threaded FFTs
 with `pyturb.set_fft_workers(-1)`, and use `float32`. See
 [Performance](performance.md).
+
+**Parallel sweeps (multiprocessing) are much slower than one run.** Each
+worker starts a Numba thread per core, so the machine is oversubscribed. Call
+`pyturb.set_threads(1)` in each worker (e.g. as the `Pool` initializer); see
+[Threads and parallel sweeps](performance.md#threads-and-parallel-sweeps).
+
+**Boiling changes the screen far too much from frame to frame.** `tau_boil` is
+the lifetime of the outer scale; the 1-10 cm scales an AO system senses boil
+40-180 times faster (for `L0 = 25 m`). Use values of a second or more, and
+`boil_model="ar2"` for smooth (predictable) evolution; see
+[Boiling](physics.md#boiling).

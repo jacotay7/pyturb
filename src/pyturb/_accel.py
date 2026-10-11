@@ -19,9 +19,23 @@ as their NumPy expressions do, so those two are bit-identical to them.
 
 from __future__ import annotations
 
+import functools
 from importlib.util import find_spec
 
+from .backend import apply_threads
+
 HAVE_NUMBA = find_spec("numba") is not None
+
+
+def _threaded(kernel):
+    """Run ``kernel`` after applying :func:`pyturb.set_threads` in this thread."""
+
+    @functools.wraps(kernel)
+    def call(*args):
+        apply_threads()
+        return kernel(*args)
+
+    return call
 
 
 if HAVE_NUMBA:
@@ -67,6 +81,7 @@ if HAVE_NUMBA:
         recover most of it without changing that per-pixel arithmetic.
         """
         if spectra.size >= _PARALLEL_MIN_ELEMS:
+            apply_threads()
             _spectral_rows_parallel(spectra, ph0, ph1, out)
         else:
             _spectral_rows(spectra, ph0, ph1, out, 0, spectra.shape[1])
@@ -308,3 +323,12 @@ if HAVE_NUMBA:
                         val += wr[a] * rs
                     acc += val
                 out[i, j] = acc
+
+    # Python entry points of the parallel kernels apply the thread setting
+    # first (Numba's thread count is per Python thread).
+    boil_blend = _threaded(boil_blend)
+    lgs_zoom = _threaded(lgs_zoom)
+    infinite_cubic = _threaded(infinite_cubic)
+    infinite_taps = _threaded(infinite_taps)
+    extrude_cubic_readout = _threaded(extrude_cubic_readout)
+    extrude_lanczos_readout = _threaded(extrude_lanczos_readout)

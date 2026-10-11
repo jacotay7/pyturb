@@ -99,6 +99,19 @@ caught real bugs before.
   pyturb's `wind_vector`), `FiniteAtmosphericLayer` along `+velocity` with the
   components on (rows, cols). Re-measure before documenting a sign.
 
+## Boiling model and its theory
+
+- `pyturb.theory.covariance` describes what the engines simulate: the
+  spectral engine's per-mode `tau(f)` map (`_build_boil_tau_maps`, `f_ref =
+  1/L0`) and the extruder's single time constant. The per-mode temporal models
+  (`"ar1"`, `"ar2"`) live in `_boiling.py`, shared by the simulator and the
+  theory; change the model there and in `_build_boil_tau_maps` together, and
+  keep `tests/test_spacetime.py` passing.
+- Simulated screens lack power above Nyquist and the spectral screen has no
+  mean over its FFT grid, so compare simulation with the theory through
+  piston-free statistics (point differences) at separations of many pixels,
+  not the covariance or a single point's temporal change.
+
 ## Test-environment gotchas
 
 - `tests/test_docs.py` executes every ```` ```python ```` block in `docs/`,
@@ -135,6 +148,19 @@ configurations (every engine, dtype, interp, boiling, LGS, directions, times,
   use custom kernels instead of `matmul`. cuBLAS's summation order is not
   reproducible by a custom kernel, so replacing one changes the GPU OPD at
   float32 rounding.
+- A `fastmath` Numba kernel compiled fresh in the running process (first run
+  after its source changed, or with an empty cache) can give different last
+  bits from the same kernel loaded from Numba's on-disk cache (seen for the
+  spectral layer sum on x86-64; issue #46, which also makes
+  `test_accel.py::test_spectral_layer_sum_is_thread_independent` fail once
+  the cache is warm). Compare "before" and "after" outputs in the same cache
+  state (both warm, or both after clearing `src/pyturb/__pycache__/*.nb[ic]`).
+- OpenBLAS rounds differently for different thread counts, so limiting the
+  BLAS pool (`threadpoolctl`, `OPENBLAS_NUM_THREADS`) changes seeded screens in
+  the last bit. `set_threads` therefore caps only Numba (whose kernels compute
+  each output element identically for any thread count) and opted-in FFT
+  workers; keep it that way, and re-run the bytewise comparison under
+  `set_threads(1)` after touching a parallel kernel.
 - On the shared Arm bench host, Numba's OpenMP threads and OpenBLAS's threads
   both spin after use: a kernel timed alone can run several times faster than
   inside a frame. Profile frames in steady state (after warm-up), pin cores,

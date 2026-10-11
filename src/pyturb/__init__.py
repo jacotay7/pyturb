@@ -22,7 +22,14 @@ from importlib.metadata import version as _pkg_version
 from . import analysis, interop, theory
 from .analysis import zernike_basis, zernike_decompose
 from .atmosphere import Atmosphere, ExtrudeBoilingPerformanceWarning, PeriodicWrapWarning
-from .backend import get_array_module, get_fft_workers, set_fft_workers, to_numpy
+from .backend import (
+    get_array_module,
+    get_fft_workers,
+    get_threads,
+    set_fft_workers,
+    set_threads,
+    to_numpy,
+)
 from .benchmark import benchmark
 from .flow import FourierFlowScreen
 from .fourier import PhaseScreen
@@ -102,5 +109,7 @@ __all__ = [
     "get_array_module",
     "set_fft_workers",
     "get_fft_workers",
+    "set_threads",
+    "get_threads",
     "__version__",
 ]
