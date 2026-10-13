@@ -22,6 +22,8 @@ quoted at, unless a function says otherwise.
   lag, for a layered profile under frozen flow, optionally with pyturb's
   boiling model (what :class:`pyturb.Atmosphere` simulates; see
   :meth:`pyturb.Atmosphere.covariance`).
+- :func:`travel_decorrelation_time` — an on-sky boiling time constant per
+  layer from its wind speed (Guesalaga et al. 2014), for ``tau_boil``.
 
 References
 ----------
@@ -29,6 +31,7 @@ References
 - Conan, J.-M., Rousset, G. & Madec, P.-Y. (1995), JOSA A 12, 1559.
 - Tokovinin, A. (2002), PASP 114, 1156.
 - Sasiela, R. J. (1994), *Electromagnetic Wave Propagation in Turbulence*.
+- Guesalaga, A. et al. (2014), MNRAS 440, 1925.
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ __all__ = [
     "differential_phase_variance",
     "covariance",
     "space_time_structure_function",
+    "travel_decorrelation_time",
 ]
 
 # Exact Kolmogorov phase-PSD constant, (24/5 Gamma(6/5))^(5/6) Gamma(11/6)^2 /
@@ -246,7 +250,6 @@ def differential_phase_variance(
 # ---------------------------------------------------------------------------
 # Space-time covariance (frozen flow + boiling)
 # ---------------------------------------------------------------------------
-_BOIL_SCALINGS = ("kolmogorov", "uniform")
 # Retention below 1e-17 beyond this many time constants (both boil models).
 _S_MAX = 40.0
 # J0 periods integrated explicitly in _boil_g; the rest of the oscillating
@@ -404,12 +407,7 @@ def _space_time_half(
     shape ``(Na, Nb)`` or ``(T, Na, Nb)`` for a 1-D ``lag``.
     """
     _boiling.check_model(boil_model)
-    if boil_scaling not in _BOIL_SCALINGS:
-        raise ValueError(
-            f"boil_scaling must be one of {_BOIL_SCALINGS}; got {boil_scaling!r}. "
-            "'kolmogorov' is the spectral engine's per-mode boiling, 'uniform' "
-            "the extruder's single time constant for every scale."
-        )
+    _boiling.check_scaling(boil_scaling)
     if not np.isfinite(r0) or r0 <= 0:
         raise ValueError("r0 must be positive and finite [m]")
     a = _points(points_a, "points_a")
@@ -522,7 +520,8 @@ def covariance(
     ``f >= 1/L0`` and ``tau_boil`` below, so ``tau_boil`` is the lifetime of the
     outer-scale structure and fine structure decorrelates faster; the Hankel
     transform is then evaluated numerically (relative accuracy ~1e-7). With
-    ``"uniform"`` (the extruder) every scale has ``tau_boil``, and the
+    ``"uniform"`` (the extruder, and the spectral engine's
+    ``boil_scaling="uniform"``) every scale has ``tau_boil``, and the
     covariance is the frozen-flow one times ``R(|lag| / tau_boil)``.
 
     Parameters
@@ -550,8 +549,10 @@ def covariance(
     boil_model : {"ar1", "ar2"}, optional
         Temporal boiling model, as :class:`pyturb.Atmosphere`'s ``boil_model``.
     boil_scaling : {"kolmogorov", "uniform"}, optional
-        Scale dependence of boiling: ``"kolmogorov"`` (default) as
-        ``engine="spectral"`` boils, ``"uniform"`` as ``engine="extrude"``.
+        Scale dependence of boiling, as :class:`pyturb.Atmosphere`'s
+        ``boil_scaling``: ``"kolmogorov"`` (default, the spectral engine's
+        default) or ``"uniform"`` (the extruder, or the spectral engine with
+        ``boil_scaling="uniform"``).
     units : {"phase", "opd"}, optional
         ``"phase"`` (default): rad^2 at ``wavelength``. ``"opd"``: m^2.
     wavelength : float, optional
@@ -617,3 +618,75 @@ def space_time_structure_function(
         boil_scaling, need_variance=False,
     )
     return 2.0 * half * _unit_scale(units, wavelength)
+
+
+def travel_decorrelation_time(
+    speed: ArrayLike,
+    per_metre: float = 0.157,
+    per_second: float = 0.365,
+) -> Union[float, np.ndarray]:
+    """Boiling time constant [s] of a layer from the distance its wind carries it.
+
+    ``tau = 1 / (per_metre * |speed| + per_second)``. Guesalaga et al. (2014)
+    followed the turbulence of individual layers with the GeMS wide-field
+    laser-guide-star AO system and found each layer's correlation decaying
+    roughly linearly with lag, ``rho(lag) ~ 1 - r lag``, with a rate that
+    grows with wind speed, ``r = 0.157 v + 0.365`` s^-1 (``v`` in m/s): a
+    layer loses correlation mainly with the distance it has travelled, plus a
+    slower part that does not depend on the wind. The defaults are that fit;
+    ``1 / r`` is the time constant whose AR(1) retention ``exp(-lag/tau)`` has
+    the same initial slope.
+
+    The fit covers 74 GeMS layer sequences with winds of 0-24 m/s, as a
+    whole-layer, roughly linear decay; it says nothing about how the decay
+    depends on spatial scale. Use it with ``boil_scaling="uniform"``, which
+    gives every scale this time constant. With the default
+    ``boil_scaling="kolmogorov"``, ``tau_boil`` is the lifetime of the outer
+    scale only and the scales an AO system senses would boil one to two
+    orders of magnitude faster than measured. ``boil_model="ar2"`` keeps the
+    same integral time scale but starts flat (quadratic) instead of linear at
+    short lags. Treat values outside the fitted speed range as extrapolation.
+
+    Parameters
+    ----------
+    speed : float or array_like
+        Layer wind speed [m/s]; the sign is ignored. An array gives one time
+        constant per layer, e.g. ``[layer.wind_speed for layer in layers]``.
+    per_metre : float, optional
+        Decorrelation per metre of travel [m^-1]. Default 0.157.
+    per_second : float, optional
+        Wind-independent decorrelation rate [s^-1]. Default 0.365.
+
+    Returns
+    -------
+    float or ndarray
+        ``tau`` [s], a float for a scalar ``speed``, else an array of its
+        shape. ``inf`` (frozen flow) where the rate is zero.
+
+    References
+    ----------
+    Guesalaga, A. et al. (2014), MNRAS 440, 1925: per-layer frozen-flow decay
+    measured with the GeMS Cn2 and wind profiler.
+
+    Examples
+    --------
+    >>> import pyturb
+    >>> layers = pyturb.get_profile("two-layer")
+    >>> tau = pyturb.theory.travel_decorrelation_time(
+    ...     [layer.wind_speed for layer in layers])
+    >>> atm = pyturb.Atmosphere(layers, r0=0.15, n=64, tau_boil=tau,
+    ...                         boil_scaling="uniform")
+    """
+    for name, value in (("per_metre", per_metre), ("per_second", per_second)):
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(
+                f"{name} must be finite and >= 0 (a decorrelation rate); got "
+                f"{value!r}"
+            )
+    v = np.abs(np.asarray(speed, dtype=np.float64))
+    if not np.all(np.isfinite(v)):
+        raise ValueError("speed must be finite [m/s]")
+    rate = per_metre * v + per_second
+    with np.errstate(divide="ignore"):
+        tau = np.where(rate > 0, 1.0 / np.where(rate > 0, rate, 1.0), np.inf)
+    return float(tau) if tau.ndim == 0 else tau

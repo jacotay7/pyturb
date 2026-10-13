@@ -10,17 +10,20 @@ Real turbulence evolves as well as blowing past. `tau_boil` [s] (scalar or one
 per layer) relaxes each layer toward fresh, statistically identical
 turbulence while preserving its spatial statistics (so r0 is unchanged):
 
-- `engine="spectral"`: each Fourier mode boils with its own time constant
+- `engine="spectral"`: each Fourier mode boils with its own time constant.
+  With `boil_scaling="kolmogorov"` (the default) that is
   `tau(f) = tau_boil * (f / f_ref)^(-2/3)` for `f >= f_ref` (Kolmogorov eddy
   turnover; `f_ref = 1/L0`, or the grid fundamental for `L0=inf`), and
   `tau_boil` below `f_ref`, so fine structure decorrelates faster than the
-  outer scale.
+  outer scale. With `boil_scaling="uniform"` every mode has `tau_boil` (see
+  [Uniform boiling](#uniform-boiling-and-measured-decay-rates)).
 - `engine="extrude"`: the readable ring buffer blends toward a fresh extruded
-  screen at the single rate `tau_boil` for every scale; non-periodic, but much
-  slower per frame (it warns).
+  screen at the single rate `tau_boil` for every scale (its only scaling,
+  `"uniform"`); non-periodic, but much slower per frame (it warns).
 
 !!! warning "`tau_boil` is the lifetime of the outer scale"
-    On the spectral engine `tau_boil` is the time constant of the *largest*
+    On the spectral engine with the default `boil_scaling="kolmogorov"`,
+    `tau_boil` is the time constant of the *largest*
     structure (`L0`). Smaller scales boil faster: with `L0 = 25 m`, 25 cm
     structure has `tau_boil / 21.5` and 5 cm structure `tau_boil / 63`. A
     `tau_boil` of tens of milliseconds therefore decorrelates the scales an AO
@@ -63,7 +66,8 @@ frames to a few percent):
   discretisation for any `dt`. Spectral engine only; it doubles the boiling
   state and noise per step.
 
-Both start from the same `t = 0` screen for a given seed. Boiling acts while
+Both models work with either `boil_scaling`. Both start from the same `t = 0`
+screen for a given seed. Boiling acts while
 stepping (`frames`/`evolve`), not for random-access `opd(t)`. A quick check
 that it decorrelates a static (no-wind) layer:
 
@@ -78,6 +82,45 @@ later = [pyturb.to_numpy(o) for _, o in atm.frames(dt=0.01, steps=11)][-1]
 print(np.corrcoef(first.ravel(), later.ravel())[0, 1])   # well below 1 after 2 tau
 ```
 
+### Uniform boiling and measured decay rates
+
+The `f^(-2/3)` law is a dimensional argument about eddy lifetimes; what has
+been measured on sky is how fast a whole layer decorrelates. Following
+individual layers with the GeMS wide-field laser-guide-star system, Guesalaga
+et al. (2014, MNRAS 440, 1925) found each layer's correlation falling roughly
+linearly with lag, `rho(lag) ~ 1 - r lag`, at a rate that grows with the
+layer's wind speed, `r = 0.157 v + 0.365` s⁻¹ (`v` in m/s): turbulence
+decorrelates mainly with the distance it has travelled. That fit (74 layer
+sequences, winds of 0-24 m/s) is a statement about the layer as a whole, not a
+per-scale law.
+
+`boil_scaling="uniform"` simulates that picture on the spectral engine: every
+Fourier mode, main grid and subharmonics, has the one time constant
+`tau_boil`, so the layer's correlation decays at the same rate at every scale
+(as on the extruder, but periodic and fast).
+`pyturb.theory.travel_decorrelation_time` turns wind speeds into the matching
+time constants, `tau = 1 / (0.157 |v| + 0.365)`; with `boil_model="ar1"` its
+retention `exp(-lag/tau)` has the measured initial slope.
+
+```python
+import pyturb
+
+layers = pyturb.get_profile("two-layer")
+tau = pyturb.theory.travel_decorrelation_time([l.wind_speed for l in layers])
+atm = pyturb.Atmosphere(layers, r0=0.15, n=64, tau_boil=tau,
+                        boil_scaling="uniform", seed=1)
+print([round(t, 2) for t in tau], "s")           # faster wind, shorter tau
+for t, opd in atm.frames(dt=1e-3, steps=5):
+    pass
+```
+
+`Atmosphere.covariance` and `pyturb.theory.covariance(...,
+boil_scaling="uniform")` give its space-time statistics: the frozen-flow
+covariance times the retention `R(|lag| / tau_boil)`. Do not combine the
+measured time constants with the default `"kolmogorov"` scaling: there
+`tau_boil` is the outer-scale lifetime, and the scales an AO system senses
+would decorrelate one to two orders of magnitude faster than measured.
+
 ## Space-time covariance
 
 Estimators (MMSE, predictive, Kalman) need the statistics the simulator
@@ -87,8 +130,8 @@ convention `phi(r, t) = phi_0(r + wind_vector * t)`), with the boiling model
 above computed as a Hankel transform of the von Kármán PSD times each mode's
 retention; `pyturb.theory.space_time_structure_function` is its structure
 function. `Atmosphere.covariance` and `Atmosphere.structure_function` fill in
-the atmosphere's own layers, line-of-sight r0, L0, `tau_boil` and
-`boil_model` and return OPD (m²):
+the atmosphere's own layers, line-of-sight r0, L0, `tau_boil`, `boil_model`
+and `boil_scaling` and return OPD (m²):
 
 ```python
 import numpy as np

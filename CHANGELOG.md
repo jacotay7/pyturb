@@ -6,6 +6,31 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `boil_scaling` on `Atmosphere` (and `from_profile`/`from_cn2`/`from_config`):
+  `"kolmogorov"` (the spectral engine's eddy-turnover `tau(f) = tau_boil *
+  max(f/f_ref, 1)^(-2/3)` per mode) or `"uniform"` (every Fourier mode, main
+  grid and subharmonics, boils with `tau_boil`). The default, `None`, is the
+  engine's own scaling (`"kolmogorov"` on spectral, `"uniform"` on extrude),
+  so existing code and seeded output are unchanged; `"kolmogorov"` on
+  `engine="extrude"` raises, since the extruder has no per-mode handle. Works
+  with both boil models, is recorded in `to_config`/`metadata`, and
+  `Atmosphere.covariance`/`structure_function` use it. Older configs without
+  the key load with the engine default.
+- `pyturb.theory.travel_decorrelation_time(speed, per_metre=0.157,
+  per_second=0.365)`: a boiling time constant per layer from its wind speed,
+  `1 / (per_metre |v| + per_second)`, the per-layer decay rate Guesalaga et al.
+  (2014, MNRAS 440, 1925) measured on GeMS (74 layer sequences, 0-24 m/s winds;
+  correlation falling roughly linearly with lag, mainly with the distance
+  travelled). Meant for `boil_scaling="uniform"`.
+
+### Fixed
+
+- The `_build_boil_tau_maps` reference list cited Guesalaga et al. (2014) as
+  support for the `f^(-2/3)` scaling, with a wrong volume; that paper measures
+  each layer's decay against wind speed, not a per-scale law.
+
 ## [2.4.0] - 2026-10-10
 
 ### Added

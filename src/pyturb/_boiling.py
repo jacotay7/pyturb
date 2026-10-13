@@ -26,6 +26,10 @@ from typing import Any, Tuple
 import numpy as np
 
 BOIL_MODELS = ("ar1", "ar2")
+# Scale dependence of the per-mode time constant: ``"kolmogorov"`` gives a mode
+# at spatial frequency ``f`` the eddy-turnover ``tau_boil * (f/f_ref)^(-2/3)``,
+# ``"uniform"`` gives every mode ``tau_boil``.
+BOIL_SCALINGS = ("kolmogorov", "uniform")
 
 
 def check_model(model: str) -> str:
@@ -37,6 +41,18 @@ def check_model(model: str) -> str:
             "smooth second-order process with the same integral time scale."
         )
     return model
+
+
+def check_scaling(scaling: str) -> str:
+    """Validate a ``boil_scaling`` name and return it."""
+    if scaling not in BOIL_SCALINGS:
+        raise ValueError(
+            f"boil_scaling must be one of {BOIL_SCALINGS}; got {scaling!r}. "
+            "'kolmogorov' gives each Fourier mode the eddy-turnover time "
+            "tau_boil * (f/f_ref)^(-2/3) (fine structure boils faster), "
+            "'uniform' gives every spatial scale the one time constant tau_boil."
+        )
+    return scaling
 
 
 def retention(s: Any, model: str, xp: Any = np) -> Any:

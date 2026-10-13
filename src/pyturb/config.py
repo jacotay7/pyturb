@@ -13,6 +13,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ._boiling import check_model as check_boil_model
+from ._boiling import check_scaling as check_boil_scaling
 from .profiles import Layer, _fractions
 from .utils import r0_from_seeing
 
@@ -186,6 +187,7 @@ class AtmosphereConfig:
     seed: Optional[int]
     oversample: float = 1.0
     boil_model: str = "ar1"
+    boil_scaling: str = "kolmogorov"
 
     @classmethod
     def create(
@@ -213,6 +215,7 @@ class AtmosphereConfig:
         seed: Optional[int],
         oversample: float = 1.0,
         boil_model: str = "ar1",
+        boil_scaling: Optional[str] = None,
     ) -> "AtmosphereConfig":
         """Validate model inputs and normalise values shared by both engines."""
         model_layers = list(layers)
@@ -250,6 +253,19 @@ class AtmosphereConfig:
                 "second-order process only needs a rate per mode, while the "
                 "extruder boils by blending its ring buffer toward freshly "
                 "extruded screens and has no per-mode state to carry a rate."
+            )
+        if boil_scaling is None:
+            boil_scaling = "kolmogorov" if engine == "spectral" else "uniform"
+        check_boil_scaling(boil_scaling)
+        if boil_scaling != "uniform" and engine == "extrude":
+            raise ValueError(
+                f"boil_scaling={boil_scaling!r} requires engine='spectral': the "
+                "extruder boils by blending its whole real-space ring buffer "
+                "toward a freshly extruded screen, which decorrelates every "
+                "spatial scale at the one time constant tau_boil; it has no "
+                "per-mode handle for a scale-dependent tau(f). Use "
+                "boil_scaling='uniform' (the extruder's only, and default, "
+                "scaling) or engine='spectral'."
             )
         if interp not in ("cubic", "linear", "lanczos"):
             raise ValueError("interp must be 'cubic', 'linear', or 'lanczos'")
@@ -363,6 +379,7 @@ class AtmosphereConfig:
             seed=seed,
             oversample=oversample,
             boil_model=boil_model,
+            boil_scaling=boil_scaling,
         )
 
 

@@ -110,9 +110,12 @@ for t, opd in atm.frames(dt=1e-3, steps=100):
     ...
 ```
 
-The spectral engine boils each Fourier mode at its own rate (fine structure
-faster); the extruder decorrelates all scales at `tau_boil` and is markedly
-slower (it warns).
+The spectral engine boils each Fourier mode at its own rate (by default fine
+structure faster; `boil_scaling="uniform"` gives every scale `tau_boil`); the
+extruder decorrelates all scales at `tau_boil` and is markedly slower (it
+warns). `pyturb.theory.travel_decorrelation_time` estimates a layer's
+`tau_boil` from its wind speed, from on-sky measurements; see
+[Boiling](physics.md#boiling).
 
 ## Laser guide star cone effect
 
