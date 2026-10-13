@@ -31,7 +31,9 @@ References
 - Conan, J.-M., Rousset, G. & Madec, P.-Y. (1995), JOSA A 12, 1559.
 - Tokovinin, A. (2002), PASP 114, 1156.
 - Sasiela, R. J. (1994), *Electromagnetic Wave Propagation in Turbulence*.
-- Guesalaga, A. et al. (2014), MNRAS 440, 1925.
+- Guesalaga, A., Neichel, B., Cortés, A., Béchet, C. & Guzmán, D. (2014), "Using the
+  Cn2 and wind profiler method with wide-field laser-guide-stars adaptive optics to
+  quantify the frozen-flow decay", MNRAS 440, 1925-1933, doi:10.1093/mnras/stu366.
 """
 
 from __future__ import annotations
@@ -665,8 +667,10 @@ def travel_decorrelation_time(
 
     References
     ----------
-    Guesalaga, A. et al. (2014), MNRAS 440, 1925: per-layer frozen-flow decay
-    measured with the GeMS Cn2 and wind profiler.
+    Guesalaga, A., Neichel, B., Cortés, A., Béchet, C. & Guzmán, D. (2014),
+    "Using the Cn2 and wind profiler method with wide-field laser-guide-stars
+    adaptive optics to quantify the frozen-flow decay", MNRAS 440, 1925-1933,
+    doi:10.1093/mnras/stu366: per-layer frozen-flow decay measured on GeMS.
 
     Examples
     --------
