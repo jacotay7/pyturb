@@ -123,8 +123,10 @@ the head-to-head against aotools, soapy and HCIPy:
 - **Off-axis / tomography** — `atm.opd(t, directions=[...])` batches several
   guide-star directions through one call.
 - **Boiling** — temporal decorrelation on top of frozen flow (`tau_boil`, the
-  outer-scale lifetime; finer scales boil faster), rough (`boil_model="ar1"`)
-  or smooth in time (`"ar2"`).
+  outer-scale lifetime; finer scales boil faster, or every scale at one rate
+  with `boil_scaling="uniform"`), rough (`boil_model="ar1"`) or smooth in time
+  (`"ar2"`); `pyturb.theory.travel_decorrelation_time` gives on-sky per-layer
+  time constants from wind speed.
 - **Estimator statistics** — `pyturb.theory.covariance` /
   `Atmosphere.covariance`: the space-time covariance and structure function
   the simulator draws from (frozen flow + boiling), for MMSE/predictive/Kalman

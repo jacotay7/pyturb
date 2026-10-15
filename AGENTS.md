@@ -103,14 +103,20 @@ caught real bugs before.
 
 - `pyturb.theory.covariance` describes what the engines simulate: the
   spectral engine's per-mode `tau(f)` map (`_build_boil_tau_maps`, `f_ref =
-  1/L0`) and the extruder's single time constant. The per-mode temporal models
-  (`"ar1"`, `"ar2"`) live in `_boiling.py`, shared by the simulator and the
-  theory; change the model there and in `_build_boil_tau_maps` together, and
-  keep `tests/test_spacetime.py` passing.
+  1/L0`, for `boil_scaling="kolmogorov"`; one `tau_boil` for every mode for
+  `"uniform"`) and the extruder's single time constant (always `"uniform"`).
+  `Atmosphere.covariance` passes the atmosphere's resolved `boil_scaling`.
+  The per-mode temporal models (`"ar1"`, `"ar2"`) live in `_boiling.py`,
+  shared by the simulator and the theory; change the model there and in
+  `_build_boil_tau_maps` together, and keep `tests/test_spacetime.py` passing.
 - Simulated screens lack power above Nyquist and the spectral screen has no
   mean over its FFT grid, so compare simulation with the theory through
   piston-free statistics (point differences) at separations of many pixels,
-  not the covariance or a single point's temporal change.
+  not the covariance or a single point's temporal change. Lags whose wind
+  travel is sub-pixel measure the grid's missing above-Nyquist power too
+  (~20% low for uniform `"ar2"` at one frame); with wind, multi-pixel lags are
+  dominated by frozen-flow travel, so a test that must tell the two
+  `boil_scaling`s apart needs a static (or slow) layer.
 
 ## Test-environment gotchas
 

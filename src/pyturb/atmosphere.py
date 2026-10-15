@@ -175,24 +175,30 @@ class Atmosphere:
     tau_boil : float or sequence, optional
         Boiling (temporal decorrelation) time constant [s] of each layer's
         **outer-scale** structure, scalar or one per layer. ``None`` (default)
-        is pure frozen flow. On the default spectral engine smaller scales
-        decorrelate faster (below), so this is the *longest* lifetime in the
-        layer: with ``L0 = 25 m`` the 1-10 cm structure an AO system senses
-        boils 40-180 times faster than ``tau_boil``. Physically sensible
-        values are of order a second or more; a few tens of milliseconds
-        makes the screen change by a large fraction of its fine structure
-        every millisecond (see the Physics guide for the per-frame change).
+        is pure frozen flow. On the default spectral engine
+        (``boil_scaling="kolmogorov"``) smaller scales decorrelate faster
+        (below), so this is the *longest* lifetime in the layer: with
+        ``L0 = 25 m`` the 1-10 cm structure an AO system senses boils 40-180
+        times faster than ``tau_boil``. Physically sensible values are then of
+        order a second or more; a few tens of milliseconds makes the screen
+        change by a large fraction of its fine structure every millisecond
+        (see the Physics guide for the per-frame change). With
+        ``boil_scaling="uniform"`` it is the lifetime of every scale;
+        :func:`pyturb.theory.travel_decorrelation_time` gives an on-sky
+        estimate per layer from its wind speed.
         When set, the layer relaxes toward fresh, statistically identical
         turbulence while preserving its spatial statistics, by the temporal
         process ``boil_model``. Active only while stepping with
         :meth:`frames`/:meth:`evolve`. Works on **both** engines, but the two
         realise it differently:
 
-        - ``engine="spectral"`` boils **per Fourier mode**, so finer spatial
-          structure decorrelates faster than the outer scale per Kolmogorov
+        - ``engine="spectral"`` boils **per Fourier mode**. With
+          ``boil_scaling="kolmogorov"`` (default) finer spatial structure
+          decorrelates faster than the outer scale per Kolmogorov
           eddy-turnover scaling, ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for
           ``f >= f_ref = 1/L0`` (the grid fundamental for Kolmogorov
-          ``L0=inf``), clamped to ``tau_boil`` below ``f_ref``.
+          ``L0=inf``), clamped to ``tau_boil`` below ``f_ref``; with
+          ``boil_scaling="uniform"`` every mode has ``tau_boil``.
         - ``engine="extrude"`` blends its ring buffer toward a fresh
           independently extruded screen -- a single-timescale AR(1) that
           decorrelates **all** spatial scales at ``tau_boil`` (real space has
@@ -218,6 +224,20 @@ class Atmosphere:
         for any ``dt``. ``engine="spectral"`` only; it stores a second
         spectrum per layer (twice the boiling memory) and draws twice the
         noise per step.
+    boil_scaling : {"kolmogorov", "uniform"}, optional
+        Scale dependence of the boiling time constant. ``None`` (default) is
+        the engine's own: ``"kolmogorov"`` on ``engine="spectral"`` and
+        ``"uniform"`` on ``engine="extrude"``. ``"kolmogorov"``: the
+        eddy-turnover ``tau(f) = tau_boil * max(f/f_ref, 1)^(-2/3)`` per mode,
+        so fine structure boils faster than ``tau_boil``. ``"uniform"``: every
+        Fourier mode (main grid and subharmonics) has ``tau_boil``, so the
+        layer's correlation decays at one rate at every scale, as the
+        extruder's does. Per-layer on-sky measurements (Guesalaga et al. 2014,
+        MNRAS 440, 1925) describe the decay of a whole layer's correlation with
+        the distance its wind carries it, not a per-scale law; pair
+        ``"uniform"`` with :func:`pyturb.theory.travel_decorrelation_time` to
+        simulate that. ``"kolmogorov"`` is rejected on ``engine="extrude"``,
+        which has no per-mode handle. Works with both ``boil_model`` values.
     engine : {"spectral", "extrude"}, optional
         Frozen-flow engine for :meth:`frames`/:meth:`opd`. ``"spectral"``
         (default) is the fastest: an exact sub-pixel shift-theorem translation,
@@ -330,10 +350,13 @@ class Atmosphere:
     supports a different subset:
 
     - ``tau_boil`` (boiling) works on **both** engines, but with different
-      spatial character: ``engine="spectral"`` boils per Fourier mode (finer
-      structure faster, scale-resolved), while ``engine="extrude"`` blends its
-      ring buffer toward fresh extruded turbulence at a single timescale across
-      all scales, preserving non-periodicity (see ``tau_boil`` above).
+      spatial character: ``engine="spectral"`` boils per Fourier mode (by
+      default finer structure faster, scale-resolved; ``boil_scaling=
+      "uniform"`` gives every mode one rate), while ``engine="extrude"``
+      blends its ring buffer toward fresh extruded turbulence at a single
+      timescale across all scales, preserving non-periodicity (see
+      ``tau_boil`` above). ``boil_model="ar2"`` and
+      ``boil_scaling="kolmogorov"`` need the spectral engine's per-mode state.
     - non-Kolmogorov ``power_law``/``inner_scale`` and Kolmogorov ``L0=inf``
       still require ``engine="spectral"``: they need either discrete Fourier
       modes or a closed-form covariance that only exists for the standard von
@@ -391,12 +414,14 @@ class Atmosphere:
         oversample: float = 1.0,
         cuda_graph: bool = True,
         boil_model: str = "ar1",
+        boil_scaling: Optional[str] = None,
     ) -> None:
         config = AtmosphereConfig.create(
             layers, r0, seeing, wavelength, zenith_angle, diameter, n, L0,
             power_law, inner_scale, subharmonics, field_of_view, tau_boil,
             engine, interp, lgs_altitude, dispersion, wet_fraction, device,
             dtype, seed, oversample=oversample, boil_model=boil_model,
+            boil_scaling=boil_scaling,
         )
         if config.engine == "extrude" and config.has_tau_boil:
             warnings.warn(
@@ -462,6 +487,7 @@ class Atmosphere:
 
         self.tau_boil = np.asarray(config.tau_boil, dtype=np.float64)
         self.boil_model = config.boil_model
+        self.boil_scaling = config.boil_scaling
 
         self.xp = get_array_module(self.device)
         self.seed = config.seed
@@ -750,30 +776,47 @@ class Atmosphere:
         return taps
 
     def _build_boil_tau_maps(self):
-        """Per-mode boiling time constants (Kolmogorov eddy-turnover scaling).
+        """Per-mode boiling time constants ``(main (L, ns, ns), subharmonics)``.
 
-        Eddy lifetime scales with eddy size, ``tau(l) ~ epsilon^{-1/3} l^{2/3}``
-        (Kolmogorov 1941), i.e. ``tau(f) ~ f^{-2/3}``: fine structure
-        decorrelates faster than large-scale structure. ``tau_boil`` is taken
-        to set the decorrelation time of the outer-scale structure (frequency
-        ``f_ref = 1/L0``, or the grid fundamental ``1/(n_screen*pixel_scale)``
-        for Kolmogorov ``L0=inf``, which has no outer scale); every other mode
-        gets ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for ``f >= f_ref``,
-        clamped to ``tau_boil`` below it (the inertial-range scaling has
-        nothing to say about structure larger than the outer scale).
+        ``boil_scaling="kolmogorov"``: eddy lifetime scales with eddy size,
+        ``tau(l) ~ epsilon^{-1/3} l^{2/3}`` (Kolmogorov 1941), i.e.
+        ``tau(f) ~ f^{-2/3}``: fine structure decorrelates faster than
+        large-scale structure. ``tau_boil`` is taken to set the decorrelation
+        time of the outer-scale structure (frequency ``f_ref = 1/L0``, or the
+        grid fundamental ``1/(n_screen*pixel_scale)`` for Kolmogorov
+        ``L0=inf``, which has no outer scale); every other mode gets
+        ``tau(f) = tau_boil * (f/f_ref)^(-2/3)`` for ``f >= f_ref``, clamped to
+        ``tau_boil`` below it (the inertial-range scaling has nothing to say
+        about structure larger than the outer scale).
+
+        ``boil_scaling="uniform"``: every mode, on the main grid and the
+        subharmonics, has ``tau_boil``.
 
         References
         ----------
-        Kolmogorov (1941); eddy turnover time scaling as used e.g. in
-        Poyneer, van Dam & Veran (2009), JOSA A 26, 833 and Guesalaga et al.
-        (2014), MNRAS 441, 1925 to characterise non-frozen-flow decorrelation.
+        Kolmogorov (1941) for the eddy-turnover scaling. Poyneer, van Dam &
+        Veran (2009), JOSA A 26, 833 find frozen flow dominant in AO telemetry
+        over tens of milliseconds, which bounds how fast the sensed scales may
+        boil. Guesalaga et al. (2014), MNRAS 440, 1925 measure the decay of
+        each layer's correlation as a function of wind speed (see
+        :func:`pyturb.theory.travel_decorrelation_time`), not a per-scale law.
         """
         xp = self.xp
         rdtype = self._spectra.real.dtype
+        tau_boil_dev = xp.asarray(self.tau_boil, dtype=rdtype)  # (L,)
+        if self.boil_scaling == "uniform":
+            n_layers, ns = len(self._layers), self._grid_f.shape[0]
+            main_tau = xp.broadcast_to(
+                tau_boil_dev[:, None, None], (n_layers, ns, ns)).copy()
+            if not self._n_sh:
+                return main_tau, None
+            sh_tau = xp.broadcast_to(
+                tau_boil_dev[None, :, None, None], (self._n_sh, n_layers, 3, 3)
+            ).copy()
+            return main_tau, sh_tau
         L0s = np.array([s.generator.L0 for s in self._layers], dtype=np.float64)
         df = 1.0 / (self.n_screen * self.pixel_scale)
         f_ref = np.where(np.isfinite(L0s), 1.0 / np.where(L0s > 0, L0s, np.inf), df)
-        tau_boil_dev = xp.asarray(self.tau_boil, dtype=rdtype)  # (L,)
         f_ref_dev = xp.asarray(f_ref, dtype=rdtype)  # (L,)
 
         f = self._grid_f
@@ -934,6 +977,7 @@ class Atmosphere:
             "oversample": c.oversample,
             "cuda_graph": self.cuda_graph,
             "boil_model": c.boil_model,
+            "boil_scaling": c.boil_scaling,
             "profile": self._profile_name,
         }
 
@@ -1043,8 +1087,9 @@ class Atmosphere:
         and ``points_b`` (each one ``(x, y)`` or an ``(N, 2)`` array [m], as in
         :meth:`opd_at`), from :func:`pyturb.theory.covariance` with this
         atmosphere's layers, line-of-sight ``r0``, per-layer ``L0``, winds and
-        boiling: ``tau_boil`` and ``boil_model``, scale-dependent on
-        ``engine="spectral"`` and single-timescale on ``engine="extrude"``. With
+        boiling: ``tau_boil``, ``boil_model`` and ``boil_scaling``
+        (scale-dependent by default on ``engine="spectral"``, single-timescale
+        with ``"uniform"`` and always on ``engine="extrude"``). With
         ``wavelength``, phase [rad^2] at that wavelength (including
         ``dispersion``). Shape ``(Na, Nb)``, or ``(T, Na, Nb)`` for a 1-D
         ``lag`` [s].
@@ -1094,7 +1139,7 @@ class Atmosphere:
         rad2 = function(
             points_a, points_b, lag, layers=self.layers, r0=self.r0_los,
             tau_boil=self.tau_boil, boil_model=self.boil_model,
-            boil_scaling="kolmogorov" if self.engine == "spectral" else "uniform",
+            boil_scaling=self.boil_scaling,
             units="phase", wavelength=self.wavelength,
         )
         scale = self.wavelength / (2.0 * np.pi)  # reference phase -> OPD
@@ -1734,10 +1779,11 @@ class Atmosphere:
         exp(-dt / tau(f))``, so the mode's temporal autocorrelation decays as
         ``exp(-dt / tau(f))`` while its spatial PSD (and hence r0) is
         preserved; ``"ar2"`` advances each mode's value and rate together
-        (:meth:`_boil_step_ar2`). ``tau(f)`` is scale dependent (see
-        :meth:`_build_boil_tau_maps`): fine spatial structure boils faster than
-        coarse structure, per Kolmogorov eddy-turnover scaling. Layers with
-        infinite ``tau_boil`` are untouched (pure frozen flow).
+        (:meth:`_boil_step_ar2`). ``tau(f)`` comes from
+        :meth:`_build_boil_tau_maps`: with ``boil_scaling="kolmogorov"`` fine
+        spatial structure boils faster than coarse structure, per Kolmogorov
+        eddy-turnover scaling; with ``"uniform"`` every mode has ``tau_boil``.
+        Layers with infinite ``tau_boil`` are untouched (pure frozen flow).
         """
         with np.errstate(divide="ignore"):
             alpha = np.where(
@@ -2025,6 +2071,7 @@ class Atmosphere:
             "oversample": self.oversample,
             "tau_boil": uniform_tau,
             "boil_model": self.boil_model,
+            "boil_scaling": self.boil_scaling,
             "dispersion": self.dispersion,
             "wet_fraction": self.wet_fraction,
             "lgs_altitude": (0.0 if self.lgs_altitude is None

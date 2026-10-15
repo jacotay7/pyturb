@@ -364,3 +364,178 @@ def test_boil_model_validation():
         pyturb.Atmosphere(_layers(), r0=0.1, n=16, boil_model="gauss")
     with pytest.raises(ValueError, match="engine='spectral'"):
         pyturb.Atmosphere(_layers(), r0=0.1, n=16, boil_model="ar2", engine="extrude")
+
+
+# ------------------------------------------------------------ uniform scaling
+
+
+@pytest.mark.parametrize("model", ["ar1", "ar2"])
+def test_uniform_scaling_gives_every_mode_one_time_constant(model, device):
+    layers = [pyturb.Layer(0.0, 0.6, 8.0, 30.0, L0),
+              pyturb.Layer(6e3, 0.4, 0.0, 0.0, 40.0)]
+    kw = dict(r0=0.12, n=32, tau_boil=[0.3, 1.5], boil_model=model, seed=2,
+              device=device)
+    uni = pyturb.Atmosphere(layers, boil_scaling="uniform", **kw)
+    kol = pyturb.Atmosphere(layers, **kw)
+    assert uni.boil_scaling == "uniform" and kol.boil_scaling == "kolmogorov"
+    for tau_map in (uni._boil_main_tau, uni._boil_sh_tau):
+        tau_map = pyturb.to_numpy(tau_map)
+        layer_axis = 0 if tau_map.ndim == 3 else 1
+        expect = np.expand_dims(np.array([0.3, 1.5]),
+                                tuple(a for a in range(tau_map.ndim) if a != layer_axis))
+        np.testing.assert_allclose(tau_map, np.broadcast_to(expect, tau_map.shape),
+                                   rtol=1e-6)
+    # The Kolmogorov map spans a wide range of time constants on the same grid.
+    kol_main = pyturb.to_numpy(kol._boil_main_tau)[0]
+    assert kol_main.max() / kol_main.min() > 10.0
+    # The per-step update coefficients are then the same for every mode.
+    uni.evolve(0.05)
+    main = uni._boil_cache[1][0] if model == "ar1" else uni._boil_cache[1][0][0]
+    main = pyturb.to_numpy(main)
+    for layer in range(2):
+        assert np.ptp(main[layer]) <= 1e-6 * abs(main[layer]).max()
+    assert abs(main[0].flat[0] - main[1].flat[0]) > 0.01  # per-layer tau_boil
+
+
+def test_uniform_boiling_decorrelates_every_scale_at_tau_boil():
+    """Counterpart of test_boiling_is_scale_dependent_not_uniform: with
+    boil_scaling="uniform" the fitted time constant is tau_boil in every band."""
+    n, diam, tau_boil, dt, steps = 64, 8.0, 0.10, 5e-3, 250
+    layer = pyturb.Layer(0.0, 1.0, wind_speed=0.0)  # no wind: isolate boiling
+    atm = pyturb.Atmosphere([layer], r0=0.15, diameter=diam, n=n, seed=0,
+                            tau_boil=tau_boil, dtype="float64", subharmonics=0,
+                            boil_scaling="uniform")
+    frames = np.stack([pyturb.to_numpy(o) for _, o in atm.frames(dt=dt, steps=steps)])
+    F = np.fft.fft2(frames, axes=(1, 2))
+    f = np.fft.fftfreq(n, diam / n)
+    fr = np.hypot(f[:, None], f[None, :])
+    lags = np.arange(1, 8)
+
+    def band_tau(lo, hi):
+        x = F[:, (fr >= lo) & (fr < hi)]
+        ac = [np.real(np.vdot(x[:-k].ravel(), x[k:].ravel()))
+              / np.real(np.vdot(x.ravel(), x.ravel())) for k in lags]
+        return -1.0 / np.polyfit(lags * dt, np.log(np.clip(ac, 1e-3, 1)), 1)[0]
+
+    # 0.3-4 cycles/m: structure from ~3 m down to the 12.5 cm pixel scale, a
+    # range over which the Kolmogorov scaling would change tau ~6x.
+    taus = np.array([band_tau(lo, hi) for lo, hi in ((0.3, 0.6), (0.6, 1.2),
+                                                       (1.2, 2.4), (2.4, 4.0))])
+    assert np.all(np.abs(taus / tau_boil - 1.0) < 0.25), taus
+    assert taus.max() / taus.min() < 1.4, taus
+
+
+@pytest.mark.parametrize("model", ["ar1", "ar2"])
+def test_simulated_uniform_boiling_matches_uniform_theory(model):
+    """Uniform-boiling spectral frames against ``boil_scaling="uniform"`` theory.
+
+    Same piston-free double difference as the Kolmogorov test above, on a
+    static layer so that boiling is all that changes the screen (with wind,
+    frozen-flow travel dominates the statistic at multi-pixel lags and both
+    scalings predict nearly the same). The two scalings' predictions then
+    differ by far more than the tolerance, so this also pins which theory the
+    simulation follows; :meth:`Atmosphere.covariance` composing frozen flow
+    with uniform boiling is checked against the theory function directly.
+    """
+    n, diameter, dt, tau, shift = 32, 2.0, 0.01, 0.2, 16
+    layers = [pyturb.Layer(0.0, 1.0, 0.0, 0.0, 8.0)]
+    lag_frames = (1, 10)
+    estimates = {k: [] for k in lag_frames}
+    for seed in range(10):
+        atm = pyturb.Atmosphere(layers, r0=0.1, diameter=diameter, n=n, oversample=4,
+                                tau_boil=tau, boil_model=model, seed=seed,
+                                boil_scaling="uniform")
+        frames = np.array([pyturb.to_numpy(f) for _, f in atm.frames(dt, 50)],
+                          dtype=np.float64)
+        for k in lag_frames:
+            estimates[k].append(_double_difference(frames, shift, k))
+    a = np.array([0.0, 0.0])
+    b = np.array([shift * diameter / n, 0.0])
+    w = np.array([1.0, -1.0])
+
+    def double_difference(cov):
+        return 2 * w @ cov[0] @ w - 2 * w @ cov[1] @ w
+
+    for k in lag_frames:
+        cov = atm.covariance([a, b], [a, b], [0.0, k * dt])
+        expect = double_difference(cov)
+        e = np.array(estimates[k])
+        error = e.std(ddof=1) / np.sqrt(e.size)
+        assert abs(e.mean() - expect) < 4.0 * error + 0.07 * expect, (k, e.mean(), expect)
+        kol = theory.covariance([a, b], [a, b], [0.0, k * dt], layers=atm.layers,
+                                r0=atm.r0_los, tau_boil=tau, boil_model=model,
+                                units="opd", wavelength=atm.wavelength)
+        assert abs(double_difference(kol) - expect) > 0.5 * expect
+    windy = pyturb.Atmosphere([pyturb.Layer(0.0, 1.0, 5.0, 30.0, 8.0)], r0=0.1, n=16,
+                              tau_boil=tau, boil_model=model, boil_scaling="uniform")
+    lags = [0.0, 0.03]
+    np.testing.assert_allclose(
+        windy.covariance([a, b], [a, b], lags),
+        theory.covariance([a, b], [a, b], lags, layers=windy.layers, r0=windy.r0_los,
+                          tau_boil=tau, boil_model=model, boil_scaling="uniform",
+                          units="opd", wavelength=windy.wavelength),
+        rtol=1e-12)
+
+
+def test_default_boil_scaling_is_the_engines_own():
+    kw = dict(r0=0.12, n=16, tau_boil=0.2, seed=3)
+    default = pyturb.Atmosphere(_layers(), **kw)
+    explicit = pyturb.Atmosphere(_layers(), boil_scaling="kolmogorov", **kw)
+    assert default.boil_scaling == "kolmogorov"
+    for (_t, x), (_u, y) in zip(default.frames(1e-3, 4), explicit.frames(1e-3, 4)):
+        np.testing.assert_array_equal(pyturb.to_numpy(x), pyturb.to_numpy(y))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", pyturb.ExtrudeBoilingPerformanceWarning)
+        ext = pyturb.Atmosphere(_layers(), engine="extrude", **kw)
+        ext_uniform = pyturb.Atmosphere(_layers(), engine="extrude",
+                                        boil_scaling="uniform", **kw)
+    assert ext.boil_scaling == ext_uniform.boil_scaling == "uniform"
+    np.testing.assert_array_equal(pyturb.to_numpy(ext.evolve(1e-3)),
+                                  pyturb.to_numpy(ext_uniform.evolve(1e-3)))
+
+
+def test_boil_scaling_round_trips_and_validates():
+    uni = pyturb.Atmosphere(_layers(), r0=0.12, n=16, tau_boil=0.2, seed=3,
+                            boil_scaling="uniform")
+    config = uni.to_config()
+    assert config["boil_scaling"] == uni.metadata["boil_scaling"] == "uniform"
+    again = pyturb.Atmosphere.from_config(config)
+    assert again.boil_scaling == "uniform"
+    np.testing.assert_array_equal(
+        [pyturb.to_numpy(f) for _, f in uni.frames(1e-3, 3)],
+        [pyturb.to_numpy(f) for _, f in again.frames(1e-3, 3)])
+    # A config written before boil_scaling existed takes the engine's default.
+    del config["boil_scaling"]
+    assert pyturb.Atmosphere.from_config(config).boil_scaling == "kolmogorov"
+    with pytest.raises(ValueError, match="boil_scaling must be one of"):
+        pyturb.Atmosphere(_layers(), r0=0.1, n=16, boil_scaling="fast")
+    with pytest.raises(ValueError, match="per-mode handle"):
+        pyturb.Atmosphere(_layers(), r0=0.1, n=16, engine="extrude",
+                          boil_scaling="kolmogorov")
+
+
+def test_travel_decorrelation_time():
+    f = theory.travel_decorrelation_time
+    # Guesalaga et al. (2014): r = 0.157 v + 0.365 s^-1.
+    assert f(0.0) == pytest.approx(1.0 / 0.365, rel=1e-12)
+    assert f(10.0) == pytest.approx(1.0 / 1.935, rel=1e-12)
+    assert isinstance(f(10.0), float)
+    speeds = np.array([[0.0, 5.0, -24.0], [3.0, 12.0, 24.0]])
+    tau = f(speeds)
+    assert tau.shape == (2, 3)
+    np.testing.assert_allclose(tau, 1.0 / (0.157 * np.abs(speeds) + 0.365), rtol=1e-12)
+    assert np.all(np.diff(tau[1]) < 0)  # faster wind, faster decorrelation
+    assert f(4.0, per_metre=0.5, per_second=1.0) == pytest.approx(1.0 / 3.0)
+    assert f(0.0, per_second=0.0) == np.inf  # no decorrelation: frozen flow
+    layers = _layers()
+    taus = f([layer.wind_speed for layer in layers])
+    atm = pyturb.Atmosphere(layers, r0=0.12, n=16, tau_boil=taus,
+                            boil_scaling="uniform")
+    np.testing.assert_allclose(atm.tau_boil, taus)
+    for kw, match in ((dict(per_metre=-0.1), "per_metre"),
+                      (dict(per_second=np.nan), "per_second"),
+                      (dict(speed=np.inf), "speed")):
+        args = dict(speed=1.0)
+        args.update(kw)
+        with pytest.raises(ValueError, match=match):
+            f(**args)

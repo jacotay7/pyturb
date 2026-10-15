@@ -419,7 +419,7 @@ def test_boiling_is_scale_dependent_not_uniform():
 
     taus = [band_tau(lo, hi) for lo, hi in zip(edges[:-1], edges[1:])]
     # Strictly shorter tau at higher spatial frequency, over a wide range --
-    # a uniform AR(1) (the old model) would give a flat profile here.
+    # boil_scaling="uniform" gives a flat profile here (see test_spacetime.py).
     assert all(a > b for a, b in zip(taus, taus[1:]))
     assert max(taus) / min(taus) > 3.0
 

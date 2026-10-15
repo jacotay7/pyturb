@@ -13,7 +13,7 @@ the [API reference](api.md) has every parameter.
 | Random access in time | Yes: `opd(t)` for any `t`, `opd(t=array)` batched | Streaming: `t` only moves forward (`reset()` restarts) |
 | Fine-scale fidelity | Exact at any offset | Interpolation low-passes the 1–2 px scales by 5–15% (`interp="lanczos"` roughly halves that) |
 | Large-scale fidelity | Pupil-sized screens underestimate separations beyond ~D/4 — use `oversample` | Good out to the outer scale |
-| Boiling (`tau_boil`) | Per Fourier mode (fine structure boils faster) | One timescale for all scales; markedly slower |
+| Boiling (`tau_boil`) | Per Fourier mode: fine structure boils faster (`boil_scaling="kolmogorov"`, default) or one timescale for all scales (`"uniform"`) | One timescale for all scales (`"uniform"` only); markedly slower |
 | Non-Kolmogorov `power_law`, `inner_scale`, `L0=inf` | Yes | No (needs the von Kármán covariance) |
 | LGS cone, off-axis directions, `opd_at` | Yes | Yes |
 | GPU speed, 9 layers, 512² (RTX 4060) | ~4,300 fps (CUDA graph) | ~490 fps |
