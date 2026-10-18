@@ -127,6 +127,13 @@ the head-to-head against aotools, soapy and HCIPy:
   with `boil_scaling="uniform"`), rough (`boil_model="ar1"`) or smooth in time
   (`"ar2"`); `pyturb.theory.travel_decorrelation_time` gives on-sky per-layer
   time constants from wind speed.
+- **Scintillation** — `atm.pupil_field(...)` propagates a star's light through
+  the layers to the pupil (paraxial angular spectrum, aocore's propagator) at
+  one or several wavelengths: the complex field, the weighted intensity and
+  the OPD. `pyturb.theory.scintillation_index` (Roddier 1981) and
+  `scintillation_transfer` are the references; `atm.advance(dt)` jumps
+  boiling exactly between sparse frames, and `pyturb.theory.gems_boil_time`
+  gives GeMS-calibrated outer-scale lifetimes.
 - **Estimator statistics** — `pyturb.theory.covariance` /
   `Atmosphere.covariance`: the space-time covariance and structure function
   the simulator draws from (frozen flow + boiling), for MMSE/predictive/Kalman

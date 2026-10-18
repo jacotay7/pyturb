@@ -42,8 +42,11 @@ wf = layer(hcipy.Wavefront(aperture, wavelength)) # apply the turbulence
 The OPD for each time is computed once and reused for every wavelength (WFS
 and science), with the atmosphere's `dispersion` model.
 
-pyturb complements HCIPy: HCIPy owns diffraction propagation and scintillation;
-pyturb gives you fast, non-periodic, GPU turbulence to drive it. (HCIPy's own
+pyturb complements HCIPy: HCIPy owns diffraction through the telescope and
+instrument; pyturb gives you fast, non-periodic, GPU turbulence to drive it,
+and, when you need scintillation, the star's field at the pupil after Fresnel
+propagation through the layers (`Atmosphere.pupil_field`, see
+[Scintillation](scintillation.md)). (HCIPy's own
 `InfiniteAtmosphericLayer` is fine too — use pyturb when you want the GPU/batched
 speed or the extra profiles/analysis.)
 

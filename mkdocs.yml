@@ -34,6 +34,7 @@ nav:
       - Choosing an engine: engines.md
       - Turbulence profiles: profiles.md
       - Boiling, LGS and dispersion: physics.md
+      - Scintillation: scintillation.md
       - Performance: performance.md
       - Troubleshooting: troubleshooting.md
       - Tutorial notebooks: tutorials.md

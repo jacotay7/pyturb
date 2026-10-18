@@ -32,7 +32,8 @@ for t, opd in atm.frames(dt=1e-3, steps=200):
   enforced by tests — see [Validation](validation.md) for the details and
   limits.
 - **Complete.** Named site profiles, off-axis tomography, boiling, LGS cone,
-  OPD-native output, and a diagnostics toolkit (`pyturb.analysis`).
+  OPD-native output, scintillated pupil fields, and a diagnostics toolkit
+  (`pyturb.analysis`).
 
 ## Install
 

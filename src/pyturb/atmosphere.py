@@ -26,9 +26,11 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from aocore import ARCSEC_TO_RAD, centered_coordinates
+from aocore.backend import get_backend as _aocore_backend
 
 from . import _accel, _boiling
 from . import profiles as _profiles
+from . import scintillation as _scintillation
 from . import theory as _theory
 from ._rng import CudaNormalGenerator, default_rng
 from .backend import device_context, get_array_module, on_device
@@ -607,6 +609,8 @@ class Atmosphere:
 
         self._t = 0.0
         self._ext_time = 0.0  # furthest time the streaming extruder has reached
+        # (wavelengths, propagation chain) of the last pupil_field call.
+        self._fresnel_cache: Optional[Tuple[Tuple[float, ...], Any]] = None
         self._gpu = None  # GPU spectral fast path, set by _build_batched
         if self.engine == "spectral":
             self._build_batched()
@@ -1119,6 +1123,38 @@ class Atmosphere:
         """
         return self._theory("structure_function", points_a, points_b, lag, wavelength)
 
+    def scintillation_index(self, wavelength: Optional[float] = None) -> float:
+        """Theoretical scintillation index of a star seen through this atmosphere.
+
+        :func:`pyturb.theory.scintillation_index` (Roddier 1981, weak
+        perturbation, point aperture) with this atmosphere's layers, zenith
+        ``r0``, reference wavelength and zenith angle, at ``wavelength`` [m]
+        (default: the reference wavelength), scaled by the square of the
+        ``dispersion`` model's OPD ratio. The reference for the variance of
+        :meth:`pupil_field`'s intensity, which a simulated grid reaches only
+        when its pixel is well below the Fresnel scale (the power above its
+        Nyquist frequency is missing).
+        """
+        if self.power_law != 11.0 / 3.0 or self.inner_scale > 0:
+            raise ValueError(
+                "scintillation_index is the Kolmogorov (power_law=11/3, no inner "
+                "scale) result; this atmosphere's turbulence has a different "
+                "spectrum. Integrate pyturb.theory.scintillation_transfer squared "
+                "against its spectrum instead."
+            )
+        if self.lgs_altitude is not None:
+            raise ValueError(
+                "scintillation_index is for a star (a plane wave); the laser-guide-"
+                "star source (lgs_altitude) is a spherical wave, which it does not "
+                "model."
+            )
+        lam = self.wavelength if wavelength is None else float(wavelength)
+        index = _theory.scintillation_index(
+            self.layers, self.r0_zenith, lam, r0_wavelength=self.wavelength,
+            zenith_angle=self.zenith_angle,
+        )
+        return float(index * self._chromatic_scale(lam) ** 2)
+
     def _theory(self, kind: str, points_a: Any, points_b: Any, lag: Any,
                 wavelength: Optional[float]) -> np.ndarray:
         """Shared body of :meth:`covariance` and :meth:`structure_function`."""
@@ -1351,6 +1387,156 @@ class Atmosphere:
         phase = self._sample_layers(self._layer_screens(float(t), slope0, slope1), pix0,
                                     pix1, mag)
         return self._to_opd(phase, wavelength)
+
+    @on_device
+    def pupil_field(
+        self,
+        t: Optional[float] = None,
+        direction: Tuple[float, float] = (0.0, 0.0),
+        wavelength: Union[float, Sequence[float], None] = None,
+        weights: Optional[Sequence[float]] = None,
+    ) -> "_scintillation.PupilField":
+        """A star's light at the pupil after Fresnel propagation through the layers.
+
+        A unit plane wave from ``direction`` enters above the highest layer,
+        takes each layer's phase and propagates down to the next layer, and
+        from the lowest layer to the telescope, with the paraxial angular
+        spectrum (:func:`pyturb.scintillation.propagate_layers`, built on
+        :class:`aocore.AngularSpectrumPropagator`), at each wavelength. The
+        layers are this atmosphere's screens at time ``t`` (frozen flow, and
+        the current boiling state, as for :meth:`opd`), at their line-of-sight
+        ranges (``altitude * sec(zenith_angle)``). Diffraction between the
+        layers turns their phase into intensity fluctuations: scintillation.
+
+        Conventions: the field takes the phase ``exp(+i 2 pi OPD / lambda)``
+        and propagates over ``z`` with ``exp(-i pi lambda z f^2)``, the same
+        ``exp(+i k z)`` convention as aocore (an OPD ramp ``a x`` images at
+        ``+a``). An off-axis ``direction`` is handled exactly in the paraxial
+        approximation: the field of a plane wave tilted by ``theta`` is the
+        tilt times the on-axis propagation through the layers shifted by
+        ``theta * range``, the footprints :meth:`opd` uses for ``directions``.
+        The returned field is that on-axis part, relative to the unperturbed
+        tilted wave (a constant phase is dropped).
+
+        Parameters
+        ----------
+        t : float, optional
+            Time [s]. Default: the current clock, :attr:`time`, so inside a
+            :meth:`frames` loop or after :meth:`evolve`/:meth:`advance` the field
+            matches the latest frame.
+        direction : (thx, thy), optional
+            Star direction [arcsec] from the line of sight, ``thx`` along x
+            (axis 1) and ``thy`` along y (axis 0); its radius must lie within
+            ``field_of_view``, as for :meth:`opd`.
+        wavelength : float or sequence of float, optional
+            Wavelength(s) [m] to propagate. Default: the reference
+            ``wavelength`` the atmosphere was built with. A sequence gives a
+            leading wavelength axis on ``field``. With ``dispersion`` the OPD
+            at each wavelength is scaled as in :meth:`opd`.
+        weights : sequence of float, optional
+            Weight of each wavelength in ``intensity`` (e.g. the photon
+            spectrum over the band), normalised to sum to 1. Default equal.
+
+        Returns
+        -------
+        PupilField
+            ``(field, intensity, opd)``: the complex field(s), the weighted
+            relative intensity and the summed OPD [m], each cropped to the
+            ``(n, n)`` pupil and on the atmosphere's device.
+
+        Notes
+        -----
+        Each layer is a thin screen and the propagation runs on the periodic
+        spectral screen (``n_screen`` pixels, see ``oversample``), so light
+        leaving one edge of the screen enters at the other, as the periodic
+        turbulence implies. The screens' subharmonics (scales larger than the
+        screen) are applied as phase at the pupil: over atmospheric ranges
+        they do not diffract (their Fresnel number ``L^2 / (lambda z)`` is in
+        the thousands), and the shift they give the pattern below a layer
+        (range times their slope, typically millimetres) is left out. The
+        grid must resolve the Fresnel scale ``sqrt(lambda z)`` of the layers
+        and the intensity structure: a coarse grid misses the scintillation
+        power above its Nyquist frequency. ``engine="spectral"`` only (the
+        extruder's screens are not periodic), and only for a source at
+        infinity (an LGS is a spherical wave). The CPU transforms run through
+        aocore's backend, with ``AOCORE_FFT_WORKERS`` threads, not
+        :func:`set_threads`.
+
+        Examples
+        --------
+        >>> import pyturb
+        >>> atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=64,
+        ...                                      diameter=2.0, seed=1)
+        >>> pf = atm.pupil_field(wavelength=[0.6e-6, 0.8e-6], weights=[1.0, 2.0])
+        >>> pf.field.shape, pf.intensity.shape
+        ((2, 64, 64), (64, 64))
+        """
+        if self.engine != "spectral":
+            raise ValueError(
+                "pupil_field needs engine='spectral': the angular-spectrum "
+                "propagation treats each layer as one period of a periodic "
+                "screen, which the spectral engine's FFT screens are and the "
+                "extruder's non-periodic strips are not (their edges would "
+                "diffract as a discontinuity)."
+            )
+        if self.lgs_altitude is not None:
+            raise ValueError(
+                "pupil_field propagates a plane wave from a source at infinity; "
+                "a laser guide star (lgs_altitude) is a spherical wave, whose "
+                "propagation is not modelled."
+            )
+        if len(direction) != 2:
+            raise ValueError(
+                "direction is (thx, thy) [arcsec]; a source altitude is not "
+                "accepted, since only plane waves from a source at infinity "
+                f"are propagated (got {direction!r})"
+            )
+        waves, scalar = _scintillation._wavelengths(
+            self.wavelength if wavelength is None else wavelength)
+        w = _scintillation._weights(weights, waves.size)
+        t = self._t if t is None else float(t)
+        slopes0, slopes1, _ = self._parse_directions([tuple(direction)])
+        main, low = self._layer_screen_parts(t, slopes0[0], slopes1[0])
+        # Phase [rad] per radian of reference-wavelength phase, per wavelength.
+        scales = [self.wavelength / lam * self._chromatic_scale(float(lam))
+                  for lam in waves]
+        chain = self._fresnel(waves)
+        if low is None:
+            fields = chain.run(main, scales)
+            total = main.sum(axis=0)
+        else:
+            low = low.sum(axis=0)
+            # The subharmonic part as one extra screen at the pupil (range 0).
+            fields = chain.run(list(main) + [low], scales)
+            total = main.sum(axis=0) + low
+        crop = (Ellipsis, self._crop, self._crop)
+        xp = self.xp
+        fields = xp.ascontiguousarray(fields[crop])
+        intensity = None
+        for weight, field in zip(w, fields):
+            power = field.real ** 2 + field.imag ** 2
+            intensity = (float(weight) * power if intensity is None
+                         else intensity + float(weight) * power)
+        opd = self._to_opd(total[crop].astype(self.dtype_out, copy=False), None)
+        return _scintillation.PupilField(
+            field=fields[0] if scalar else fields,
+            intensity=xp.ascontiguousarray(intensity),
+            opd=xp.ascontiguousarray(opd),
+        )
+
+    def _fresnel(self, wavelengths: np.ndarray) -> "_scintillation._FresnelChain":
+        """The propagation chain for ``wavelengths``, cached for the last set used."""
+        key = tuple(float(lam) for lam in wavelengths)
+        if self._fresnel_cache is not None and self._fresnel_cache[0] == key:
+            return self._fresnel_cache[1]
+        ranges = list(self._alt) + ([0.0] if self._n_sh else [])
+        backend = _aocore_backend("cpu" if self.xp is np else "gpu",
+                                  "single" if self.dtype == "float32" else "double")
+        chain = _scintillation._FresnelChain(
+            (self.n_screen, self.n_screen), self.pixel_scale, np.asarray(ranges),
+            np.asarray(wavelengths), backend)
+        self._fresnel_cache = (key, chain)
+        return chain
 
     def _sample_layers(self, screens: Any, pix0: np.ndarray, pix1: np.ndarray,
                        mags: np.ndarray) -> Any:
@@ -1695,6 +1881,20 @@ class Atmosphere:
         with each layer's subharmonic low-frequency part added. Used where the
         layers must be resampled individually (the CPU LGS cone, :meth:`opd_at`).
         """
+        screens, low = self._layer_screen_parts(t, slope0, slope1)
+        if low is None:
+            return screens
+        low += screens  # the screens plus their low-frequency part
+        return low
+
+    def _layer_screen_parts(self, t: float, slope0: float, slope1: float
+                            ) -> Tuple[Any, Optional[Any]]:
+        """``(main, low)``: the parts of :meth:`_layer_screens`, phase [rad].
+
+        ``main`` is each layer's ``(L, n_screen, n_screen)`` FFT-grid screen,
+        periodic over the screen; ``low`` the subharmonic part of the same shape
+        (each layer's screen mean removed), or ``None`` without subharmonics.
+        """
         xp = self.xp
         cdtype = self._cdtype
         ns = self.n_screen
@@ -1716,29 +1916,28 @@ class Atmosphere:
         del spectra
         field *= ns * ns
         screens = field.real  # (L, ns, ns)
-
-        if self._n_sh:
-            # Batch the phasor/shift across levels (small), but keep the layer
-            # axis through the basis matmul: each layer's low-frequency screen
-            # is zoomed differently below, so it cannot be collapsed here.
-            sh0 = self._sh_phasors(disp0)  # (P, L, 3)
-            sh1 = self._sh_phasors(disp1)
-            # (P, L, 3, 3): per level, per layer, shifted 3x3 coefficients.
-            shifted = self._sh_coeffs * sh0[:, :, :, None] * sh1[:, :, None, :]
-            low = contrib = None
-            for p in range(self._n_sh):
-                basis = self._sh_basis[p]  # (3, ns)
-                # (L, ns, ns), written into the previous level's buffer.
-                contrib = xp.matmul(basis.T, xp.matmul(shifted[p], basis), out=contrib)
-                if low is None:
-                    low = contrib.real.copy()
-                else:
-                    low += contrib.real
-            del contrib
-            low -= low.mean(axis=(-2, -1), keepdims=True)
-            low += screens  # the screens plus their low-frequency part
-            screens = low
-        return screens
+        if not self._n_sh:
+            return screens, None
+        # Batch the phasor/shift across levels (small), but keep the layer
+        # axis through the basis matmul: each layer's low-frequency screen is
+        # used on its own (zoomed or propagated per layer), so it cannot be
+        # collapsed here.
+        sh0 = self._sh_phasors(disp0)  # (P, L, 3)
+        sh1 = self._sh_phasors(disp1)
+        # (P, L, 3, 3): per level, per layer, shifted 3x3 coefficients.
+        shifted = self._sh_coeffs * sh0[:, :, :, None] * sh1[:, :, None, :]
+        low = contrib = None
+        for p in range(self._n_sh):
+            basis = self._sh_basis[p]  # (3, ns)
+            # (L, ns, ns), written into the previous level's buffer.
+            contrib = xp.matmul(basis.T, xp.matmul(shifted[p], basis), out=contrib)
+            if low is None:
+                low = contrib.real.copy()
+            else:
+                low += contrib.real
+        del contrib
+        low -= low.mean(axis=(-2, -1), keepdims=True)
+        return screens, low
 
     def _lgs_zoom(self, screens: Any, taps: Tuple[Any, Any]) -> Any:
         """Cone-zoom the ``(L, n_screen, n_screen)`` layer screens into ``(n, n)``.
@@ -1951,14 +2150,53 @@ class Atmosphere:
             The pupil OPD [m] (or phase [rad]) at the new time, shape
             ``(n, n)`` on the device.
         """
-        if dt <= 0:
+        self.advance(dt)
+        return self._to_opd(self._phase(self._t, 0.0, 0.0), wavelength)
+
+    @on_device
+    def advance(self, dt: float) -> "Atmosphere":
+        """Advance the clock by ``dt`` [s] in one exact boiling step; returns ``self``.
+
+        :meth:`evolve` without computing an OPD: read the new state with
+        :meth:`opd` or :meth:`pupil_field` at ``t = atm.time``. Frozen flow
+        needs no stepping (each layer is evaluated at any time directly), and
+        boiling is a continuous-time process that every engine samples exactly
+        at any step: with ``boil_model="ar1"`` each mode (each layer on the
+        extruder) keeps ``exp(-dt / tau)`` of its value and gains an
+        independent innovation of variance ``1 - exp(-2 dt / tau)``, and
+        ``"ar2"`` uses its exact transition over ``dt``. One step of ``s * T``
+        therefore has the statistics of ``s`` steps of ``T``: an AR(1) sampled
+        every ``s`` steps is an AR(1) with coefficient ``rho**s`` (``rho =
+        exp(-T / tau)``) and innovation variance ``1 - rho**(2 s)``. A history
+        of frames tens of milliseconds apart costs one step per frame, not one
+        per elapsed loop period. The random draws differ from those of ``s``
+        separate steps, so the realisation differs; :meth:`frames` and
+        :meth:`evolve` take one step per ``dt``.
+
+        Parameters
+        ----------
+        dt : float
+            Time step [s] (> 0).
+
+        Examples
+        --------
+        >>> import pyturb
+        >>> atm = pyturb.Atmosphere.from_profile("two-layer", r0=0.15, n=64,
+        ...                                      tau_boil=2.0, seed=1)
+        >>> history = []
+        >>> for step in (0.0, 0.02, 0.02, 0.03):     # frames at 0, 20, 40, 70 ms
+        ...     if step:
+        ...         atm.advance(step)
+        ...     history.append(atm.opd(t=atm.time))
+        """
+        if not np.isfinite(dt) or dt <= 0:
             raise ValueError("dt must be positive")
         self._t += float(dt)
         if self.engine == "spectral":
             self._boil_step(float(dt))
         else:
             self._ext.boil_step(float(dt))
-        return self._to_opd(self._phase(self._t, 0.0, 0.0), wavelength)
+        return self
 
     @on_device
     def sample(

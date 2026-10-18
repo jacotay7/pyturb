@@ -12,6 +12,12 @@ Generated from the source docstrings.
 
 ::: pyturb.ExtrudeBoilingPerformanceWarning
 
+## Scintillation
+
+::: pyturb.PupilField
+
+::: pyturb.scintillation.propagate_layers
+
 ## Phase screens
 
 ::: pyturb.PhaseScreen

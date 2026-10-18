@@ -11,6 +11,10 @@ Three levels of API cover the common AO simulation needs:
 - :class:`InfinitePhaseScreen` — an endless frozen-flow screen extruded row
   by row (Assémat & Wilson 2006) for closed-loop temporal simulation.
 
+:meth:`Atmosphere.pupil_field` propagates a star's light through the layers
+(Fresnel, :mod:`pyturb.scintillation`) for the complex pupil field and its
+scintillation.
+
 Pass ``device="gpu"`` to any of them to run on CUDA via CuPy. Phase screens
 are returned in radians; :class:`Atmosphere` returns OPD in metres (achromatic)
 unless a ``wavelength`` is given.
@@ -19,7 +23,7 @@ unless a ``wavelength`` is given.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-from . import analysis, interop, theory
+from . import analysis, interop, scintillation, theory
 from .analysis import zernike_basis, zernike_decompose
 from .atmosphere import Atmosphere, ExtrudeBoilingPerformanceWarning, PeriodicWrapWarning
 from .backend import (
@@ -51,6 +55,7 @@ from .profiles import (
     profile_info,
     with_wind,
 )
+from .scintillation import PupilField
 from .utils import (
     air_refractivity,
     opd_to_phase,
@@ -69,6 +74,7 @@ except PackageNotFoundError:  # not installed (e.g. running from a source tree)
 
 __all__ = [
     "Atmosphere",
+    "PupilField",
     "PeriodicWrapWarning",
     "ExtrudeBoilingPerformanceWarning",
     "Layer",
@@ -101,6 +107,7 @@ __all__ = [
     "load",
     "analysis",
     "theory",
+    "scintillation",
     "interop",
     "zernike_basis",
     "zernike_decompose",
