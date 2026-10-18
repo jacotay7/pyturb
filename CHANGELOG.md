@@ -6,8 +6,51 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-18
+
 ### Added
 
+- `Atmosphere.pupil_field(t=None, direction=(0, 0), wavelength=None,
+  weights=None)`: scintillation. A unit plane wave from a star propagates
+  through the layers at time `t` (default the current clock), from the highest
+  down to the telescope, with the paraxial angular spectrum, at one or several
+  wavelengths (with `dispersion`, each wavelength's OPD scaled as in `opd`).
+  Returns a `pyturb.PupilField` `(field, intensity, opd)`: the complex pupil
+  field(s), the `weights`-averaged relative intensity and the summed OPD (the
+  same map as `opd(t, directions=[direction])`, to rounding). Off-axis stars
+  propagate through the layers shifted by `theta * range`, which is exact for a
+  tilted plane wave in the paraxial approximation. Conventions: phase
+  `exp(+i 2 pi OPD / lambda)`, transfer function `exp(-i pi lambda z f^2)` for
+  `z > 0` downstream, exactly `aocore.AngularSpectrumPropagator(paraxial=True)`,
+  which does the propagation. Spectral engine and sources at infinity only;
+  the screens' subharmonics are applied as phase at the pupil. Tested against
+  first-order theory mode by mode, an independent angular-spectrum loop, the
+  exact tilted-plane-wave solution, energy conservation and, in ensemble, the
+  grid's own first-order intensity variance (agreeing to 0.02% ± 0.8% over 60
+  seeds), on CPU and GPU.
+- `pyturb.scintillation.propagate_layers(opd, altitudes, pixel_scale,
+  wavelength)`: the same propagation for any stack of layer OPD maps (NumPy or
+  CuPy).
+- `Atmosphere.advance(dt)`: move the clock and boil every layer by one exact
+  step of `dt` without computing an output, for histories of frames tens of
+  milliseconds apart at one boiling step per frame. Both boil models (and the
+  extruder's blend) are sampled exactly at any step, so one step of `s T` has
+  the statistics of `s` steps of `T` (AR(1): coefficient `rho^s`, innovation
+  variance `1 - rho^(2s)`); `evolve` is `advance` plus the OPD.
+- `pyturb.theory.gems_boil_time(speed)`: the outer-scale `tau_boil` per layer
+  for the default `boil_scaling="kolmogorov"` that reproduces the per-layer
+  decay Guesalaga et al. (2014) measured on GeMS: 2.5, 1.4 and 0.74 s at 5, 10
+  and 20 m/s, linear in `1 / tau` between and held outside, calibrated at
+  `L0 = 25 m` with AR(1) modes.
+- `pyturb.theory.scintillation_transfer(f, altitude, wavelength)`: the
+  weak-perturbation transfer `2 k sin(pi lambda h f^2)` from a layer's OPD to
+  relative intensity, and `pyturb.theory.scintillation_index(layers, r0,
+  wavelength, r0_wavelength=500e-9, zenith_angle=0)`: Roddier's (1981)
+  `19.2 lambda^(-7/6) sec(z)^(11/6) integral Cn^2 h^(5/6) dh`.
+  `Atmosphere.scintillation_index(wavelength)` evaluates it for the
+  atmosphere (with its `dispersion`).
+- Docs: a Scintillation guide (example, conventions, theory, limitations) and
+  the GeMS-calibrated scale-dependent boiling in the Physics guide.
 - `boil_scaling` on `Atmosphere` (and `from_profile`/`from_cn2`/`from_config`):
   `"kolmogorov"` (the spectral engine's eddy-turnover `tau(f) = tau_boil *
   max(f/f_ref, 1)^(-2/3)` per mode) or `"uniform"` (every Fourier mode, main
@@ -25,11 +68,24 @@ to [Semantic Versioning](https://semver.org/).
   correlation falling roughly linearly with lag, mainly with the distance
   travelled). Meant for `boil_scaling="uniform"`.
 
+### Changed
+
+- Scope: pyturb now propagates starlight through its own layers to the pupil
+  (`CONTRIBUTING.md`, `ROADMAP.md`, the comparison table); propagation through
+  the telescope and instrument stays with aocore/HCIPy.
+
 ### Fixed
 
 - The `_build_boil_tau_maps` reference list cited Guesalaga et al. (2014) as
   support for the `f^(-2/3)` scaling, with a wrong volume; that paper measures
   each layer's decay against wind speed, not a per-scale law.
+- `Atmosphere.evolve` with a NaN or infinite `dt` returned a NaN frame; it
+  raises `ValueError`, as for `dt <= 0`.
+
+Output: every seeded result of the existing options is bit-identical to 2.4.0,
+checked bytewise over 1,116 seeded configurations on the CPU (with and without
+Numba) and 744 on the GPU (frames, `evolve`, `opd_at`, directions, LGS cone,
+both engines and boil models, reset).
 
 ## [2.4.0] - 2026-10-10
 

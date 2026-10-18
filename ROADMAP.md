@@ -19,6 +19,10 @@ lands with a docs page.
       global) `inner_scale`/`power_law`. All are currently static-per-run;
       each is a genuine physics extension, not a bug, and would need its own
       theory-referenced validation the way `tau_boil` did.
+- [ ] **Spherical-wave scintillation** — `Atmosphere.pupil_field` propagates
+      plane waves (stars) only; a laser guide star's spherical wave needs the
+      layers rescaled per range (the paraxial spherical-to-plane-wave
+      transformation) and its own theory check.
 - [ ] **ESO 35-layer reference profiles** (median + Q1–Q4, Sarazin et al.
       2013 / ESO-258292, superseded for the VLT by ESO-399284) — not public;
       add with a provenance test if a verbatim copy becomes available. Paranal
@@ -38,6 +42,6 @@ Kept here so the scope stays crisp; pyturb is *the atmosphere*, not an AO system
 - **Full AO system simulation** (WFS, DM, controllers) — never; that is soapy's
   job. pyturb is the turbulence that plugs into it.
 - **Tomographic reconstructors / slope covariance** — aotools' domain.
-- **Scintillation / Fresnel propagation between layers** — HCIPy/PROPER own
-  amplitude effects; pyturb outputs phase/OPD. *Possible stretch only if pulled
-  by demand:* a minimal angular-spectrum propagator over pyturb's layers.
+- **Propagation through the telescope and instrument** — aocore/HCIPy/PROPER
+  own it. pyturb stops at the pupil: `Atmosphere.pupil_field` gives the star's
+  field there after angular-spectrum propagation through the layers.

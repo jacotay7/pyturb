@@ -22,6 +22,14 @@ python -m pytest -q --run-gpu                   # if you touched GPU code (needs
 CI has no GPU runner, so `--run-gpu` locally is the only check of the CuPy
 paths; record the GPU/CuPy versions in the PR when you run it.
 
+CI's test job has no Numba. With Numba installed, run that path locally by
+putting a directory holding a `sitecustomize.py` that sets
+`sys.modules["numba"] = None` on `PYTHONPATH` (`find_spec` then returns
+`None`, so `_accel.HAVE_NUMBA` is false). In a shared environment where pyturb
+is installed editable from another checkout, do not `--force-reinstall` the
+wheel there: install it with `pip install --no-deps --target <scratch dir>`
+and import it from that directory instead.
+
 CI additionally runs the test suite on Python 3.10, 3.12, 3.13, and 3.14. If
 you only have one interpreter available, at minimum grep your diff for
 anything that needs Python >=3.11 (`tomllib`, `ExceptionGroup`/`except*`,
@@ -117,6 +125,31 @@ caught real bugs before.
   (~20% low for uniform `"ar2"` at one frame); with wind, multi-pixel lags are
   dominated by frozen-flow travel, so a test that must tell the two
   `boil_scaling`s apart needs a static (or slow) layer.
+
+## Scintillation (`pupil_field`)
+
+- The propagation is aocore's `AngularSpectrumPropagator(paraxial=True)`
+  (aocore owns Fresnel propagators, CONVENTIONS section 9); pyturb only chains
+  it over the layers (`scintillation._FresnelChain`). Phase is
+  `exp(+i 2 pi OPD / lambda)` and the transfer function `exp(-i pi lambda z
+  f^2)`, so a positive OPD bump focuses and first-order intensity is `+2 k
+  sin(pi lambda h f^2) OPD(f)`. `tests/test_conformance.py` checks rule 3.1 on
+  the propagated field.
+- An off-axis star is the on-axis propagation through the footprints
+  `phi(r + theta h)`, i.e. the incoming wave `exp(-i k theta . r)`. A direct
+  tilted-wave check only agrees to rounding with band-limited layer spectra:
+  the tilt shifts the field's spectrum by whole bins, and modes near Nyquist
+  alias differently (with full spectra the largest error is several percent
+  of the intensity rms in weak scintillation, tens of percent in strong).
+- Compare simulated scintillation with the grid's own first-order variance,
+  `sum_f T(f)^2 amp(f)^2` over the generator's mode amplitudes, not with
+  Roddier's index: a grid misses the power above its Nyquist frequency (13% at
+  a pixel of half the Fresnel scale, under 1% at an eighth).
+- The screens' subharmonics are applied as phase at the pupil (as an extra
+  screen at range 0), because a non-periodic screen inside the periodic FFT
+  propagation would diffract at the screen edges.
+- Its CPU FFTs run with aocore's thread count (`AOCORE_FFT_WORKERS`), not
+  `set_threads`.
 
 ## Test-environment gotchas
 

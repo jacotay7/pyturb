@@ -130,6 +130,22 @@ ngs = pyturb.Atmosphere.from_profile("paranal-median", seeing=0.8, n=256,
 cone_error = pyturb.to_numpy(lgs.opd() - ngs.opd())   # same seed, same turbulence
 ```
 
+## Scintillation
+
+Light diffracts between the layers, so high turbulence also makes the pupil
+intensity fluctuate. `pupil_field` propagates a star's light through the
+layers to the pupil (Fresnel, angular spectrum):
+
+```python
+atm = pyturb.Atmosphere.from_profile("paranal-median", r0=0.15, diameter=2.0,
+                                     n=128, seed=1)
+pf = atm.pupil_field(wavelength=0.7e-6)   # field, intensity, opd
+print(float(pf.intensity.var()), atm.scintillation_index(0.7e-6))  # one draw, theory
+```
+
+See [Scintillation](scintillation.md) for wavelengths, off-axis stars,
+histories of frames and the limitations.
+
 ## Single screens and layers
 
 The building blocks are usable on their own; they return phase in radians at

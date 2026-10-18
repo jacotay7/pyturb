@@ -43,9 +43,10 @@ pyturb's credibility rests on three habits — please keep them:
 
 pyturb is *the atmosphere*, not a full AO system. Please keep out of scope:
 WFS/DM/controller simulation, tomographic reconstructors and slope
-covariance, and Fresnel/scintillation propagation. We output
-phase/OPD and hand those effects to the tools that own them — see
-`docs/comparison.md`.
+covariance, and propagation through the telescope and instrument. We output
+phase/OPD, and the star's field at the pupil after propagation through the
+layers (`Atmosphere.pupil_field`, built on aocore's propagator), and hand the
+rest to the tools that own it — see `docs/comparison.md`.
 
 ## Style
 

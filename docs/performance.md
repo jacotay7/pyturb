@@ -100,6 +100,9 @@ Environment variables, read when a process starts:
   imported; it is the most `set_threads` can use).
 - `OMP_NUM_THREADS`: honoured by pyturb's Numba kernels when
   `NUMBA_NUM_THREADS` is not set, and by OpenMP/OpenBLAS.
+- `AOCORE_FFT_WORKERS`: the CPU FFT threads of `Atmosphere.pupil_field`, which
+  propagates through aocore's angular-spectrum propagator (aocore picks a
+  count from the transform size otherwise); set it to 1 in sweeps too.
 - `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS`: the BLAS pool. `set_threads`
   leaves BLAS alone because OpenBLAS's rounding depends on its thread count:
   limiting it (here or with `threadpoolctl`) is safe for speed but can change

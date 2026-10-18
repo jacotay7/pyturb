@@ -31,7 +31,7 @@ fastest non-periodic GPU atmosphere in absolute terms.
 | LGS cone effect | yes | — | — | — |
 | Off-axis / tomography directions | yes | — | partial | yes |
 | Named site profiles | yes | — | — | yes |
-| Scintillation (Fresnel) | non-goal | — | — | yes |
+| Scintillation (Fresnel) | yes (layer-by-layer angular spectrum) | — | — | yes |
 | Tomographic reconstructors | — | yes | yes | modal |
 | FITS screen I/O | yes (`pyturb.save`) | — | yes | — |
 | Integrated r0 / θ0 / τ0 | yes | yes | — | — |

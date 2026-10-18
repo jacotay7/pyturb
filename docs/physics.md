@@ -68,7 +68,10 @@ frames to a few percent):
 
 Both models work with either `boil_scaling`. Both start from the same `t = 0`
 screen for a given seed. Boiling acts while
-stepping (`frames`/`evolve`), not for random-access `opd(t)`. A quick check
+stepping (`frames`/`evolve`/`advance`), not for random-access `opd(t)`. Each
+step is exact for any `dt`, so `atm.advance(dt)` jumps straight to a frame
+`dt` later in one step, with the statistics of many short steps (see
+[Histories of frames](scintillation.md#histories-of-frames)). A quick check
 that it decorrelates a static (no-wind) layer:
 
 ```python
@@ -119,7 +122,38 @@ boil_scaling="uniform")` give its space-time statistics: the frozen-flow
 covariance times the retention `R(|lag| / tau_boil)`. Do not combine the
 measured time constants with the default `"kolmogorov"` scaling: there
 `tau_boil` is the outer-scale lifetime, and the scales an AO system senses
-would decorrelate one to two orders of magnitude faster than measured.
+would decorrelate one to two orders of magnitude faster than measured. For
+that scaling use the calibration below.
+
+### Scale-dependent boiling calibrated on GeMS
+
+To keep the eddy-turnover scaling and still match the measurements,
+`pyturb.theory.gems_boil_time` gives the outer-scale lifetime per layer that
+makes the sensed scales decay as GeMS saw. Guesalaga et al. measured the
+decay of the energy in a 3x3-subaperture window around each layer's peak in
+the space-time cross-correlation of tip/tilt-removed slopes (8 m pupil, 0.5 m
+subapertures, lags 0.1-0.5 s). Computing the same windowed statistic from the
+von Kármán spectrum (`L0 = 25 m`) with AR(1) modes boiling at `tau(f) =
+tau_boil max(f L0, 1)^(-2/3)`, and solving for the `tau_boil` that decays at
+the fitted rate `0.157 v + 0.365` s⁻¹, gives 2.5, 1.4 and 0.74 s at 5, 10
+and 20 m/s. `gems_boil_time` is linear in `1 / tau` between those speeds and
+holds the end values outside them.
+
+```python
+import pyturb
+
+layers = pyturb.get_profile("two-layer")
+tau = pyturb.theory.gems_boil_time([l.wind_speed for l in layers])
+atm = pyturb.Atmosphere(layers, r0=0.15, n=64, tau_boil=tau, seed=1)
+print([round(t, 2) for t in tau], "s")           # outer-scale lifetimes
+```
+
+With these lifetimes, 0.5 m structure (`f = 2` m⁻¹, a GeMS subaperture) in a
+10 m/s layer lives `1.4 s / (2 * 25)^(2/3) = 0.10 s`, and 10 cm structure
+35 ms. The calibration assumes `L0 = 25 m`: at
+another outer scale, recalibrating gives lifetimes about 0.63, 1.49 and 2.3
+times these for `L0` = 10, 50 and 100 m (at 10 m/s). Pair it with the default
+`boil_model="ar1"`, which it was calibrated for.
 
 ## Space-time covariance
 

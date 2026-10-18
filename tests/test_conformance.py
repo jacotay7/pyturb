@@ -40,3 +40,21 @@ def test_zernike_basis_is_noll_with_tip_along_x() -> None:
         return cache["basis"][j - 1][inside]
 
     conformance.check_zernike_basis(zernike, n=128)
+
+
+def test_pupil_field_phase_images_an_opd_ramp_at_plus_its_slope() -> None:
+    """Rule 3.1: the propagated field carries exp(+i 2 pi OPD / lambda)."""
+    from aocore import FocalPlanePropagator
+
+    from pyturb.scintillation import propagate_layers
+
+    n, pitch, lam = 64, 0.05, 1e-6
+    pixel_scale = lam / (2 * n * pitch)  # Nyquist-sampled image
+    imager = FocalPlanePropagator((n, n), pitch, lam, pixel_scale, (48, 48))
+
+    def image(opd: np.ndarray) -> np.ndarray:
+        field = propagate_layers(np.asarray(opd)[None], [0.0], pitch, lam)
+        return np.abs(imager.forward(field[None])[0]) ** 2
+
+    conformance.check_tilt_direction(image, pupil_shape=(n, n), pitch=pitch,
+                                     pixel_scale=pixel_scale)

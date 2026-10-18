@@ -24,6 +24,12 @@ quoted at, unless a function says otherwise.
   :meth:`pyturb.Atmosphere.covariance`).
 - :func:`travel_decorrelation_time` — an on-sky boiling time constant per
   layer from its wind speed (Guesalaga et al. 2014), for ``tau_boil``.
+- :func:`gems_boil_time` — the outer-scale ``tau_boil`` per layer for the
+  default scale-dependent boiling, calibrated on the same GeMS measurements.
+- :func:`scintillation_transfer` and :func:`scintillation_index` — the
+  weak-perturbation intensity transfer function of a layer and the
+  scintillation index of a profile (Roddier 1981), the references for
+  :meth:`pyturb.Atmosphere.pupil_field`.
 
 References
 ----------
@@ -34,6 +40,8 @@ References
 - Guesalaga, A., Neichel, B., Cortés, A., Béchet, C. & Guzmán, D. (2014), "Using the
   Cn2 and wind profiler method with wide-field laser-guide-stars adaptive optics to
   quantify the frozen-flow decay", MNRAS 440, 1925-1933, doi:10.1093/mnras/stu366.
+- Roddier, F. (1981), "The effects of atmospheric turbulence in optical astronomy",
+  Progress in Optics 19, 281-376.
 """
 
 from __future__ import annotations
@@ -61,6 +69,9 @@ __all__ = [
     "covariance",
     "space_time_structure_function",
     "travel_decorrelation_time",
+    "gems_boil_time",
+    "scintillation_transfer",
+    "scintillation_index",
 ]
 
 # Exact Kolmogorov phase-PSD constant, (24/5 Gamma(6/5))^(5/6) Gamma(11/6)^2 /
@@ -694,3 +705,198 @@ def travel_decorrelation_time(
     with np.errstate(divide="ignore"):
         tau = np.where(rate > 0, 1.0 / np.where(rate > 0, rate, 1.0), np.inf)
     return float(tau) if tau.ndim == 0 else tau
+
+
+# Outer-scale boiling lifetimes [s] at these wind speeds [m/s] (gems_boil_time).
+_GEMS_SPEEDS = (5.0, 10.0, 20.0)
+_GEMS_TAU_B = (2.5, 1.4, 0.74)
+
+
+def gems_boil_time(speed: ArrayLike) -> Union[float, np.ndarray]:
+    """Outer-scale boiling lifetime [s] for ``boil_scaling="kolmogorov"``, from GeMS.
+
+    The ``tau_boil`` per layer with which the spectral engine's default,
+    scale-dependent boiling (each mode at spatial frequency ``f`` has
+    ``tau(f) = tau_boil * max(f L0, 1)^(-2/3)``) decorrelates the scales an AO
+    system senses as fast as Guesalaga et al. (2014) measured on GeMS. They
+    followed each layer in the space-time cross-correlation of tip/tilt-removed
+    laser-guide-star slopes (8 m pupil, 16x16 subapertures of 0.5 m) and fitted
+    the decay of the energy in a 3x3-subaperture window around the correlation
+    peak over 0.1-0.5 s, finding a rate ``0.157 v + 0.365`` s^-1 for wind speed
+    ``v`` (see :func:`travel_decorrelation_time`). The lifetimes here make the
+    same windowed statistic, computed from the von Kármán spectrum with
+    ``L0 = 25 m`` and AR(1) modes, decay at that rate: 2.5, 1.4 and 0.74 s at
+    5, 10 and 20 m/s (2.50, 1.44, 0.74 s before rounding). In between,
+    ``1 / tau`` is linear in speed; outside 5-20 m/s the end values are held.
+
+    Use it with the default ``boil_scaling="kolmogorov"`` and
+    ``boil_model="ar1"``; with ``"uniform"`` scaling use
+    :func:`travel_decorrelation_time` instead, which describes the same
+    measurements as one rate for every scale. The calibration assumes
+    ``L0 = 25 m``: the outer-scale lifetime that gives the same decay of the
+    sensed scales grows with ``L0`` (recalibrated at 10 m/s, 0.63, 1.49 and 2.3
+    times these values for ``L0`` = 10, 50 and 100 m), so treat other outer
+    scales as an extrapolation.
+
+    Parameters
+    ----------
+    speed : float or array_like
+        Layer wind speed [m/s]; the sign is ignored. An array gives one value
+        per layer, e.g. ``[layer.wind_speed for layer in layers]``.
+
+    Returns
+    -------
+    float or ndarray
+        ``tau_boil`` [s], a float for a scalar ``speed``, else an array of its
+        shape.
+
+    References
+    ----------
+    Guesalaga, A., Neichel, B., Cortés, A., Béchet, C. & Guzmán, D. (2014),
+    MNRAS 440, 1925-1933, doi:10.1093/mnras/stu366.
+
+    Examples
+    --------
+    >>> import pyturb
+    >>> layers = pyturb.get_profile("two-layer")
+    >>> tau = pyturb.theory.gems_boil_time([layer.wind_speed for layer in layers])
+    >>> atm = pyturb.Atmosphere(layers, r0=0.15, n=64, tau_boil=tau)
+    """
+    v = np.abs(np.asarray(speed, dtype=np.float64))
+    if not np.all(np.isfinite(v)):
+        raise ValueError("speed must be finite [m/s]")
+    rate = np.interp(v, _GEMS_SPEEDS, 1.0 / np.asarray(_GEMS_TAU_B))
+    tau = 1.0 / rate
+    return float(tau) if tau.ndim == 0 else tau
+
+
+def scintillation_transfer(
+    f: ArrayLike,
+    altitude: ArrayLike,
+    wavelength: ArrayLike,
+) -> np.ndarray:
+    """Weak-perturbation transfer [1/m] from a layer's OPD to relative intensity.
+
+    For a thin layer at range ``h`` above the pupil with a small OPD ``w``, a
+    plane wave arrives with relative intensity ``1 + delta`` whose spectrum is
+    ``delta(f) = T(f) w(f)``, with
+
+    ``T(f) = 2 k sin(pi lambda h f^2)``, ``k = 2 pi / lambda``,
+
+    the Fresnel filter of first-order (Rytov/Born) perturbation theory, in the
+    sign convention of :meth:`pyturb.Atmosphere.pupil_field` (phase
+    ``exp(+i k w)``): a positive OPD bump (a converging lens) brightens the
+    pupil. Below the Fresnel frequency ``1 / sqrt(lambda h)`` it tends to the
+    achromatic transport-of-intensity limit ``4 pi^2 h f^2``, i.e.
+    ``delta = -h laplacian(w)``. The layers of a profile add their
+    contributions; for a band, average ``T`` over the wavelengths with the
+    weights of the intensity. Multiplying ``|T|^2`` by the OPD power spectrum
+    and integrating gives the scintillation index
+    (:func:`scintillation_index`); multiplying ``T`` by other transfer
+    functions gives cross-spectra, e.g. for the covariance between intensity
+    and slopes.
+
+    Parameters
+    ----------
+    f : array_like
+        Spatial frequency [cycles/m] (its magnitude).
+    altitude : float or array_like
+        Range of the layer above the pupil [m] along the line of sight.
+    wavelength : float or array_like
+        Wavelength [m].
+
+    Returns
+    -------
+    ndarray
+        ``T`` [relative intensity per metre of OPD], broadcast over the inputs.
+    """
+    f = np.asarray(f, dtype=np.float64)
+    h = np.asarray(altitude, dtype=np.float64)
+    lam = np.asarray(wavelength, dtype=np.float64)
+    if np.any(h < 0) or not np.all(np.isfinite(h)):
+        raise ValueError("altitude must be finite and >= 0 [m]")
+    if np.any(lam <= 0) or not np.all(np.isfinite(lam)):
+        raise ValueError("wavelength must be positive and finite [m]")
+    return 2.0 * (2.0 * np.pi / lam) * np.sin(np.pi * lam * h * f * f)
+
+
+def scintillation_index(
+    layers: Sequence[Layer],
+    r0: float,
+    wavelength: ArrayLike,
+    *,
+    r0_wavelength: float = 500e-9,
+    zenith_angle: float = 0.0,
+) -> Union[float, np.ndarray]:
+    """Scintillation index ``sigma_I^2`` of a star through a layered profile (Roddier).
+
+    The variance of the relative intensity at a point in the pupil, in the
+    weak-perturbation (Rytov) approximation for Kolmogorov turbulence:
+
+    ``sigma_I^2 = 19.2 lambda^(-7/6) sec(z)^(11/6) integral Cn^2(h) h^(5/6) dh``
+
+    (four times the log-amplitude variance), with each layer's ``Cn^2 dh =
+    f_i r0^(-5/3) / (0.423 k_0^2)`` from the profile's normalised
+    ``cn2_fraction`` ``f_i`` and the total ``r0`` at ``r0_wavelength``
+    (``k_0 = 2 pi / r0_wavelength``). It is the integral of
+    :func:`scintillation_transfer` squared times the Kolmogorov OPD spectrum,
+    so it scales as ``lambda^(-7/6)`` and is dominated by the high layers.
+
+    It describes a point source seen through a point aperture: a telescope
+    larger than the Fresnel scale ``sqrt(lambda h)`` averages the fluctuations
+    down. The weak-perturbation result holds while ``sigma_I^2`` is well
+    below 1; stronger scintillation saturates. The outer scale hardly matters
+    (the Fresnel filter suppresses scales larger than ``sqrt(lambda h)``).
+    A simulation reproduces it only up to its grid: the power above the
+    Nyquist frequency of the pupil sampling is missing (several percent unless
+    the pixel is well below the Fresnel scale).
+
+    Parameters
+    ----------
+    layers : sequence of Layer
+        The profile: altitudes [m] at zenith and ``cn2_fraction`` weights.
+    r0 : float
+        Total Fried parameter [m] at zenith, at ``r0_wavelength``.
+    wavelength : float or array_like
+        Observing wavelength(s) [m].
+    r0_wavelength : float, optional
+        Wavelength [m] ``r0`` is quoted at. Default 500 nm.
+    zenith_angle : float, optional
+        Zenith angle [deg]: ranges and the path through each layer grow as
+        ``sec(z)``. Default 0.
+
+    Returns
+    -------
+    float or ndarray
+        ``sigma_I^2`` (dimensionless), a float for a scalar ``wavelength``.
+
+    References
+    ----------
+    Roddier, F. (1981), Progress in Optics 19, 281-376.
+
+    Examples
+    --------
+    >>> import pyturb
+    >>> layers = pyturb.get_profile("paranal-median")
+    >>> s2 = pyturb.theory.scintillation_index(layers, r0=0.15, wavelength=0.5e-6)
+    """
+    if not np.isfinite(r0) or r0 <= 0:
+        raise ValueError("r0 must be positive and finite [m]")
+    if not np.isfinite(r0_wavelength) or r0_wavelength <= 0:
+        raise ValueError("r0_wavelength must be positive and finite [m]")
+    if not np.isfinite(zenith_angle) or not 0.0 <= zenith_angle < 90.0:
+        raise ValueError("zenith_angle must be in [0, 90) degrees")
+    lam = np.asarray(wavelength, dtype=np.float64)
+    if np.any(lam <= 0) or not np.all(np.isfinite(lam)):
+        raise ValueError("wavelength must be positive and finite [m]")
+    layers = list(layers)
+    fractions = _fractions(layers)
+    h = np.array([layer.altitude for layer in layers], dtype=np.float64)
+    if np.any(h < 0):
+        raise ValueError("layer altitudes must be >= 0 [m]")
+    k0 = 2.0 * np.pi / r0_wavelength
+    cn2_dh = fractions * r0 ** (-5.0 / 3.0) / (0.423 * k0 * k0)  # [m^(1/3)]
+    moment = float(np.sum(cn2_dh * h ** (5.0 / 6.0)))
+    secant = 1.0 / np.cos(np.deg2rad(zenith_angle))
+    index = 19.2 * lam ** (-7.0 / 6.0) * secant ** (11.0 / 6.0) * moment
+    return float(index) if index.ndim == 0 else index
