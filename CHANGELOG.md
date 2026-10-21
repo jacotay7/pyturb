@@ -9,8 +9,8 @@ to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `theory.short_lag_boil_time`: outer-scale boiling lifetimes for prediction over
-  milliseconds (7-33 ms lags), calibrated on 140 open-loop CANARY data sets
-  (about 20 s above 4 m/s, 3.9 s at low wind). `gems_boil_time` now notes that its
+  milliseconds (7-33 ms lags), calibrated on 140 open-loop CANARY data sets on
+  four nights (about 20 s above 4 m/s, 3.9 s at low wind). `gems_boil_time` now notes that its
   0.1-0.5 s calibration overstates the decorrelation over milliseconds.
 
 ## [2.5.0] - 2026-10-18

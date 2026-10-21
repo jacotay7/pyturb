@@ -160,13 +160,14 @@ times these for `L0` = 10, 50 and 100 m (at 10 m/s). Pair it with the default
 `gems_boil_time` was calibrated on decay over 0.1-0.5 s. Predictive control and
 other millisecond-lag uses need the unpredictable change over a few frames, which
 `pyturb.theory.short_lag_boil_time` gives instead. It is calibrated on 140
-open-loop data sets from CANARY (4.2 m William Herschel Telescope, 7x7
+open-loop data sets (four nights in 2017) from CANARY (4.2 m William Herschel Telescope, 7x7
 Shack-Hartmann at 150 Hz, ESO archive WLGSU/CANARY data products): each was
 compared with simulations sharing its measured profile, r0, wind and length and
 the CANARY sensor (diffraction spots, thresholded centre of gravity), through the
 growth of a learned linear predictor's error from one to two frames ahead. Above
-about 4 m/s the matching outer-scale lifetime is about 20 s (95 % interval
-12-28 s), nearly independent of wind, against 1.7-2.5 s from `gems_boil_time`;
+about 4 m/s the matching outer-scale lifetime is about 20 s (95 % interval from
+resampling the nights 8-36 s), nearly independent of wind, against 1.2-2.5 s from
+`gems_boil_time`;
 below about 3 m/s it is about 3.9 s, probably local (dome) turbulence.
 
 ```python
@@ -179,7 +180,7 @@ print(pyturb.theory.gems_boil_time(speeds), pyturb.theory.short_lag_boil_time(sp
 
 The data fix the amount of change over 7-33 ms, not the temporal model
 (`boil_model="ar2"` with about a third of the GeMS lifetimes fits as well), and
-assume `L0 = 25 m`; one site and season.
+assume `L0 = 25 m`; one site, four nights.
 
 ## Space-time covariance
 
