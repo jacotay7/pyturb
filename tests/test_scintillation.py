@@ -403,6 +403,33 @@ def test_fine_grids_approach_the_roddier_index():
     assert 0.08 < shortfall[64] < 0.2
 
 
+def test_short_lag_boil_time():
+    g = theory.short_lag_boil_time
+    assert g(10.0) == pytest.approx(20.0) and g(4.9999) == pytest.approx(20.0, rel=1e-3)
+    assert g(2.0) == pytest.approx(3.9) and g(0.0) == g(3.0) == pytest.approx(3.9)
+    assert isinstance(g(10.0), float)
+    # Linear in 1/tau between 3 and 5 m/s, held outside.
+    assert 1 / g(4.0) == pytest.approx(0.5 * (1 / 3.9 + 1 / 20.0))
+    assert g(30.0) == pytest.approx(20.0)
+    assert np.all(np.diff(g(np.linspace(0, 30, 61))) >= 0)
+    tau = g(np.array([[-10.0, 1.0], [4.0, 40.0]]))
+    assert tau.shape == (2, 2) and tau[0, 0] == pytest.approx(20.0)
+    with pytest.raises(ValueError, match="speed"):
+        g([1.0, np.inf])
+    # Above 4 m/s the short-lag lifetime is about ten times the GeMS one.
+    for v in (5.0, 10.0, 20.0):
+        assert 7 < g(v) / theory.gems_boil_time(v) < 30
+    # It slows the simulated decorrelation accordingly: over 5 ms the per-frame
+    # change of a boiling, static (wind-free) layer falls by about sqrt(b).
+    layer = [pyturb.Layer(altitude=0.0, cn2_fraction=1.0, wind_speed=0.0)]
+    ch = {}
+    for name, tb in (("gems", theory.gems_boil_time(10.0)), ("short", g(10.0))):
+        atm = pyturb.Atmosphere(layer, r0=0.1, diameter=8.0, n=64, tau_boil=tb, seed=3)
+        a = np.asarray(atm.evolve(0.005), float)
+        ch[name] = np.std(np.asarray(atm.evolve(0.005), float) - a)
+    assert 0.2 < ch["short"] / ch["gems"] < 0.45   # sqrt(1.44 / 20) = 0.27
+
+
 def test_gems_boil_time():
     g = theory.gems_boil_time
     assert g(5.0) == pytest.approx(2.5) and g(10.0) == pytest.approx(1.4)

@@ -26,6 +26,8 @@ quoted at, unless a function says otherwise.
   layer from its wind speed (Guesalaga et al. 2014), for ``tau_boil``.
 - :func:`gems_boil_time` — the outer-scale ``tau_boil`` per layer for the
   default scale-dependent boiling, calibrated on the same GeMS measurements.
+- :func:`short_lag_boil_time` — the same for prediction over milliseconds,
+  calibrated on open-loop CANARY telemetry at 7-33 ms lags.
 - :func:`scintillation_transfer` and :func:`scintillation_index` — the
   weak-perturbation intensity transfer function of a layer and the
   scintillation index of a profile (Roddier 1981), the references for
@@ -70,6 +72,7 @@ __all__ = [
     "space_time_structure_function",
     "travel_decorrelation_time",
     "gems_boil_time",
+    "short_lag_boil_time",
     "scintillation_transfer",
     "scintillation_index",
 ]
@@ -738,6 +741,11 @@ def gems_boil_time(speed: ArrayLike) -> Union[float, np.ndarray]:
     times these values for ``L0`` = 10, 50 and 100 m), so treat other outer
     scales as an extrapolation.
 
+    The calibration covers lags of 0.1-0.5 s. Over milliseconds, open-loop
+    telemetry decorrelates about ten times more slowly than these lifetimes
+    imply at wind speeds above about 4 m/s; for prediction over 1-50 ms use
+    :func:`short_lag_boil_time`.
+
     Parameters
     ----------
     speed : float or array_like
@@ -766,6 +774,76 @@ def gems_boil_time(speed: ArrayLike) -> Union[float, np.ndarray]:
     if not np.all(np.isfinite(v)):
         raise ValueError("speed must be finite [m/s]")
     rate = np.interp(v, _GEMS_SPEEDS, 1.0 / np.asarray(_GEMS_TAU_B))
+    tau = 1.0 / rate
+    return float(tau) if tau.ndim == 0 else tau
+
+
+# Outer-scale boiling lifetimes [s] for millisecond lags (short_lag_boil_time): the
+# low-wind and the >= 4 m/s values, joined linearly in 1/tau between these speeds.
+_SHORT_LAG_SPEEDS = (3.0, 5.0)
+_SHORT_LAG_TAU_B = (3.9, 20.0)
+
+
+def short_lag_boil_time(speed: ArrayLike) -> Union[float, np.ndarray]:
+    """Outer-scale boiling lifetime [s] for prediction over milliseconds (7-33 ms lags).
+
+    The ``tau_boil`` per layer for the default ``boil_scaling="kolmogorov"`` and
+    ``boil_model="ar1"`` that reproduces the unpredictable change of the
+    wavefront over 1-5 frames at 150 Hz measured in open-loop natural-guide-star
+    Shack-Hartmann telemetry from CANARY (4.2 m William Herschel Telescope, 7x7
+    subapertures of 0.6 m, 140 data sets of 16-33 s over six nights in 2017,
+    ESO archive WLGSU/CANARY data products). Each data set was compared with
+    simulations that share its measured C_n^2(h) profile, r0, wind speed and
+    length and include the CANARY sensor (diffraction Shack-Hartmann images with
+    its thresholded centre of gravity); the statistic is the growth of a learned
+    linear predictor's error from one to two frames ahead, which is independent
+    of white measurement noise.
+
+    Above about 4 m/s the lifetime is about 20 s (95 % interval of the median over
+    116 data sets: 12-28 s) and barely depends on the wind speed, against 1.7-2.5 s
+    from :func:`gems_boil_time`: over milliseconds the sensed scales decorrelate
+    about ten times more slowly than the extrapolation of the GeMS calibration
+    (0.1-0.5 s lags) implies. Below about 3 m/s it is about 3.9 s (3.5-7.4 s, 24
+    data sets), probably local (dome) turbulence. Between 3 and 5 m/s, ``1 / tau``
+    is linear in speed; outside, the end values are held.
+
+    The values assume ``L0 = 25 m`` (with ``L0 = 10 m`` the simulated short-lag
+    change is about 0.75 times smaller for the same ``tau_boil``, so the matching
+    lifetimes are correspondingly shorter). The data constrain the amount of
+    unpredictable change over 7-33 ms, not the temporal model: ``boil_model="ar2"``
+    with lifetimes about a third of :func:`gems_boil_time` matches the same data.
+    One site and season; treat other conditions as an extrapolation. For decay
+    over 0.1-0.5 s use :func:`gems_boil_time`.
+
+    Parameters
+    ----------
+    speed : float or array_like
+        Layer wind speed [m/s]; the sign is ignored. An array gives one value
+        per layer.
+
+    Returns
+    -------
+    float or ndarray
+        ``tau_boil`` [s], a float for a scalar ``speed``, else an array of its
+        shape.
+
+    References
+    ----------
+    Bardou, L. & Schulz, C. (2018), ESO Science Archive Wendelstein Laser Guide
+    Star Unit data products and manual (open-loop CANARY data),
+    https://archive.eso.org/wdb/wdb/eso/wlgsu/form.
+
+    Examples
+    --------
+    >>> import pyturb
+    >>> layers = pyturb.get_profile("two-layer")
+    >>> tau = pyturb.theory.short_lag_boil_time([layer.wind_speed for layer in layers])
+    >>> atm = pyturb.Atmosphere(layers, r0=0.15, n=64, tau_boil=tau)
+    """
+    v = np.abs(np.asarray(speed, dtype=np.float64))
+    if not np.all(np.isfinite(v)):
+        raise ValueError("speed must be finite [m/s]")
+    rate = np.interp(v, _SHORT_LAG_SPEEDS, 1.0 / np.asarray(_SHORT_LAG_TAU_B))
     tau = 1.0 / rate
     return float(tau) if tau.ndim == 0 else tau
 
