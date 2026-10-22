@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `theory.gems_boil_time` docs: state how the lifetimes were derived (log slope of the
+  analytic, non-deconvolved windowed energy) and that, under Guesalaga et al.'s
+  definition (linear slope of the deconvolved statistic), they reproduce about 0.9,
+  0.6 and 0.5 times the published rate at 5, 10 and 20 m/s; no AR(1) law can match
+  above about 6 m/s. The values are unchanged.
+
 ## [2.5.0] - 2026-10-18
 
 ### Added

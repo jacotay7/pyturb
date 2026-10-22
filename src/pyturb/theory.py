@@ -715,19 +715,30 @@ _GEMS_TAU_B = (2.5, 1.4, 0.74)
 def gems_boil_time(speed: ArrayLike) -> Union[float, np.ndarray]:
     """Outer-scale boiling lifetime [s] for ``boil_scaling="kolmogorov"``, from GeMS.
 
-    The ``tau_boil`` per layer with which the spectral engine's default,
+    The ``tau_boil`` per layer for the spectral engine's default,
     scale-dependent boiling (each mode at spatial frequency ``f`` has
-    ``tau(f) = tau_boil * max(f L0, 1)^(-2/3)``) decorrelates the scales an AO
-    system senses as fast as Guesalaga et al. (2014) measured on GeMS. They
-    followed each layer in the space-time cross-correlation of tip/tilt-removed
-    laser-guide-star slopes (8 m pupil, 16x16 subapertures of 0.5 m) and fitted
-    the decay of the energy in a 3x3-subaperture window around the correlation
-    peak over 0.1-0.5 s, finding a rate ``0.157 v + 0.365`` s^-1 for wind speed
-    ``v`` (see :func:`travel_decorrelation_time`). The lifetimes here make the
-    same windowed statistic, computed from the von Kármán spectrum with
-    ``L0 = 25 m`` and AR(1) modes, decay at that rate: 2.5, 1.4 and 0.74 s at
-    5, 10 and 20 m/s (2.50, 1.44, 0.74 s before rounding). In between,
-    ``1 / tau`` is linear in speed; outside 5-20 m/s the end values are held.
+    ``tau(f) = tau_boil * max(f L0, 1)^(-2/3)``), derived from the decorrelation
+    Guesalaga et al. (2014) measured on GeMS. They followed each layer in the
+    space-time cross-correlation of tip/tilt-removed laser-guide-star slopes (8 m
+    pupil, 16x16 subapertures of 0.5 m), deconvolved by the zero-lag
+    autocorrelation, and took the slope of the energy in a 3x3-subaperture window
+    around the correlation peak beyond 0.1 s, finding a rate ``0.157 v + 0.365``
+    s^-1 for wind speed ``v`` (see :func:`travel_decorrelation_time`). The
+    lifetimes here, 2.5, 1.4 and 0.74 s at 5, 10 and 20 m/s (2.50, 1.44, 0.74 s
+    before rounding), are those for which the analytic windowed energy of the
+    von Kármán spectrum (``L0 = 25 m``, AR(1) modes, not deconvolved) has that
+    rate as the slope of its logarithm over 0.1-0.5 s. In between, ``1 / tau`` is
+    linear in speed; outside 5-20 m/s the end values are held.
+
+    The measured rate is a linear slope of the deconvolved statistic, not a
+    logarithmic one. Under that definition, AR(1) modes with these lifetimes
+    decay at about 0.9, 0.6 and 0.5 times the published rate at 5, 10 and 20 m/s,
+    and no AR(1) law reaches the published rate above about 6 m/s: over 0.1-0.5 s
+    the linear slope of any mixture of exponential decays is at most about
+    1.3 s^-1. The GeMS decay is linear in time and includes the dispersion of the
+    wind speed within a layer, which AR(1) boiling of a single layer does not
+    represent. Treat these lifetimes as an approximate, AR(1) description of the
+    GeMS measurements, faithful in order of magnitude.
 
     Use it with the default ``boil_scaling="kolmogorov"`` and
     ``boil_model="ar1"``; with ``"uniform"`` scaling use
@@ -736,7 +747,8 @@ def gems_boil_time(speed: ArrayLike) -> Union[float, np.ndarray]:
     ``L0 = 25 m``: the outer-scale lifetime that gives the same decay of the
     sensed scales grows with ``L0`` (recalibrated at 10 m/s, 0.63, 1.49 and 2.3
     times these values for ``L0`` = 10, 50 and 100 m), so treat other outer
-    scales as an extrapolation.
+    scales as an extrapolation. The calibration covers lags of 0.1-0.5 s; its
+    extrapolation to millisecond lags is not constrained by the GeMS data.
 
     Parameters
     ----------

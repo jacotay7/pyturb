@@ -127,17 +127,27 @@ that scaling use the calibration below.
 
 ### Scale-dependent boiling calibrated on GeMS
 
-To keep the eddy-turnover scaling and still match the measurements,
-`pyturb.theory.gems_boil_time` gives the outer-scale lifetime per layer that
-makes the sensed scales decay as GeMS saw. Guesalaga et al. measured the
-decay of the energy in a 3x3-subaperture window around each layer's peak in
-the space-time cross-correlation of tip/tilt-removed slopes (8 m pupil, 0.5 m
-subapertures, lags 0.1-0.5 s). Computing the same windowed statistic from the
-von Kármán spectrum (`L0 = 25 m`) with AR(1) modes boiling at `tau(f) =
-tau_boil max(f L0, 1)^(-2/3)`, and solving for the `tau_boil` that decays at
-the fitted rate `0.157 v + 0.365` s⁻¹, gives 2.5, 1.4 and 0.74 s at 5, 10
-and 20 m/s. `gems_boil_time` is linear in `1 / tau` between those speeds and
-holds the end values outside them.
+To keep the eddy-turnover scaling and stay close to the measurements,
+`pyturb.theory.gems_boil_time` gives an outer-scale lifetime per layer derived from
+the GeMS decorrelation measured by Guesalaga et al. They followed each layer's peak
+in the space-time cross-correlation of tip/tilt-removed slopes (8 m pupil, 0.5 m
+subapertures), deconvolved by the zero-lag autocorrelation, and took the slope of
+the energy in a 3x3-subaperture window around the peak beyond 0.1 s: a rate
+`0.157 v + 0.365` s⁻¹. The lifetimes, 2.5, 1.4 and 0.74 s at 5, 10 and 20 m/s, are
+those for which the analytic windowed energy of the von Kármán spectrum (`L0 = 25 m`,
+AR(1) modes boiling at `tau(f) = tau_boil max(f L0, 1)^(-2/3)`, not deconvolved) has
+that rate as the slope of its logarithm over 0.1-0.5 s. `gems_boil_time` is linear in
+`1 / tau` between those speeds and holds the end values outside them.
+
+!!! note "An approximate description of the GeMS data"
+    The published rate is a *linear* slope of the deconvolved statistic. Under that
+    definition AR(1) modes with these lifetimes decay at about 0.9, 0.6 and 0.5 times
+    the published rate at 5, 10 and 20 m/s, and no AR(1) law reaches it above about
+    6 m/s (the linear slope of any mixture of exponential decays over 0.1-0.5 s is at
+    most about 1.3 s⁻¹). The GeMS decay is linear in time and includes the spread of
+    wind speeds within a layer, which single-layer AR(1) boiling does not represent.
+    The calibration covers 0.1-0.5 s lags; it does not constrain decorrelation over
+    milliseconds.
 
 ```python
 import pyturb
